@@ -10655,14 +10655,14 @@ async def openai_models():
             "object": "list",
             "data": [
                 {
-                    "id": "Agentic-RAG-Model1",
+                    "id": "RAICA-Model1",
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "local"
                 },
                 {
-                    "id": "Agentic-RAG-Model2",
-                    "object": "model", 
+                    "id": "RAICA-Model2",
+                    "object": "model",
                     "created": int(time.time()),
                     "owned_by": "local"
                 }
