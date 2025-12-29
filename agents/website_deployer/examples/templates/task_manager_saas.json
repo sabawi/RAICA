@@ -1,0 +1,297 @@
+{
+  "project_name": "taskmaster_pro",
+  "description": "Professional SaaS task management platform with team collaboration, real-time updates, and project tracking",
+  "tech_stack": "python_fastapi",
+  "deployment": {
+    "domain": "taskmaster.app",
+    "ssl_enabled": true,
+    "port": 443
+  },
+  "database": {
+    "type": "postgresql",
+    "name": "taskmaster_db",
+    "user": "taskmaster_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "email_verification": true,
+      "password_reset": true,
+      "oauth_providers": [],
+      "jwt_tokens": true
+    },
+    "real_time": {
+      "enabled": true,
+      "technology": "websockets",
+      "features": ["task_updates", "team_notifications", "activity_feed"]
+    },
+    "file_uploads": {
+      "enabled": true,
+      "types": ["task_attachments", "user_avatars"],
+      "max_size": "10MB",
+      "storage": "local"
+    },
+    "email_notifications": {
+      "enabled": true,
+      "events": [
+        "task_assigned",
+        "task_due_soon",
+        "comment_added",
+        "project_shared"
+      ]
+    },
+    "search": {
+      "enabled": true,
+      "full_text": true,
+      "models": ["tasks", "projects", "comments"]
+    },
+    "activity_tracking": {
+      "enabled": true,
+      "log_user_actions": true,
+      "show_timeline": true
+    }
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "email", "type": "string", "unique": true, "required": true},
+        {"name": "password_hash", "type": "string", "required": true},
+        {"name": "full_name", "type": "string", "required": true},
+        {"name": "avatar_url", "type": "string", "nullable": true},
+        {"name": "email_verified", "type": "boolean", "default": false},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "has_many", "model": "TeamMember"},
+        {"type": "has_many", "model": "Task", "as": "assigned_tasks"},
+        {"type": "has_many", "model": "Task", "as": "created_tasks"},
+        {"type": "has_many", "model": "Comment"}
+      ]
+    },
+    {
+      "name": "Team",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "slug", "type": "string", "unique": true},
+        {"name": "description", "type": "text"},
+        {"name": "owner_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User", "as": "owner"},
+        {"type": "has_many", "model": "TeamMember"},
+        {"type": "has_many", "model": "Project"}
+      ]
+    },
+    {
+      "name": "TeamMember",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "team_id", "type": "uuid", "foreign_key": "teams.id"},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "role", "type": "enum", "values": ["owner", "admin", "member"], "default": "member"},
+        {"name": "joined_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Team"},
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Project",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "slug", "type": "string"},
+        {"name": "description", "type": "text"},
+        {"name": "team_id", "type": "uuid", "foreign_key": "teams.id"},
+        {"name": "status", "type": "enum", "values": ["active", "archived", "completed"], "default": "active"},
+        {"name": "due_date", "type": "date", "nullable": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Team"},
+        {"type": "has_many", "model": "Task"}
+      ]
+    },
+    {
+      "name": "Task",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "description", "type": "text"},
+        {"name": "project_id", "type": "uuid", "foreign_key": "projects.id"},
+        {"name": "assigned_to_id", "type": "uuid", "foreign_key": "users.id", "nullable": true},
+        {"name": "created_by_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "status", "type": "enum", "values": ["todo", "in_progress", "review", "done"], "default": "todo"},
+        {"name": "priority", "type": "enum", "values": ["low", "medium", "high", "urgent"], "default": "medium"},
+        {"name": "due_date", "type": "datetime", "nullable": true},
+        {"name": "completed_at", "type": "timestamp", "nullable": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Project"},
+        {"type": "belongs_to", "model": "User", "as": "assigned_to"},
+        {"type": "belongs_to", "model": "User", "as": "created_by"},
+        {"type": "has_many", "model": "Comment"},
+        {"type": "has_many", "model": "Attachment"}
+      ]
+    },
+    {
+      "name": "Comment",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "task_id", "type": "uuid", "foreign_key": "tasks.id"},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "content", "type": "text", "required": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Task"},
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Attachment",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "task_id", "type": "uuid", "foreign_key": "tasks.id"},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "filename", "type": "string", "required": true},
+        {"name": "file_path", "type": "string", "required": true},
+        {"name": "file_size", "type": "integer"},
+        {"name": "mime_type", "type": "string"},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Task"},
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Notification",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "type", "type": "string", "required": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "message", "type": "text"},
+        {"name": "link", "type": "string"},
+        {"name": "is_read", "type": "boolean", "default": false},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Activity",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "action", "type": "string", "required": true},
+        {"name": "entity_type", "type": "string"},
+        {"name": "entity_id", "type": "uuid"},
+        {"name": "metadata", "type": "json"},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {"path": "/api/auth/register", "method": "POST", "description": "Register new user"},
+    {"path": "/api/auth/login", "method": "POST", "description": "Login with JWT token"},
+    {"path": "/api/auth/verify-email", "method": "POST", "description": "Verify email address"},
+    {"path": "/api/auth/forgot-password", "method": "POST", "description": "Request password reset"},
+    {"path": "/api/auth/reset-password", "method": "POST", "description": "Reset password with token"},
+    {"path": "/api/teams", "method": "GET", "description": "List user's teams", "auth": true},
+    {"path": "/api/teams", "method": "POST", "description": "Create new team", "auth": true},
+    {"path": "/api/teams/{id}", "method": "GET", "description": "Get team details", "auth": true},
+    {"path": "/api/teams/{id}/members", "method": "GET", "description": "List team members", "auth": true},
+    {"path": "/api/teams/{id}/members", "method": "POST", "description": "Add team member", "auth": true},
+    {"path": "/api/projects", "method": "GET", "description": "List projects", "auth": true},
+    {"path": "/api/projects", "method": "POST", "description": "Create project", "auth": true},
+    {"path": "/api/projects/{id}", "method": "GET", "description": "Get project details", "auth": true},
+    {"path": "/api/projects/{id}", "method": "PUT", "description": "Update project", "auth": true},
+    {"path": "/api/projects/{id}/tasks", "method": "GET", "description": "List project tasks", "auth": true},
+    {"path": "/api/tasks", "method": "GET", "description": "List tasks (with filters)", "auth": true},
+    {"path": "/api/tasks", "method": "POST", "description": "Create task", "auth": true},
+    {"path": "/api/tasks/{id}", "method": "GET", "description": "Get task details", "auth": true},
+    {"path": "/api/tasks/{id}", "method": "PUT", "description": "Update task", "auth": true},
+    {"path": "/api/tasks/{id}", "method": "DELETE", "description": "Delete task", "auth": true},
+    {"path": "/api/tasks/{id}/comments", "method": "GET", "description": "List task comments", "auth": true},
+    {"path": "/api/tasks/{id}/comments", "method": "POST", "description": "Add comment", "auth": true},
+    {"path": "/api/tasks/{id}/attachments", "method": "POST", "description": "Upload attachment", "auth": true},
+    {"path": "/api/notifications", "method": "GET", "description": "List notifications", "auth": true},
+    {"path": "/api/notifications/{id}/read", "method": "POST", "description": "Mark as read", "auth": true},
+    {"path": "/api/activity", "method": "GET", "description": "Get activity feed", "auth": true},
+    {"path": "/ws/tasks", "method": "WEBSOCKET", "description": "Real-time task updates", "auth": true}
+  ],
+  "ui_pages": [
+    {"name": "Home", "route": "/", "description": "Landing page"},
+    {"name": "Dashboard", "route": "/dashboard", "description": "User dashboard with task overview"},
+    {"name": "Teams", "route": "/teams", "description": "List of teams"},
+    {"name": "Team Detail", "route": "/teams/{slug}", "description": "Team dashboard"},
+    {"name": "Projects", "route": "/projects", "description": "List of projects"},
+    {"name": "Project Board", "route": "/projects/{slug}/board", "description": "Kanban board view"},
+    {"name": "Task Detail", "route": "/tasks/{id}", "description": "Task details with comments"},
+    {"name": "My Tasks", "route": "/my-tasks", "description": "Tasks assigned to user"},
+    {"name": "Calendar", "route": "/calendar", "description": "Calendar view of tasks"},
+    {"name": "Activity", "route": "/activity", "description": "Activity timeline"},
+    {"name": "Settings", "route": "/settings", "description": "User settings"}
+  ],
+  "background_workers": [
+    {
+      "name": "send_task_notification",
+      "description": "Send email when task is assigned",
+      "trigger": "on_task_assigned",
+      "priority": "high"
+    },
+    {
+      "name": "send_due_date_reminder",
+      "description": "Send reminder for tasks due soon",
+      "trigger": "scheduled",
+      "schedule": "0 9 * * *",
+      "priority": "medium"
+    },
+    {
+      "name": "cleanup_old_activities",
+      "description": "Archive old activity logs",
+      "trigger": "scheduled",
+      "schedule": "0 2 * * 0",
+      "priority": "low"
+    },
+    {
+      "name": "generate_team_digest",
+      "description": "Weekly team activity digest",
+      "trigger": "scheduled",
+      "schedule": "0 9 * * 1",
+      "priority": "low"
+    }
+  ],
+  "email_configuration": {
+    "provider": "smtp",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "from_address": "noreply@taskmaster.app",
+    "from_name": "TaskMaster Pro"
+  },
+  "testing": {
+    "unit_tests": true,
+    "integration_tests": true,
+    "api_tests": true,
+    "websocket_tests": true
+  },
+  "deployment_time_estimate": "6-8 minutes"
+}

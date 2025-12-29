@@ -1,0 +1,69 @@
+{
+  "project_name": "simple_website",
+  "description": "Simple PHP website with user authentication and basic CRUD operations",
+  "tech_stack": "php_plain",
+  "deployment": {
+    "domain": "localhost",
+    "ssl_enabled": false,
+    "port": 80
+  },
+  "database": {
+    "type": "mysql",
+    "name": "simple_db",
+    "user": "simple_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "email_verification": true,
+      "password_reset": true
+    },
+    "email_notifications": {
+      "enabled": true,
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587
+    }
+  },
+  "database_models": [
+    {
+      "name": "users",
+      "fields": [
+        {"name": "id", "type": "INT", "primary_key": true, "auto_increment": true},
+        {"name": "email", "type": "VARCHAR(255)", "unique": true},
+        {"name": "password_hash", "type": "VARCHAR(255)"},
+        {"name": "first_name", "type": "VARCHAR(100)"},
+        {"name": "last_name", "type": "VARCHAR(100)"},
+        {"name": "email_verified", "type": "BOOLEAN", "default": "FALSE"},
+        {"name": "created_at", "type": "TIMESTAMP", "default": "CURRENT_TIMESTAMP"}
+      ]
+    },
+    {
+      "name": "email_verification_tokens",
+      "fields": [
+        {"name": "id", "type": "INT", "primary_key": true, "auto_increment": true},
+        {"name": "user_id", "type": "INT", "foreign_key": "users.id"},
+        {"name": "token", "type": "VARCHAR(255)", "unique": true},
+        {"name": "expires_at", "type": "TIMESTAMP"}
+      ]
+    },
+    {
+      "name": "password_reset_tokens",
+      "fields": [
+        {"name": "id", "type": "INT", "primary_key": true, "auto_increment": true},
+        {"name": "user_id", "type": "INT", "foreign_key": "users.id"},
+        {"name": "token", "type": "VARCHAR(255)", "unique": true},
+        {"name": "expires_at", "type": "TIMESTAMP"}
+      ]
+    }
+  ],
+  "ui_pages": [
+    {"name": "Home", "route": "/index.php"},
+    {"name": "Register", "route": "/register_simple.php"},
+    {"name": "Login", "route": "/login_simple.php"},
+    {"name": "Dashboard", "route": "/dashboard_simple.php"},
+    {"name": "Verify Email", "route": "/verify-email.php"},
+    {"name": "Forgot Password", "route": "/forgot-password.php"},
+    {"name": "Reset Password", "route": "/reset-password.php"}
+  ],
+  "deployment_time_estimate": "3-4 minutes"
+}

@@ -1,0 +1,439 @@
+debug:
+  log_requests: false
+  log_timing: true
+  mock_providers: false
+document_interrogator:
+  max_files_per_scan: 400
+  scan_interval_minutes: 60
+  auto_watch_enabled: false
+  startup_initialization_delay: 3
+  embedding:
+    model_name: mxbai-embed-large
+    dimension: 1024
+    service:
+      host: 127.0.0.1
+      port: 11434
+      base_url: http://127.0.0.1:11434
+      health_check_timeout_seconds: 10
+    timeout:
+      embedding_request: 120
+      service_restart: 5
+      health_check: 10
+    retry:
+      max_service_restart_attempts: 3
+      retry_delay_seconds: 3
+    batch_processing:
+      batch_size: 15
+      batch_delay_seconds: 4.0
+      adaptive_mode_enabled: true
+      min_batch_size: 1
+      adaptive_reduction_factor: 0.5
+  document_processing:
+    chunk_size: 400
+    chunk_overlap: 50
+    min_chunk_length: 10
+    max_chunk_length: 500
+  scaling_notes:
+    "SCALING GUIDELINES (based on empirical research):\n\nCurrent configuration\
+    \ optimal for: 1K-10K documents (10K-100K chunks)\n\nScaling to 100K+ chunks:\n\
+    \  1. Reduce dimension: 1024 \u2192 768 (switch to nomic-embed-text, 33% storage\
+    \ savings)\n  2. Implement quantization: FP16 (48% memory reduction) or binary\
+    \ (32x reduction)\n  3. Consider separate FAISS instances per document collection\n\
+    \nModel choice at scale:\n  - <10K chunks: mxbai-embed-large (current, optimal\
+    \ quality)\n  - 10K-100K chunks: Keep mxbai OR switch to nomic for speed\n  -\
+    \ 100K-1M chunks: Consider E5-small (384d) or BGE (768d)\n  - 1M+ chunks: Plan\
+    \ for distributed embedding service\n\nEmbedding service bottleneck analysis:\n\
+    \  - Batch size 25 \xD7 250 tokens/chunk = 6250 tokens/batch \u2192 OOM after\
+    \ 1650 vectors\n  - Batch size 10 \xD7 250 tokens/chunk = 2500 tokens/batch \u2192\
+    \ Sustainable at scale\n  - Time: 27-30 min for 1961 chunks with batch_size=10\n"
+llm:
+  fallback:
+    auto_switch: true
+    enabled: true
+    order:
+      - ollama
+      - openai
+      - openrouter
+      - qwen
+      - gemini
+  primary:
+    type: ollama
+    config:
+      model: mistral-large-3:675b-cloud # deepseek-v3.2:cloud # deepseek-v3.1:671b-cloud
+      timeout: 600
+      temperature: 0.7
+      max_tokens: 16384
+      context_window_size: 16384
+      stream: true
+  tool_calling:
+    type: openai
+    config:
+      model: gpt-4o-mini
+      timeout: 120
+      context_window_size: 4096
+      temperature: 0.1
+      max_tokens: 1024
+      stream: false
+  providers:
+    ollama:
+      base_url: http://127.0.0.1:11434
+      health_check_url: http://127.0.0.1:11434/api/tags
+      retry_attempts: 3
+      retry_delay: 2
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://api.openai.com/v1
+      organization: null
+      retry_attempts: 3
+      retry_delay: 1
+      models:
+        primary: gpt-4o
+        tool_calling: gpt-4o
+    openrouter:
+      api_key: ${OPENROUTER_API_KEY}
+      base_url: https://openrouter.ai/api/v1
+      retry_attempts: 3
+      retry_delay: 1
+      headers:
+        HTTP-Referer: ${OPENROUTER_SITE_URL}
+        X-Title: ${OPENROUTER_SITE_NAME}
+      models:
+        primary: deepseek/deepseek-r1:free
+        tool_calling: openai/gpt-4o-mini
+        reasoning: deepseek/deepseek-r1
+        free: deepseek/deepseek-r1:free
+    gemini:
+      api_key: ${GEMINI_API_KEY}
+      model: gemini-flash-latest
+      timeout: 120
+      temperature: 0.7
+      max_tokens: 8192
+      retry_attempts: 3
+      retry_delay: 1
+      models:
+        primary: gemini-flash-latest
+        pro: gemini-pro-latest
+        flash: gemini-flash-latest
+        stable_flash: gemini-2.5-flash
+        stable_pro: gemini-2.5-pro
+performance:
+  connection_pool_size: 10
+  max_concurrent_requests: 5
+  request_timeout: 600
+  streaming_chunk_size: 1024
+platform:
+  config_dir:
+    linux: ${HOME}/.config/agentic_rag
+    macos: ${HOME}/.config/agentic_rag
+    windows: ${APPDATA}/agentic_rag
+  log_dir:
+    linux: ${HOME}/.local/share/agentic_rag/logs
+    macos: ${HOME}/.local/share/agentic_rag/logs
+    windows: ${LOCALAPPDATA}/agentic_rag/logs
+  temp_dir:
+    linux: /tmp/agentic_rag
+    macos: ${TMPDIR}/agentic_rag
+    windows: ${TEMP}/agentic_rag
+security:
+  api_key_encryption: false
+  audit_logging: true
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst_limit: 10
+arbitrator:
+  enabled: true
+  type: openai
+  config:
+    model: gpt-4o-mini
+    timeout: 60
+    context_window_size: 4096
+    temperature: 0.1
+    max_tokens: 1024
+    stream: false
+    api_key: ${OPENAI_API_KEY}
+    base_url: https://api.openai.com/v1
+optimization:
+  enabled: true
+  rollout_percentage: 100.0
+  detailed_logging: true
+code_generation:
+  type: ollama
+  fallback:
+    enabled: true
+    # Fallback order supports two formats:
+    # 1. Simple: just provider name (uses default model from providers section)
+    # 2. Detailed: provider + model pair for specific model fallbacks
+    order:
+      - provider: ollama
+        model: deepseek-v3.2:cloud
+      - provider: ollama
+        model: mistral-large-3:675b-cloud
+      - provider: gemini
+        model: gemini-2.5-pro
+      - provider: openai
+        model: gpt-4o
+      - provider: anthropic
+        model: claude-sonnet-4-20250514
+      - provider: qwen
+        model: qwen-max
+  providers:
+    gemini:
+      model: gemini-2.5-pro
+      api_key: ${GEMINI_API_KEY}
+      timeout: 300
+      temperature: 0.0
+      max_tokens: 32768
+      retry_attempts: 3
+      retry_delay: 2
+    anthropic:
+      model: claude-sonnet-4-20250514
+      api_key: ${ANTHROPIC_API_KEY}
+      base_url: https://api.anthropic.com
+      timeout: 300
+      temperature: 0.0
+      max_tokens: 16384
+      retry_attempts: 3
+      retry_delay: 2
+    openai:
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://api.openai.com/v1
+      timeout: 300
+      temperature: 0.0
+      max_tokens: 16384
+      retry_attempts: 3
+      retry_delay: 2
+    qwen:
+      model: qwen-max
+      api_key: ${QWEN_API_KEY}
+      base_url: https://dashscope.aliyuncs.com/api/v1
+      timeout: 300
+      temperature: 0.0
+      max_tokens: 16384
+      retry_attempts: 3
+      retry_delay: 2
+    ollama:
+      model: deepseek-v3.2:cloud
+      base_url: http://127.0.0.1:11434
+      timeout: 600
+      temperature: 0.0
+      max_tokens: 32768
+      context_window: 131072
+      retry_attempts: 3
+      retry_delay: 2
+vision:
+  type: ollama
+  config:
+    model: qwen3-vl:235b-cloud
+    timeout: 1800
+    temperature: 0.7
+    max_tokens: 16384
+    base_url: http://127.0.0.1:11434
+    fallback_model: qwen2.5vl:3b
+  image_processing:
+    max_size_mb: 1.0
+    resize_enabled: true
+    resize_quality: 85
+    max_dimension: 2048
+    preserve_aspect_ratio: true
+    allowed_formats:
+      - jpeg
+      - jpg
+      - png
+      - webp
+      - gif
+    output_format: jpeg
+flight_search:
+  enabled: true
+  web_scraping:
+    enabled: true
+    timeout_seconds: 30
+    max_results: 10
+    user_agent:
+      Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
+      like Gecko) Chrome/91.0.4472.124 Safari/537.36
+  apis:
+    amadeus:
+      enabled: false
+      api_key: ${AMADEUS_API_KEY}
+      api_secret: ${AMADEUS_API_SECRET}
+      base_url: https://test.api.amadeus.com
+    skyscanner:
+      enabled: false
+      api_key: ${SKYSCANNER_API_KEY}
+      base_url: https://partners.api.skyscanner.net
+    serpapi:
+      enabled: false
+      api_key: ${SERPAPI_API_KEY}
+      base_url: https://serpapi.com/search.json
+    rapidapi_skyscanner:
+      enabled: false
+      api_key: ${RAPIDAPI_KEY}
+      base_url: https://skyscanner50.p.rapidapi.com
+      host: skyscanner50.p.rapidapi.com
+  verification_links:
+    kayak: https://www.kayak.com/flights
+    expedia: https://www.expedia.com/Flights-Search
+    google_flights: https://www.google.com/travel/flights
+    priceline: https://www.priceline.com/relax/at/flights
+    momondo: https://www.momondo.com/flight-search
+  chromedriver:
+    path: ${CHROMEDRIVER_PATH}
+    auto_install: true
+    headless: true
+    timeout: 30
+    window_size: 1920,1080
+email:
+  enabled: true
+  default_provider: gmail_primary
+  retrieval:
+    default_timeout: 30
+    max_emails_per_request: 50
+    auto_mark_read: false
+    default_retrieval_type: headers
+    cache_duration: 300
+  sending:
+    auto_cleanup_attachments: true
+    max_attachment_size_mb: 25
+    wait_for_attachments: true
+    attachment_timeout: 45
+    preserve_existing_functionality: true
+  security:
+    allowed_attachment_types:
+      - .pdf
+      - .html
+      - .txt
+      - .md
+      - .csv
+      - .json
+      - .xml
+      - .log
+      - .doc
+      - .docx
+      - .xls
+      - .xlsx
+      - .ppt
+      - .pptx
+      - .zip
+    forbidden_attachment_types:
+      - .exe
+      - .bat
+      - .cmd
+      - .com
+      - .scr
+      - .pif
+      - .msi
+      - .dll
+    max_recipients: 50
+    require_auth: true
+    enable_app_passwords: true
+  providers:
+    gmail_primary:
+      email: ${GMAIL_PRIMARY_EMAIL}
+      password: ${GMAIL_PRIMARY_APP_PASSWORD}
+      imap:
+        server: imap.gmail.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.gmail.com
+        port: 587
+        use_tls: true
+      pop3:
+        server: pop.gmail.com
+        port: 995
+        use_ssl: true
+      description: Primary Gmail account for personal/main email
+    gmail_work:
+      email: ${GMAIL_WORK_EMAIL}
+      password: ${GMAIL_WORK_APP_PASSWORD}
+      imap:
+        server: imap.gmail.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.gmail.com
+        port: 587
+        use_tls: true
+      description: Work Gmail account
+    outlook_personal:
+      email: ${OUTLOOK_PERSONAL_EMAIL}
+      password: ${OUTLOOK_PERSONAL_PASSWORD}
+      imap:
+        server: outlook.office365.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.office365.com
+        port: 587
+        use_tls: true
+      description: Personal Outlook/Hotmail account
+    outlook_work:
+      email: ${OUTLOOK_WORK_EMAIL}
+      password: ${OUTLOOK_WORK_PASSWORD}
+      imap:
+        server: outlook.office365.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.office365.com
+        port: 587
+        use_tls: true
+      description: Work Outlook/Office 365 account
+    yahoo_personal:
+      email: ${YAHOO_PERSONAL_EMAIL}
+      password: ${YAHOO_PERSONAL_APP_PASSWORD}
+      imap:
+        server: imap.mail.yahoo.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.mail.yahoo.com
+        port: 587
+        use_tls: true
+      pop3:
+        server: pop.mail.yahoo.com
+        port: 995
+        use_ssl: true
+      description: Personal Yahoo Mail account
+    icloud_personal:
+      email: ${ICLOUD_PERSONAL_EMAIL}
+      password: ${ICLOUD_PERSONAL_APP_PASSWORD}
+      imap:
+        server: imap.mail.me.com
+        port: 993
+        use_ssl: true
+      smtp:
+        server: smtp.mail.me.com
+        port: 587
+        use_tls: true
+      description: Personal iCloud Mail account
+    custom_server:
+      email: ${CUSTOM_EMAIL}
+      password: ${CUSTOM_PASSWORD}
+      imap:
+        server: ${CUSTOM_IMAP_SERVER}
+        port: ${CUSTOM_IMAP_PORT:993}
+        use_ssl: true
+      smtp:
+        server: ${CUSTOM_SMTP_SERVER}
+        port: ${CUSTOM_SMTP_PORT:587}
+        use_tls: true
+      description: Custom IMAP/SMTP server
+  settings:
+    default_timeout: 30
+    max_attachment_size_mb: 25
+    date_format: "%Y-%m-%d %H:%M:%S"
+    encoding: utf-8
+    max_search_results: 100
+    connection_retry_attempts: 3
+    connection_retry_delay: 2
+  nlp:
+    enable_smart_parsing: true
+    enable_sender_detection: true
+    enable_date_parsing: true
+    enable_content_filtering: true
+    enable_company_detection: true
+    enable_fuzzy_matching: true
+    confidence_threshold: 0.7

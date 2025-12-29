@@ -1,0 +1,68 @@
+{
+  "project_name": "simple_api",
+  "description": "Simple REST API with FastAPI, JWT authentication, and basic CRUD",
+  "tech_stack": "python_fastapi",
+  "deployment": {
+    "domain": "localhost",
+    "ssl_enabled": false,
+    "port": 8000
+  },
+  "database": {
+    "type": "postgresql",
+    "name": "simple_api_db",
+    "user": "api_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "method": "jwt",
+      "email_verification": true,
+      "token_expiry": "24h"
+    },
+    "api_documentation": {
+      "enabled": true,
+      "format": "openapi3",
+      "ui": "swagger"
+    },
+    "email_notifications": {
+      "enabled": true,
+      "smtp_host": "smtp.gmail.com"
+    }
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "fields": [
+        {"name": "id", "type": "UUID", "primary_key": true},
+        {"name": "email", "type": "String", "unique": true},
+        {"name": "hashed_password", "type": "String"},
+        {"name": "full_name", "type": "String"},
+        {"name": "is_active", "type": "Boolean", "default": true},
+        {"name": "email_verified", "type": "Boolean", "default": false},
+        {"name": "created_at", "type": "DateTime"}
+      ]
+    },
+    {
+      "name": "Item",
+      "fields": [
+        {"name": "id", "type": "UUID", "primary_key": true},
+        {"name": "title", "type": "String"},
+        {"name": "description", "type": "Text"},
+        {"name": "owner_id", "type": "UUID", "foreign_key": "User.id"},
+        {"name": "created_at", "type": "DateTime"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {"path": "/api/auth/register", "method": "POST"},
+    {"path": "/api/auth/login", "method": "POST"},
+    {"path": "/api/auth/verify-email", "method": "POST"},
+    {"path": "/api/items", "method": "GET", "auth": true},
+    {"path": "/api/items", "method": "POST", "auth": true},
+    {"path": "/api/items/{id}", "method": "GET", "auth": true},
+    {"path": "/api/items/{id}", "method": "PUT", "auth": true},
+    {"path": "/api/items/{id}", "method": "DELETE", "auth": true},
+    {"path": "/docs", "method": "GET", "description": "API documentation"}
+  ],
+  "deployment_time_estimate": "4-5 minutes"
+}

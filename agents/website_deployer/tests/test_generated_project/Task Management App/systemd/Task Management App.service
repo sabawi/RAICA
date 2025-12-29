@@ -1,0 +1,12 @@
+[Unit]
+Description=Task Management App FastAPI Application
+After=network.target
+
+[Service]
+User=www-data
+WorkingDirectory=/var/www/Task Management App
+Environment="PATH=/var/www/Task Management App/venv/bin"
+ExecStart=/var/www/Task Management App/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+[Install]
+WantedBy=multi-user.target

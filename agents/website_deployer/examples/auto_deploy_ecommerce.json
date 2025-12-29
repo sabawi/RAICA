@@ -1,0 +1,29 @@
+{
+  "specification": "templates/ecommerce_store.json",
+
+  "backend_framework": "PHP (Apache2/Nginx)",
+  "database_type": "MySQL",
+  "web_server": "Apache2",
+  "frontend_framework": "HTML/CSS/JavaScript (traditional)",
+
+  "ssh_host": "192.168.1.58",
+  "ssh_user": "sabawi",
+  "ssh_password": "Down2earth!",
+  "ssh_port": "22",
+  "ssh_auth_method": "Password",
+
+  "sudo_requires_password": true,
+  "sudo_password": "Down2earth!",
+
+  "db_admin_user": "root",
+  "db_admin_password": "Down2earth!",
+  "database_name": "ecommerce_store_db",
+  "db_web_user": "webuser",
+  "db_web_password": "webuser",
+  "db_web_permissions": "SELECT, INSERT, UPDATE, DELETE",
+
+  "web_protocol": "HTTPS",
+  "https_port": "6050",
+  "domain": "192.168.1.58",
+  "ssl_type": "Self-signed (development)"
+}

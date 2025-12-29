@@ -1,0 +1,137 @@
+{
+  "project_name": "User Profile Manager",
+  "description": "A secure web application allowing users to register, log in, and manage their personal profile information.",
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "methods": [
+        "email_password"
+      ],
+      "email_verification": true,
+      "password_reset": true,
+      "two_factor": false
+    },
+    "email_notifications": {
+      "enabled": true
+    },
+    "llm_chat": {
+      "enabled": false
+    },
+    "background_workers": {
+      "enabled": true
+    },
+    "file_uploads": {
+      "enabled": false
+    },
+    "api": {
+      "rest_api": true,
+      "graphql": false,
+      "websockets": false,
+      "rate_limiting": true
+    }
+  },
+  "database": {
+    "type": "mysql",
+    "models": [
+      {
+        "name": "User",
+        "description": "Registered user with login credentials and profile information",
+        "fields": [
+          {
+            "name": "id",
+            "type": "integer",
+            "required": true,
+            "unique": true
+          },
+          {
+            "name": "email",
+            "type": "email",
+            "required": true,
+            "unique": true
+          },
+          {
+            "name": "password_hash",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "first_name",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "last_name",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "phone",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "address",
+            "type": "text",
+            "required": false
+          },
+          {
+            "name": "bio",
+            "type": "text",
+            "required": false
+          },
+          {
+            "name": "created_at",
+            "type": "datetime",
+            "required": true
+          },
+          {
+            "name": "updated_at",
+            "type": "datetime",
+            "required": true
+          }
+        ],
+        "relationships": []
+      }
+    ]
+  },
+  "ui_pages": [
+    {
+      "name": "Landing",
+      "route": "/",
+      "auth_required": false
+    },
+    {
+      "name": "Login",
+      "route": "/login",
+      "auth_required": false
+    },
+    {
+      "name": "Register",
+      "route": "/register",
+      "auth_required": false
+    },
+    {
+      "name": "Dashboard",
+      "route": "/dashboard",
+      "auth_required": true
+    },
+    {
+      "name": "Profile",
+      "route": "/profile",
+      "auth_required": true
+    }
+  ],
+  "tech_preferences": {
+    "backend": "php",
+    "frontend": "html_js_css",
+    "css_framework": "custom",
+    "database": "mysql"
+  },
+  "deployment": {
+    "ssl": true,
+    "monitoring": true,
+    "backup": true
+  },
+  "complexity_estimate": "moderate",
+  "estimated_deployment_time_minutes": 45
+}

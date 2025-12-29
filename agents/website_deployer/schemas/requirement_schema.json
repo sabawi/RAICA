@@ -1,0 +1,293 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Website Requirement Specification",
+  "description": "Structured specification for website deployment",
+  "type": "object",
+  "required": ["project_name", "description", "features", "tech_preferences"],
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Name of the website/application",
+      "examples": ["TaskManager Pro", "E-Commerce Store"]
+    },
+    "description": {
+      "type": "string",
+      "description": "Brief description of the website purpose"
+    },
+    "features": {
+      "type": "object",
+      "description": "Core features required",
+      "properties": {
+        "authentication": {
+          "type": "object",
+          "description": "User authentication requirements",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "methods": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["email_password", "oauth_google", "oauth_github", "magic_link"]
+              },
+              "default": ["email_password"]
+            },
+            "email_verification": {"type": "boolean", "default": true},
+            "password_reset": {"type": "boolean", "default": true},
+            "two_factor": {"type": "boolean", "default": false}
+          }
+        },
+        "email_notifications": {
+          "type": "object",
+          "description": "Email notification requirements",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "smtp_required": {"type": "boolean", "default": false},
+            "notification_types": {
+              "type": "array",
+              "items": {"type": "string"},
+              "examples": [["welcome", "password_reset", "activity_alert"]]
+            }
+          }
+        },
+        "llm_chat": {
+          "type": "object",
+          "description": "LLM chat integration",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "provider": {
+              "type": "string",
+              "enum": ["openai", "anthropic", "custom"],
+              "default": "openai"
+            },
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["chat", "completion", "embedding", "function_calling"]
+              }
+            }
+          }
+        },
+        "background_workers": {
+          "type": "object",
+          "description": "Background task processing",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "queue_system": {
+              "type": "string",
+              "enum": ["celery", "rq", "arq"],
+              "default": "celery"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {"type": "string"},
+                  "description": {"type": "string"},
+                  "schedule": {
+                    "type": "string",
+                    "enum": ["periodic", "on_demand", "triggered"],
+                    "default": "on_demand"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "file_uploads": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "max_file_size_mb": {"type": "integer", "default": 10},
+            "allowed_types": {
+              "type": "array",
+              "items": {"type": "string"},
+              "examples": [["image/jpeg", "image/png", "application/pdf"]]
+            },
+            "storage": {
+              "type": "string",
+              "enum": ["local", "s3", "cloudinary"],
+              "default": "local"
+            }
+          }
+        },
+        "api": {
+          "type": "object",
+          "properties": {
+            "rest_api": {"type": "boolean", "default": true},
+            "graphql": {"type": "boolean", "default": false},
+            "websockets": {"type": "boolean", "default": false},
+            "rate_limiting": {"type": "boolean", "default": true}
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "description": "Database configuration and models",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["postgresql", "mysql", "sqlite"],
+          "default": "postgresql"
+        },
+        "models": {
+          "type": "array",
+          "description": "Database models/tables",
+          "items": {
+            "type": "object",
+            "required": ["name", "fields"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Model name (singular, PascalCase)",
+                "examples": ["User", "Product", "Order"]
+              },
+              "description": {
+                "type": "string",
+                "description": "What this model represents"
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "type"],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "string", "text", "integer", "float", "boolean",
+                        "datetime", "date", "time", "json", "uuid",
+                        "email", "url", "phone"
+                      ]
+                    },
+                    "required": {"type": "boolean", "default": false},
+                    "unique": {"type": "boolean", "default": false},
+                    "indexed": {"type": "boolean", "default": false},
+                    "default": {"type": ["string", "number", "boolean", "null"]},
+                    "max_length": {"type": "integer"},
+                    "min_value": {"type": "number"},
+                    "max_value": {"type": "number"}
+                  }
+                }
+              },
+              "relationships": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["one_to_many", "many_to_one", "many_to_many"]
+                    },
+                    "target_model": {"type": "string"},
+                    "description": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ui_pages": {
+      "type": "array",
+      "description": "Frontend pages/views",
+      "items": {
+        "type": "object",
+        "required": ["name", "route"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Page name",
+            "examples": ["Home", "Login", "Dashboard", "Profile"]
+          },
+          "route": {
+            "type": "string",
+            "description": "URL route",
+            "examples": ["/", "/login", "/dashboard", "/profile"]
+          },
+          "auth_required": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether authentication is required"
+          },
+          "description": {
+            "type": "string",
+            "description": "What this page does"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "examples": ["navbar", "sidebar", "form", "table", "chart"]
+            }
+          }
+        }
+      }
+    },
+    "tech_preferences": {
+      "type": "object",
+      "description": "Technology stack preferences",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["fastapi", "flask", "django"],
+          "default": "fastapi"
+        },
+        "frontend": {
+          "type": "string",
+          "enum": ["alpine_tailwind", "react", "vue", "htmx"],
+          "default": "alpine_tailwind"
+        },
+        "css_framework": {
+          "type": "string",
+          "enum": ["tailwind", "bootstrap", "bulma"],
+          "default": "tailwind"
+        },
+        "database": {
+          "type": "string",
+          "enum": ["postgresql", "mysql", "sqlite"],
+          "default": "postgresql"
+        }
+      }
+    },
+    "deployment": {
+      "type": "object",
+      "description": "Deployment configuration",
+      "properties": {
+        "domain": {
+          "type": "string",
+          "description": "Domain name (optional)",
+          "examples": ["example.com", "app.example.com"]
+        },
+        "ssl": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable HTTPS with Let's Encrypt"
+        },
+        "monitoring": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable basic monitoring"
+        },
+        "backup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automated backups"
+        }
+      }
+    },
+    "complexity_estimate": {
+      "type": "string",
+      "enum": ["simple", "moderate", "complex", "enterprise"],
+      "description": "Estimated project complexity"
+    },
+    "estimated_deployment_time_minutes": {
+      "type": "integer",
+      "description": "Estimated time to deploy (minutes)"
+    }
+  }
+}

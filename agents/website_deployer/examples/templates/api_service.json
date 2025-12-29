@@ -1,0 +1,255 @@
+{
+  "project_name": "api_gateway",
+  "description": "RESTful API service with authentication, rate limiting, webhooks, and comprehensive documentation",
+  "tech_stack": "python_fastapi",
+  "deployment": {
+    "domain": "api.myservice.com",
+    "ssl_enabled": true,
+    "port": 443
+  },
+  "database": {
+    "type": "postgresql",
+    "name": "api_gateway_db",
+    "user": "api_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "methods": ["jwt", "api_key"],
+      "token_expiry": "24h",
+      "refresh_tokens": true
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "default_limit": "100/hour",
+      "authenticated_limit": "1000/hour",
+      "burst_limit": 20,
+      "storage": "redis"
+    },
+    "api_documentation": {
+      "enabled": true,
+      "format": "openapi3",
+      "ui": "swagger",
+      "auto_generated": true
+    },
+    "webhooks": {
+      "enabled": true,
+      "retry_policy": "exponential_backoff",
+      "max_retries": 3,
+      "signature_validation": true
+    },
+    "logging": {
+      "enabled": true,
+      "format": "json",
+      "level": "info",
+      "request_logging": true,
+      "error_tracking": true
+    },
+    "caching": {
+      "enabled": true,
+      "backend": "redis",
+      "ttl": 3600
+    },
+    "cors": {
+      "enabled": true,
+      "allowed_origins": ["*"],
+      "allowed_methods": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+      "allowed_headers": ["*"]
+    },
+    "versioning": {
+      "enabled": true,
+      "strategy": "url_path",
+      "current_version": "v1"
+    }
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "description": "API users",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "email", "type": "string", "unique": true, "required": true},
+        {"name": "password_hash", "type": "string", "required": true},
+        {"name": "full_name", "type": "string"},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "is_admin", "type": "boolean", "default": false},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "has_many", "model": "ApiKey"},
+        {"type": "has_many", "model": "Webhook"}
+      ]
+    },
+    {
+      "name": "ApiKey",
+      "description": "API keys for authentication",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "key", "type": "string", "unique": true, "required": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "prefix", "type": "string"},
+        {"name": "scopes", "type": "json"},
+        {"name": "rate_limit", "type": "integer", "default": 1000},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "last_used_at", "type": "timestamp", "nullable": true},
+        {"name": "expires_at", "type": "timestamp", "nullable": true},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Resource",
+      "description": "Generic API resources",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "description", "type": "text"},
+        {"name": "data", "type": "json"},
+        {"name": "status", "type": "string", "default": "active"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"}
+      ]
+    },
+    {
+      "name": "Webhook",
+      "description": "Webhook configurations",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id"},
+        {"name": "url", "type": "string", "required": true},
+        {"name": "events", "type": "json", "required": true},
+        {"name": "secret", "type": "string", "required": true},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"},
+        {"type": "has_many", "model": "WebhookDelivery"}
+      ]
+    },
+    {
+      "name": "WebhookDelivery",
+      "description": "Webhook delivery attempts",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "webhook_id", "type": "uuid", "foreign_key": "webhooks.id"},
+        {"name": "event_type", "type": "string", "required": true},
+        {"name": "payload", "type": "json"},
+        {"name": "response_status", "type": "integer"},
+        {"name": "response_body", "type": "text"},
+        {"name": "attempt_count", "type": "integer", "default": 1},
+        {"name": "status", "type": "enum", "values": ["pending", "delivered", "failed"], "default": "pending"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "delivered_at", "type": "timestamp", "nullable": true}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Webhook"}
+      ]
+    },
+    {
+      "name": "RequestLog",
+      "description": "API request logs",
+      "fields": [
+        {"name": "id", "type": "uuid", "primary_key": true},
+        {"name": "user_id", "type": "uuid", "foreign_key": "users.id", "nullable": true},
+        {"name": "api_key_id", "type": "uuid", "foreign_key": "api_keys.id", "nullable": true},
+        {"name": "method", "type": "string", "required": true},
+        {"name": "path", "type": "string", "required": true},
+        {"name": "status_code", "type": "integer"},
+        {"name": "response_time_ms", "type": "integer"},
+        {"name": "ip_address", "type": "string"},
+        {"name": "user_agent", "type": "string"},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"},
+        {"type": "belongs_to", "model": "ApiKey"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {"path": "/api/v1/auth/register", "method": "POST", "description": "Register new user account"},
+    {"path": "/api/v1/auth/login", "method": "POST", "description": "Login with email/password, returns JWT"},
+    {"path": "/api/v1/auth/refresh", "method": "POST", "description": "Refresh JWT token"},
+    {"path": "/api/v1/auth/logout", "method": "POST", "description": "Invalidate token", "auth": true},
+    {"path": "/api/v1/keys", "method": "GET", "description": "List API keys", "auth": true},
+    {"path": "/api/v1/keys", "method": "POST", "description": "Create API key", "auth": true},
+    {"path": "/api/v1/keys/{id}", "method": "DELETE", "description": "Revoke API key", "auth": true},
+    {"path": "/api/v1/resources", "method": "GET", "description": "List resources", "auth": true, "rate_limit": "100/hour"},
+    {"path": "/api/v1/resources", "method": "POST", "description": "Create resource", "auth": true, "rate_limit": "50/hour"},
+    {"path": "/api/v1/resources/{id}", "method": "GET", "description": "Get resource details", "auth": true},
+    {"path": "/api/v1/resources/{id}", "method": "PUT", "description": "Update resource", "auth": true},
+    {"path": "/api/v1/resources/{id}", "method": "PATCH", "description": "Partial update resource", "auth": true},
+    {"path": "/api/v1/resources/{id}", "method": "DELETE", "description": "Delete resource", "auth": true},
+    {"path": "/api/v1/webhooks", "method": "GET", "description": "List webhooks", "auth": true},
+    {"path": "/api/v1/webhooks", "method": "POST", "description": "Create webhook", "auth": true},
+    {"path": "/api/v1/webhooks/{id}", "method": "PUT", "description": "Update webhook", "auth": true},
+    {"path": "/api/v1/webhooks/{id}", "method": "DELETE", "description": "Delete webhook", "auth": true},
+    {"path": "/api/v1/webhooks/{id}/deliveries", "method": "GET", "description": "List webhook deliveries", "auth": true},
+    {"path": "/api/v1/logs", "method": "GET", "description": "Get request logs", "auth": true},
+    {"path": "/api/v1/stats", "method": "GET", "description": "Get usage statistics", "auth": true},
+    {"path": "/health", "method": "GET", "description": "Health check endpoint", "auth": false},
+    {"path": "/docs", "method": "GET", "description": "API documentation (Swagger UI)", "auth": false},
+    {"path": "/openapi.json", "method": "GET", "description": "OpenAPI specification", "auth": false}
+  ],
+  "ui_pages": [
+    {"name": "API Documentation", "route": "/docs", "description": "Interactive API docs with Swagger UI"},
+    {"name": "Dashboard", "route": "/dashboard", "description": "API usage dashboard"},
+    {"name": "API Keys", "route": "/keys", "description": "Manage API keys"},
+    {"name": "Webhooks", "route": "/webhooks", "description": "Manage webhooks"},
+    {"name": "Logs", "route": "/logs", "description": "View request logs"},
+    {"name": "Settings", "route": "/settings", "description": "Account settings"}
+  ],
+  "background_workers": [
+    {
+      "name": "deliver_webhook",
+      "description": "Deliver webhook payloads to configured URLs",
+      "trigger": "on_event",
+      "priority": "high"
+    },
+    {
+      "name": "retry_failed_webhooks",
+      "description": "Retry failed webhook deliveries with exponential backoff",
+      "trigger": "scheduled",
+      "schedule": "*/5 * * * *",
+      "priority": "medium"
+    },
+    {
+      "name": "cleanup_old_logs",
+      "description": "Archive or delete old request logs",
+      "trigger": "scheduled",
+      "schedule": "0 2 * * *",
+      "priority": "low"
+    },
+    {
+      "name": "usage_report",
+      "description": "Generate daily usage reports",
+      "trigger": "scheduled",
+      "schedule": "0 1 * * *",
+      "priority": "low"
+    }
+  ],
+  "email_configuration": {
+    "provider": "smtp",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "from_address": "noreply@myservice.com",
+    "from_name": "API Gateway"
+  },
+  "testing": {
+    "unit_tests": true,
+    "integration_tests": true,
+    "api_tests": true,
+    "load_tests": true
+  },
+  "deployment_time_estimate": "5-7 minutes"
+}

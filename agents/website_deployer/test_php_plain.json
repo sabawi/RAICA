@@ -1,0 +1,14 @@
+{
+  "specification": "Create a simple company website for \"TechFish Solutions\" that provides both IT consulting services and sells fishing equipment.\n\nThe website should include:\n\n1. Homepage with:\n   - Hero section with company tagline\n   - Featured services/products\n   - Call to action\n\n2. Services page with IT consulting offerings\n3. Products page with fishing equipment\n4. Contact page with contact form\n\nUse HTML, CSS, JavaScript for frontend.\nUse PHP for backend with SQLite database.\nUse Apache2 as the web server.\nNo external dependencies or frameworks.",
+  "deployment_config": {
+    "domain": "techfish-solutions.com",
+    "port": 5095,
+    "use_ssl": false,
+    "web_server": "apache2",
+    "deploy_path": "/var/www/techfish_solutions"
+  },
+  "ssh_auth": {
+    "method": "password",
+    "password": "Down2earth!"
+  }
+}

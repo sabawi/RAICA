@@ -1,0 +1,21 @@
+{
+  "specification": "Create a stunning, interactive, and responsive website for \"SecureFish Technologies\" that demonstrates all advanced web development features.\n\nThe website should include:\n\n1. Modern UI/UX Design:\n   - Stunning responsive design with mobile-first approach\n   - Interactive elements with smooth animations\n   - Modern color scheme and typography\n   - Professional layout with hero sections\n   - Interactive navigation and menus\n\n2. User Management System:\n   - Complete user registration with email verification\n   - Secure login/logout functionality\n   - Password reset with email confirmation\n   - User profile management\n   - Account settings and preferences\n   - Session management with timeout\n   - Remember me functionality\n\n3. Database Operations:\n   - MySQL database integration\n   - User data storage with proper relationships\n   - Product/service catalog management\n   - Order processing system\n   - Data validation and sanitization\n   - Secure database connections\n\n4. Security Features:\n   - HTTPS/SSL encryption\n   - CSRF protection\n   - SQL injection prevention\n   - XSS protection\n   - Secure password hashing\n   - Session security with regeneration\n   - Input validation and sanitization\n   - Security headers\n\n5. Communication Features:\n   - Contact form with email notifications\n   - User-to-user messaging system\n   - Email verification for registration\n   - Password reset emails\n   - Newsletter subscription\n\n6. Core Functionality:\n   - Product/service catalog with search and filtering\n   - Shopping cart functionality\n   - Order processing and tracking\n   - Payment integration ready\n   - Admin dashboard\n   - Content management system\n   - Analytics integration ready\n\n7. Technical Requirements:\n   - Use PHP for backend (plain PHP, no frameworks)\n   - Use MySQL as the database\n   - Use Apache2 as the web server\n   - Responsive HTML/CSS/JavaScript frontend\n   - Modern JavaScript with interactive features\n   - AJAX for dynamic content loading\n   - RESTful API endpoints\n   - Proper cookie handling\n   - Session-based authentication\n   - Email integration\n\nThis should be a production-ready, enterprise-level website demonstrating all modern web development best practices.",
+  "deployment_config": {
+    "domain": "securefish-tech.com",
+    "port": 6010,
+    "use_ssl": true,
+    "web_server": "apache2",
+    "deploy_path": "/var/www/securefish_tech",
+    "database": {
+      "type": "mysql",
+      "host": "localhost",
+      "name": "securefish_tech_db",
+      "user": "webuser",
+      "password": "webuser"
+    }
+  },
+  "ssh_auth": {
+    "method": "password",
+    "password": "Down2earth!"
+  }
+}

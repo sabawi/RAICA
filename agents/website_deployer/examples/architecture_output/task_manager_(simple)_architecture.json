@@ -1,0 +1,1035 @@
+{
+  "project_name": "Task Management App",
+  "api_endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/auth/register",
+      "handler_name": "register_user",
+      "description": "Register a new user account",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true,
+            "description": "User's email address"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": true,
+            "description": "User's password"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 201,
+        "example": {
+          "id": 1,
+          "email": "user@example.com",
+          "is_active": true,
+          "is_verified": false
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "handler_name": "login_user",
+      "description": "Authenticate user and return JWT tokens",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true,
+            "description": "User's email address"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": true,
+            "description": "User's password"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "access_token": "eyJhbGciOiJIUzI1Ni...",
+          "refresh_token": "eyJhbGciOiJIUzI1Ni...",
+          "token_type": "bearer"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "handler_name": "logout_user",
+      "description": "Invalidate current access token",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Successfully logged out"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/refresh",
+      "handler_name": "refresh_token",
+      "description": "Refresh access token using refresh token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "refresh_token",
+            "type": "string",
+            "required": true,
+            "description": "Valid refresh token"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "access_token": "eyJhbGciOiJIUzI1Ni...",
+          "token_type": "bearer"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/verify-email",
+      "handler_name": "verify_email",
+      "description": "Verify user's email address with a token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "token",
+            "type": "string",
+            "required": true,
+            "description": "Email verification token"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Email successfully verified"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/forgot-password",
+      "handler_name": "forgot_password",
+      "description": "Request a password reset link for the given email",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true,
+            "description": "User's email address"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Password reset link sent to your email"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/reset-password",
+      "handler_name": "reset_password",
+      "description": "Reset user's password using a token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "token",
+            "type": "string",
+            "required": true,
+            "description": "Password reset token"
+          },
+          {
+            "name": "new_password",
+            "type": "string",
+            "required": true,
+            "description": "New password for the user"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Password successfully reset"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/me",
+      "handler_name": "get_current_user",
+      "description": "Get details of the authenticated user",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "email": "user@example.com",
+          "is_active": true,
+          "is_verified": true
+        }
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/me",
+      "handler_name": "update_current_user",
+      "description": "Update details of the authenticated user",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": false,
+            "description": "New email address"
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": false,
+            "description": "New password"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "email": "new_email@example.com",
+          "is_active": true,
+          "is_verified": true
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects",
+      "handler_name": "list_projects",
+      "description": "List all projects for the authenticated user",
+      "auth_required": true,
+      "query_parameters": [
+        {
+          "name": "page",
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination (default: 1)"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "Number of items per page (default: 10)"
+        },
+        {
+          "name": "search",
+          "type": "string",
+          "required": false,
+          "description": "Search term for project names or descriptions"
+        }
+      ],
+      "response": {
+        "status_code": 200,
+        "example": {
+          "projects": [
+            {
+              "id": 1,
+              "name": "Work Project",
+              "description": "Tasks related to work",
+              "user_id": 1
+            }
+          ],
+          "total": 1,
+          "page": 1,
+          "limit": 10
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects/{project_id}",
+      "handler_name": "get_project",
+      "description": "Get a specific project by ID for the authenticated user",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "name": "Work Project",
+          "description": "Tasks related to work",
+          "user_id": 1
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/projects",
+      "handler_name": "create_project",
+      "description": "Create a new project for the authenticated user",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": true,
+            "description": "Name of the project"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Description of the project"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 201,
+        "example": {
+          "id": 2,
+          "name": "New Project",
+          "description": "A newly created project",
+          "user_id": 1
+        }
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/projects/{project_id}",
+      "handler_name": "update_project",
+      "description": "Update an existing project for the authenticated user",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": false,
+            "description": "Updated name of the project"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Updated description of the project"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "name": "Updated Work Project",
+          "description": "Tasks related to work (updated)",
+          "user_id": 1
+        }
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/projects/{project_id}",
+      "handler_name": "delete_project",
+      "description": "Delete a project for the authenticated user",
+      "auth_required": true,
+      "response": {
+        "status_code": 204,
+        "example": null
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks",
+      "handler_name": "list_tasks",
+      "description": "List all tasks for the authenticated user",
+      "auth_required": true,
+      "query_parameters": [
+        {
+          "name": "page",
+          "type": "integer",
+          "required": false,
+          "description": "Page number for pagination (default: 1)"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "Number of items per page (default: 10)"
+        },
+        {
+          "name": "project_id",
+          "type": "integer",
+          "required": false,
+          "description": "Filter tasks by project ID"
+        },
+        {
+          "name": "priority",
+          "type": "string",
+          "required": false,
+          "description": "Filter tasks by priority (low, medium, high)"
+        },
+        {
+          "name": "is_complete",
+          "type": "boolean",
+          "required": false,
+          "description": "Filter tasks by completion status"
+        },
+        {
+          "name": "due_date_before",
+          "type": "date",
+          "required": false,
+          "description": "Filter tasks due before a specific date (YYYY-MM-DD)"
+        },
+        {
+          "name": "due_date_after",
+          "type": "date",
+          "required": false,
+          "description": "Filter tasks due after a specific date (YYYY-MM-DD)"
+        },
+        {
+          "name": "search",
+          "type": "string",
+          "required": false,
+          "description": "Search term for task titles or descriptions"
+        }
+      ],
+      "response": {
+        "status_code": 200,
+        "example": {
+          "tasks": [
+            {
+              "id": 1,
+              "title": "Finish architecture design",
+              "description": "Complete the architecture document",
+              "due_date": "2023-12-31",
+              "priority": "high",
+              "is_complete": false,
+              "user_id": 1,
+              "project_id": 1
+            }
+          ],
+          "total": 1,
+          "page": 1,
+          "limit": 10
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}",
+      "handler_name": "get_task",
+      "description": "Get a specific task by ID for the authenticated user",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "title": "Finish architecture design",
+          "description": "Complete the architecture document",
+          "due_date": "2023-12-31",
+          "priority": "high",
+          "is_complete": false,
+          "user_id": 1,
+          "project_id": 1
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks",
+      "handler_name": "create_task",
+      "description": "Create a new task for the authenticated user",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "title",
+            "type": "string",
+            "required": true,
+            "description": "Title of the task"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Description of the task"
+          },
+          {
+            "name": "due_date",
+            "type": "date",
+            "required": false,
+            "description": "Due date of the task (YYYY-MM-DD)"
+          },
+          {
+            "name": "priority",
+            "type": "string",
+            "required": true,
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "Priority of the task"
+          },
+          {
+            "name": "project_id",
+            "type": "integer",
+            "required": false,
+            "description": "ID of the project this task belongs to"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 201,
+        "example": {
+          "id": 2,
+          "title": "New Task",
+          "description": null,
+          "due_date": null,
+          "priority": "medium",
+          "is_complete": false,
+          "user_id": 1,
+          "project_id": null
+        }
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tasks/{task_id}",
+      "handler_name": "update_task",
+      "description": "Update an existing task for the authenticated user",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "title",
+            "type": "string",
+            "required": false,
+            "description": "Updated title of the task"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "required": false,
+            "description": "Updated description of the task"
+          },
+          {
+            "name": "due_date",
+            "type": "date",
+            "required": false,
+            "description": "Updated due date of the task (YYYY-MM-DD)"
+          },
+          {
+            "name": "priority",
+            "type": "string",
+            "required": false,
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "description": "Updated priority of the task"
+          },
+          {
+            "name": "is_complete",
+            "type": "boolean",
+            "required": false,
+            "description": "Updated completion status of the task"
+          },
+          {
+            "name": "project_id",
+            "type": "integer",
+            "required": false,
+            "description": "Updated project ID for the task"
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "title": "Finish architecture design (updated)",
+          "description": "Complete the architecture document (updated)",
+          "due_date": "2024-01-15",
+          "priority": "medium",
+          "is_complete": true,
+          "user_id": 1,
+          "project_id": 1
+        }
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/tasks/{task_id}",
+      "handler_name": "delete_task",
+      "description": "Delete a task for the authenticated user",
+      "auth_required": true,
+      "response": {
+        "status_code": 204,
+        "example": null
+      }
+    }
+  ],
+  "database_schema": {
+    "database_type": "postgresql",
+    "tables": [
+      {
+        "name": "users",
+        "description": "Application user accounts",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true,
+            "nullable": false
+          },
+          {
+            "name": "email",
+            "type": "String",
+            "max_length": 255,
+            "unique": true,
+            "indexed": true,
+            "nullable": false
+          },
+          {
+            "name": "password_hash",
+            "type": "String",
+            "max_length": 255,
+            "nullable": false
+          },
+          {
+            "name": "is_active",
+            "type": "Boolean",
+            "default": true,
+            "nullable": false
+          },
+          {
+            "name": "is_verified",
+            "type": "Boolean",
+            "default": false,
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()"
+          },
+          {
+            "name": "updated_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()",
+            "onupdate": "func.now()"
+          }
+        ]
+      },
+      {
+        "name": "projects",
+        "description": "Collections of tasks created by users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true,
+            "nullable": false
+          },
+          {
+            "name": "name",
+            "type": "String",
+            "max_length": 255,
+            "nullable": false
+          },
+          {
+            "name": "description",
+            "type": "Text",
+            "nullable": true
+          },
+          {
+            "name": "user_id",
+            "type": "Integer",
+            "nullable": false,
+            "foreign_key": {
+              "references": "users.id",
+              "ondelete": "CASCADE"
+            },
+            "indexed": true
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()"
+          },
+          {
+            "name": "updated_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()",
+            "onupdate": "func.now()"
+          }
+        ]
+      },
+      {
+        "name": "tasks",
+        "description": "Individual task items for users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true,
+            "nullable": false
+          },
+          {
+            "name": "title",
+            "type": "String",
+            "max_length": 255,
+            "nullable": false
+          },
+          {
+            "name": "description",
+            "type": "Text",
+            "nullable": true
+          },
+          {
+            "name": "due_date",
+            "type": "Date",
+            "nullable": true
+          },
+          {
+            "name": "priority",
+            "type": "String",
+            "max_length": 50,
+            "nullable": false,
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          {
+            "name": "is_complete",
+            "type": "Boolean",
+            "default": false,
+            "nullable": false
+          },
+          {
+            "name": "user_id",
+            "type": "Integer",
+            "nullable": false,
+            "foreign_key": {
+              "references": "users.id",
+              "ondelete": "CASCADE"
+            },
+            "indexed": true
+          },
+          {
+            "name": "project_id",
+            "type": "Integer",
+            "nullable": true,
+            "foreign_key": {
+              "references": "projects.id",
+              "ondelete": "SET NULL"
+            },
+            "indexed": true
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()"
+          },
+          {
+            "name": "updated_at",
+            "type": "DateTime",
+            "nullable": false,
+            "default": "func.now()",
+            "onupdate": "func.now()"
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "model": "User",
+        "relationship_name": "projects",
+        "target_model": "Project",
+        "relationship_type": "one_to_many",
+        "back_populates": "user",
+        "cascade": "all, delete-orphan"
+      },
+      {
+        "model": "User",
+        "relationship_name": "tasks",
+        "target_model": "Task",
+        "relationship_type": "one_to_many",
+        "back_populates": "user",
+        "cascade": "all, delete-orphan"
+      },
+      {
+        "model": "Project",
+        "relationship_name": "user",
+        "target_model": "User",
+        "relationship_type": "many_to_one",
+        "back_populates": "projects"
+      },
+      {
+        "model": "Project",
+        "relationship_name": "tasks",
+        "target_model": "Task",
+        "relationship_type": "one_to_many",
+        "back_populates": "project",
+        "cascade": "all, delete-orphan"
+      },
+      {
+        "model": "Task",
+        "relationship_name": "user",
+        "target_model": "User",
+        "relationship_type": "many_to_one",
+        "back_populates": "tasks"
+      },
+      {
+        "model": "Task",
+        "relationship_name": "project",
+        "target_model": "Project",
+        "relationship_type": "many_to_one",
+        "back_populates": "tasks"
+      }
+    ]
+  },
+  "workers": [],
+  "security": {
+    "authentication": {
+      "method": "jwt",
+      "jwt_config": {
+        "algorithm": "HS256",
+        "access_token_expire_minutes": 30,
+        "refresh_token_expire_days": 7
+      },
+      "password_hashing": {
+        "algorithm": "bcrypt",
+        "rounds": 12
+      }
+    },
+    "cors": {
+      "allow_origins": [
+        "http://localhost:8000",
+        "http://localhost:3000",
+        "https://yourdomain.com"
+      ],
+      "allow_credentials": true,
+      "allow_methods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE",
+        "OPTIONS"
+      ],
+      "allow_headers": [
+        "Content-Type",
+        "Authorization"
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "requests_per_minute": 60,
+      "burst_size": 10
+    },
+    "input_validation": {
+      "html_sanitization": true,
+      "max_request_size_mb": 10
+    }
+  },
+  "infrastructure": {
+    "web_server": "nginx",
+    "app_server": "uvicorn",
+    "workers_per_instance": 4,
+    "database": "postgresql",
+    "redis": {
+      "enabled": true,
+      "use_cases": [
+        "caching",
+        "jwt_blacklist"
+      ]
+    },
+    "ssl": {
+      "enabled": true,
+      "provider": "letsencrypt"
+    },
+    "monitoring": {
+      "enabled": true,
+      "components": [
+        "systemd_logs",
+        "nginx_logs",
+        "application_logs"
+      ]
+    }
+  },
+  "frontend": {
+    "framework": "alpine_tailwind",
+    "pages": [
+      {
+        "name": "Home",
+        "route": "/",
+        "template_file": "index.html",
+        "components": [
+          "navbar",
+          "hero_section"
+        ],
+        "api_dependencies": []
+      },
+      {
+        "name": "Login",
+        "route": "/login",
+        "template_file": "auth/login.html",
+        "components": [
+          "navbar",
+          "login_form"
+        ],
+        "api_dependencies": [
+          "POST /api/auth/login"
+        ]
+      },
+      {
+        "name": "Register",
+        "route": "/register",
+        "template_file": "auth/register.html",
+        "components": [
+          "navbar",
+          "register_form"
+        ],
+        "api_dependencies": [
+          "POST /api/auth/register"
+        ]
+      },
+      {
+        "name": "Dashboard",
+        "route": "/dashboard",
+        "template_file": "dashboard.html",
+        "components": [
+          "navbar",
+          "task_summary_widget",
+          "project_summary_widget"
+        ],
+        "api_dependencies": [
+          "GET /api/tasks?is_complete=false&limit=5",
+          "GET /api/projects?limit=5"
+        ]
+      },
+      {
+        "name": "Task List",
+        "route": "/tasks",
+        "template_file": "tasks/list.html",
+        "components": [
+          "navbar",
+          "task_table",
+          "task_filters",
+          "pagination"
+        ],
+        "api_dependencies": [
+          "GET /api/tasks"
+        ]
+      },
+      {
+        "name": "Create Task",
+        "route": "/tasks/new",
+        "template_file": "tasks/create.html",
+        "components": [
+          "navbar",
+          "task_form"
+        ],
+        "api_dependencies": [
+          "POST /api/tasks",
+          "GET /api/projects"
+        ]
+      },
+      {
+        "name": "Edit Task",
+        "route": "/tasks/{id}/edit",
+        "template_file": "tasks/edit.html",
+        "components": [
+          "navbar",
+          "task_form"
+        ],
+        "api_dependencies": [
+          "GET /api/tasks/{task_id}",
+          "PUT /api/tasks/{task_id}",
+          "GET /api/projects"
+        ]
+      },
+      {
+        "name": "Project List",
+        "route": "/projects",
+        "template_file": "projects/list.html",
+        "components": [
+          "navbar",
+          "project_table",
+          "project_filters",
+          "pagination"
+        ],
+        "api_dependencies": [
+          "GET /api/projects"
+        ]
+      },
+      {
+        "name": "Create Project",
+        "route": "/projects/new",
+        "template_file": "projects/create.html",
+        "components": [
+          "navbar",
+          "project_form"
+        ],
+        "api_dependencies": [
+          "POST /api/projects"
+        ]
+      },
+      {
+        "name": "Edit Project",
+        "route": "/projects/{id}/edit",
+        "template_file": "projects/edit.html",
+        "components": [
+          "navbar",
+          "project_form"
+        ],
+        "api_dependencies": [
+          "GET /api/projects/{project_id}",
+          "PUT /api/projects/{project_id}"
+        ]
+      },
+      {
+        "name": "User Profile",
+        "route": "/profile",
+        "template_file": "user/profile.html",
+        "components": [
+          "navbar",
+          "profile_form"
+        ],
+        "api_dependencies": [
+          "GET /api/users/me",
+          "PUT /api/users/me"
+        ]
+      }
+    ]
+  }
+}

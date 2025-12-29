@@ -1,0 +1,241 @@
+{
+  "project_name": "Task Management App",
+  "description": "A web application for users to manage their tasks, organize them into projects, and track their completion status.",
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "methods": [
+        "email_password"
+      ],
+      "email_verification": true,
+      "password_reset": true,
+      "two_factor": false
+    },
+    "email_notifications": {
+      "enabled": true
+    },
+    "llm_chat": {
+      "enabled": false
+    },
+    "background_workers": {
+      "enabled": false
+    },
+    "file_uploads": {
+      "enabled": false
+    },
+    "api": {
+      "rest_api": true,
+      "graphql": false,
+      "websockets": false,
+      "rate_limiting": true
+    }
+  },
+  "database": {
+    "type": "postgresql",
+    "models": [
+      {
+        "name": "User",
+        "description": "Application user",
+        "fields": [
+          {
+            "name": "email",
+            "type": "email",
+            "required": true,
+            "unique": true
+          },
+          {
+            "name": "password_hash",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "is_active",
+            "type": "boolean",
+            "required": true,
+            "default": true
+          },
+          {
+            "name": "is_verified",
+            "type": "boolean",
+            "required": true,
+            "default": false
+          }
+        ],
+        "relationships": [
+          {
+            "type": "has_many",
+            "target_model": "Project",
+            "foreign_key": "user_id"
+          },
+          {
+            "type": "has_many",
+            "target_model": "Task",
+            "foreign_key": "user_id"
+          }
+        ]
+      },
+      {
+        "name": "Project",
+        "description": "A collection of tasks",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "description",
+            "type": "text",
+            "required": false
+          },
+          {
+            "name": "user_id",
+            "type": "integer",
+            "required": true
+          }
+        ],
+        "relationships": [
+          {
+            "type": "belongs_to",
+            "target_model": "User",
+            "foreign_key": "user_id"
+          },
+          {
+            "type": "has_many",
+            "target_model": "Task",
+            "foreign_key": "project_id"
+          }
+        ]
+      },
+      {
+        "name": "Task",
+        "description": "An individual task item",
+        "fields": [
+          {
+            "name": "title",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "description",
+            "type": "text",
+            "required": false
+          },
+          {
+            "name": "due_date",
+            "type": "date",
+            "required": false
+          },
+          {
+            "name": "priority",
+            "type": "string",
+            "required": true,
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          {
+            "name": "is_complete",
+            "type": "boolean",
+            "required": true,
+            "default": false
+          },
+          {
+            "name": "user_id",
+            "type": "integer",
+            "required": true
+          },
+          {
+            "name": "project_id",
+            "type": "integer",
+            "required": false
+          }
+        ],
+        "relationships": [
+          {
+            "type": "belongs_to",
+            "target_model": "User",
+            "foreign_key": "user_id"
+          },
+          {
+            "type": "belongs_to",
+            "target_model": "Project",
+            "foreign_key": "project_id"
+          }
+        ]
+      }
+    ]
+  },
+  "ui_pages": [
+    {
+      "name": "Home",
+      "route": "/",
+      "auth_required": false
+    },
+    {
+      "name": "Login",
+      "route": "/login",
+      "auth_required": false
+    },
+    {
+      "name": "Register",
+      "route": "/register",
+      "auth_required": false
+    },
+    {
+      "name": "Dashboard",
+      "route": "/dashboard",
+      "auth_required": true
+    },
+    {
+      "name": "Task List",
+      "route": "/tasks",
+      "auth_required": true
+    },
+    {
+      "name": "Create Task",
+      "route": "/tasks/new",
+      "auth_required": true
+    },
+    {
+      "name": "Edit Task",
+      "route": "/tasks/{id}/edit",
+      "auth_required": true
+    },
+    {
+      "name": "Project List",
+      "route": "/projects",
+      "auth_required": true
+    },
+    {
+      "name": "Create Project",
+      "route": "/projects/new",
+      "auth_required": true
+    },
+    {
+      "name": "Edit Project",
+      "route": "/projects/{id}/edit",
+      "auth_required": true
+    },
+    {
+      "name": "User Profile",
+      "route": "/profile",
+      "auth_required": true
+    }
+  ],
+  "tech_preferences": {
+    "backend": "fastapi",
+    "frontend": "alpine_tailwind",
+    "css_framework": "tailwind",
+    "database": "postgresql"
+  },
+  "deployment": {
+    "ssl": true,
+    "monitoring": true,
+    "backup": true
+  },
+  "complexity_estimate": "moderate",
+  "estimated_deployment_time_minutes": 30
+}

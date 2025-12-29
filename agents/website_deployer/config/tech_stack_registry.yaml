@@ -1,0 +1,184 @@
+tech_stacks:
+  python_fastapi:
+    backend_language: python
+    backend_framework: fastapi
+    file_extension: .py
+    entry_point: app/main.py
+    paths:
+      models: app/models
+      controllers: app/api/endpoints
+      schemas: app/schemas
+      crud: app/crud
+      services: app/services
+      core: app/core
+      config: app/core
+      workers: app/workers
+      static: app/static
+      templates: app/templates
+      tests: tests
+      migrations: alembic
+    directory_structure:
+      - app/api/endpoints
+      - app/models
+      - app/schemas
+      - app/crud
+      - app/core
+      - app/workers
+      - app/static/js
+      - app/static/css
+      - app/templates
+      - tests
+      - alembic
+      - scripts
+    dependency_manager: pip
+    dependency_file: requirements.txt
+    orm: sqlalchemy
+    validation: pydantic
+    server: uvicorn
+    migration_tool: alembic
+
+  php_laravel:
+    backend_language: php
+    backend_framework: laravel
+    file_extension: .php
+    entry_point: public/index.php
+    paths:
+      models: app/Models
+      controllers: app/Http/Controllers
+      schemas: app/Http/Requests
+      crud: app/Services
+      services: app/Services
+      core: config
+      config: config
+      workers: app/Jobs
+      static: public
+      templates: resources/views
+      tests: tests
+      migrations: database/migrations
+    directory_structure:
+      - app/Http/Controllers
+      - app/Models
+      - app/Http/Requests
+      - app/Services
+      - app/Jobs
+      - database/migrations
+      - routes
+      - resources/views
+      - resources/js
+      - resources/css
+      - public/js
+      - public/css
+      - config
+      - tests
+    dependency_manager: composer
+    dependency_file: composer.json
+    orm: eloquent
+    validation: form_requests
+    server: apache2
+    migration_tool: artisan
+
+  nodejs_express:
+    backend_language: nodejs
+    backend_framework: express
+    file_extension: .js
+    entry_point: server.js
+    paths:
+      models: models
+      controllers: controllers
+      schemas: validators
+      crud: services
+      services: services
+      core: config
+      config: config
+      workers: jobs
+      static: public
+      templates: views
+      tests: tests
+      migrations: migrations
+    directory_structure:
+      - routes
+      - models
+      - controllers
+      - validators
+      - services
+      - config
+      - jobs
+      - public/js
+      - public/css
+      - views
+      - tests
+      - migrations
+    dependency_manager: npm
+    dependency_file: package.json
+    orm: sequelize
+    validation: express_validator
+    server: nodejs
+    migration_tool: sequelize_cli
+
+  php_apache:
+    backend_language: php
+    backend_framework: apache
+    file_extension: .php
+    entry_point: index.php
+    paths:
+      models: app/models
+      controllers: app/controllers
+      schemas: app/schemas
+      crud: app/services
+      services: app/services
+      core: config
+      config: config
+      workers: app/jobs
+      static: public
+      templates: templates
+      tests: tests
+      migrations: migrations
+    directory_structure:
+      - app/controllers
+      - app/models
+      - app/schemas
+      - app/services
+      - templates
+      - public/js
+      - public/css
+      - config
+    dependency_manager: composer
+    dependency_file: composer.json
+    orm: pdo
+    validation: native
+    server: apache2
+    migration_tool: none
+
+  php_plain:
+    backend_language: php
+    backend_framework: plain
+    file_extension: .php
+    entry_point: index.php
+    paths:
+      models: app/models
+      controllers: app/controllers
+      schemas: app/schemas
+      crud: app/services
+      services: app/services
+      core: config
+      config: config
+      workers: app/jobs
+      static: public
+      templates: templates
+      tests: tests
+      migrations: migrations
+    directory_structure:
+      - app/controllers
+      - app/models
+      - app/schemas
+      - app/services
+      - templates
+      - public/js
+      - public/css
+      - config
+    dependency_manager: none
+    dependency_file: none
+    orm: pdo
+    validation: native
+    server: apache2
+    migration_tool: none

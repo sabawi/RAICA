@@ -1,0 +1,9 @@
+{
+  "specification": "Build a RAICA (RAG AI Context Agency) where users interact with a ChatGPT-like interface that serves as a frontend to ~/Development/flaskserver and OpenAI API LLMs.\n\nThe interface has three panes:\n- Left sidebar: Settings icon, conversation history list, and user profile at bottom\n- Middle pane: Chat window with streaming responses, file upload button, copy/regenerate/save buttons for each response\n- Right sidebar: Agent list with interactive forms for each agent\n- Bottom status bar: Shows agent execution status with stop/cancel controls\n\nUsers can:\n- Register and log in with email/password\n- Chat with LLM models with streaming responses\n- Upload files and download generated content\n- Run specialized agents from the right sidebar\n- Track conversation history and switch between conversations\n- Manage settings and user profile\n- Monitor agent execution in real-time\n\nThe system manages: posts, streamed responses, prompts, conversation history, agent outputs.\n\nSpecial requirements: Email notifications for agent completion, file uploads and downloads for chat attachments and agent outputs.\n\nUI Style: User friendly, responsive, and pretty interface with modern design patterns.",
+  "deployment_config": {
+    "web_server": "apache2",
+    "port": 5080,
+    "use_ssl": true,
+    "deploy_path": "/var/www/raica"
+  }
+}

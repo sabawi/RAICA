@@ -1,0 +1,609 @@
+model_prompt:
+  python_fastapi: |
+    Generate a COMPLETE, PRODUCTION-READY SQLAlchemy model for: {model_name}
+
+    CRITICAL REQUIREMENTS:
+    1. Generate the ENTIRE model class with ALL fields specified below
+    2. Include ALL necessary imports at the top of the file
+    3. Use proper SQLAlchemy Column types with appropriate constraints
+    4. Add indexes for frequently queried fields (foreign keys, unique fields)
+    5. Include comprehensive docstrings explaining the model's purpose
+    6. Use UUID primary keys for security (unless specified otherwise)
+    7. Add created_at and updated_at timestamp fields automatically
+    8. Define proper table name using __tablename__
+
+    REQUIRED FIELDS FOR THIS MODEL:
+    {fields}
+
+    RELATIONSHIPS TO IMPLEMENT:
+    {relationships}
+
+    STRUCTURAL EXAMPLE (adapt this pattern for your specific model):
+    ```python
+    from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+    from sqlalchemy.dialects.postgresql import UUID
+    from sqlalchemy.orm import relationship
+    from datetime import datetime
+    import uuid
+    from app.core.database import Base
+
+    class ExampleModel(Base):
+        '''
+        Example model showing the expected structure.
+        Adapt this pattern with the actual fields and relationships specified above.
+        '''
+        __tablename__ = "example_table"
+
+        # Primary key
+        id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+        # Your actual fields go here (use the fields specified above)
+        name = Column(String(255), nullable=False, index=True)
+        email = Column(String(255), unique=True, nullable=False, index=True)
+        is_active = Column(Boolean, default=True, nullable=False)
+
+        # Timestamps
+        created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+        updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+        # Relationships (if any)
+        # items = relationship("Item", back_populates="owner")
+    ```
+
+    IMPORTANT: This is just a structural example. Generate the ACTUAL model with:
+    - The correct model name: {model_name}
+    - ALL the fields listed above (not the example fields)
+    - ALL the relationships listed above
+    - Appropriate SQLAlchemy column types matching the field types
+    - Proper foreign key constraints for relationships
+
+    DO NOT include placeholder comments like "# Add more fields" or "# TODO".
+    Generate the COMPLETE, WORKING model code now.
+
+  php_laravel: |
+    Generate Eloquent model: {model_name}
+
+    Include:
+    - Namespace App\Models
+    - Proper table name definition
+    - Fillable properties
+    - Relationship methods (hasMany, belongsTo, etc.)
+    - Casts for attributes
+    - Fields: {fields}
+    - Relationships: {relationships}
+
+  nodejs_express: |
+    Generate Sequelize model: {model_name}
+
+    Include:
+    - Define model using sequelize.define
+    - Proper data types
+    - Association definitions
+    - Fields: {fields}
+    - Relationships: {relationships}
+
+api_endpoint_prompt:
+  python_fastapi: |
+    Generate FastAPI router endpoints for {group_name}.
+
+    Requirements:
+    - Use FastAPI router
+    - Include authentication dependencies if auth_required
+    - Proper error handling with HTTPException
+    - Async/await for I/O operations
+    - Endpoints: {endpoints}
+
+  php_laravel: |
+    Generate Laravel Controller for {group_name}.
+
+    Requirements:
+    - Extend Controller class
+    - Use Request objects for validation
+    - Return JSON responses
+    - Proper error handling
+    - Methods: {endpoints}
+
+  nodejs_express: |
+    Generate Express Router for {group_name}.
+
+    Requirements:
+    - Use express.Router()
+    - Async/await for database operations
+    - Proper error handling with try/catch
+    - Middleware for authentication
+    - Routes: {endpoints}
+
+schema_prompt:
+  python_fastapi: |
+    Generate Pydantic schemas for {group_name}.
+
+    Requirements:
+    - Use Pydantic BaseModel
+    - Include field validators
+    - Add docstrings with examples
+    - Use appropriate types (EmailStr, HttpUrl, etc.)
+
+  php_laravel: |
+    Generate Laravel Form Request classes for {group_name}.
+
+    Requirements:
+    - Extend FormRequest
+    - Define rules() method
+    - Define messages() method for custom errors
+
+  nodejs_express: |
+    Generate Joi or Express-Validator schemas for {group_name}.
+
+    Requirements:
+    - Define validation schemas
+    - Middleware to validate request body/query
+
+crud_prompt:
+  python_fastapi: |
+    Generate COMPLETE, PRODUCTION-READY CRUD operations for {model_name} model.
+
+    CRITICAL REQUIREMENTS:
+    1. Generate ALL 5 CRUD functions with full implementations
+    2. Include ALL necessary imports (Session, Optional, List, UUID, etc.)
+    3. Use proper type hints for all parameters and return values
+    4. Add comprehensive docstrings with Args, Returns, and Raises sections
+    5. Include proper error handling for database operations
+    6. Handle not found cases appropriately
+    7. Use proper session management (commit, rollback, refresh)
+
+    REQUIRED FUNCTIONS TO IMPLEMENT:
+    - create_{model_name_lower}(db: Session, obj_in: schema) -> {model_name}
+    - get_{model_name_lower}(db: Session, id: UUID) -> Optional[{model_name}]
+    - get_{model_name_lower}s(db: Session, skip: int = 0, limit: int = 100) -> List[{model_name}]
+    - update_{model_name_lower}(db: Session, id: UUID, obj_in: schema) -> {model_name}
+    - delete_{model_name_lower}(db: Session, id: UUID) -> bool
+
+    STRUCTURAL EXAMPLE (adapt for your model):
+    ```python
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import IntegrityError
+    from typing import Optional, List
+    from uuid import UUID
+    from app.models.example import ExampleModel
+    from app.schemas.example import ExampleCreate, ExampleUpdate
+
+    def create_example(db: Session, obj_in: ExampleCreate) -> ExampleModel:
+        '''Create new example instance.
+
+        Args:
+            db: Database session
+            obj_in: Example creation schema with validated data
+
+        Returns:
+            Created example instance
+
+        Raises:
+            IntegrityError: If unique constraint violated
+        '''
+        db_obj = ExampleModel(**obj_in.dict())
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
+    def get_example(db: Session, id: UUID) -> Optional[ExampleModel]:
+        '''Get example by ID.'''
+        return db.query(ExampleModel).filter(ExampleModel.id == id).first()
+
+    # ... implement all other CRUD functions
+    ```
+
+    IMPORTANT: This is just a structural example. Generate ACTUAL functions for {model_name} with:
+    - Correct function names using {model_name_lower}
+    - Proper model imports (app.models.{model_name_lower})
+    - Proper schema imports
+    - Complete implementations (no TODOs or placeholders)
+    - All 5 CRUD functions fully implemented
+
+    DO NOT include comments like "# Add more functions" or "# TODO".
+    Generate the COMPLETE, WORKING CRUD module now.
+
+  php_laravel: |
+    Generate Laravel Service/Repository for {model_name}.
+
+    Methods needed:
+    - create(array $data): {model_name}
+    - find($id): ?{model_name}
+    - all(int $perPage): LengthAwarePaginator
+    - update($id, array $data): {model_name}
+    - delete($id): bool
+
+    Use Eloquent for database interactions.
+
+  nodejs_express: |
+    Generate Service for {model_name}.
+
+    Methods needed:
+    - create(data)
+    - findById(id)
+    - findAll(pagination)
+    - update(id, data)
+    - delete(id)
+
+    Use Sequelize/Mongoose for database interactions.
+
+config_prompt:
+  python_fastapi: |
+    Generate FastAPI settings configuration file.
+
+    Project: {project_name}
+    Database: {database_type}
+
+    Include:
+    - Pydantic BaseSettings for environment variables
+    - DATABASE_URL
+    - SECRET_KEY for JWT
+    - CORS_ORIGINS list
+    - JWT token expiry settings
+    - All configuration from .env file
+
+  php_laravel: |
+    Generate Laravel config files.
+
+    Project: {project_name}
+
+    Include:
+    - Database configuration
+    - App settings
+    - Auth configuration
+
+  php_plain: |
+    Generate plain PHP application configuration.
+
+    Project: {project_name}
+    Database: {database_type}
+
+    Include:
+    - Simple PHP configuration array (no Laravel config format)
+    - Database connection settings using PDO
+    - No Laravel helper functions (no env(), config(), etc.)
+    - Plain PHP constants and variables
+    - Security settings (no Laravel security features)
+    - All configuration from .env file using getenv() or $_ENV
+
+  nodejs_express: |
+    Generate Express configuration.
+
+    Project: {project_name}
+
+    Include:
+    - dotenv configuration
+    - Database connection string
+    - Server port
+    - JWT secret
+
+main_app_prompt:
+  python_fastapi: |
+    Generate FastAPI application entry point.
+
+    Project: {project_name}
+    Description: {description}
+
+    Include:
+    - FastAPI app instance
+    - CORS middleware
+    - Static files mounting
+    - Template rendering setup
+    - API router inclusion
+    - Health check endpoint
+
+  php_laravel: |
+    Generate Laravel routes/web.php and bootstrap/app.php.
+
+    Project: {project_name}
+
+  php_plain: |
+    Generate plain PHP application entry point (index.php).
+
+    Project: {project_name}
+    Description: {description}
+
+    Include:
+    - Basic PHP entry point (no Laravel bootstrap)
+    - Simple routing mechanism (no Laravel routing)
+    - Session management setup using native PHP sessions
+    - No Laravel facades or service container
+    - No Composer autoloader for Laravel components
+    - Error handling using native PHP
+    - Database connection using PDO (no Eloquent)
+
+  php_apache: |
+    Generate Apache PHP application entry point (index.php).
+
+    Project: {project_name}
+    Description: {description}
+
+    Include:
+    - Basic PHP entry point for Apache
+    - Autoloader inclusion
+    - Simple routing mechanism
+    - Session management setup
+    - Error handling
+
+  nodejs_express: |
+    Generate Express server entry point.
+
+    Project: {project_name}
+
+    Include:
+    - Express app instance
+    - Middleware setup (cors, body-parser)
+    - Route mounting
+    - Error handling middleware
+    - Server listen
+
+api_router_prompt:
+  python_fastapi: |
+    Generate main API router.
+
+    Include routers from:
+    {groups}
+
+    - Create APIRouter
+    - Include all endpoint routers with proper prefixes
+    - Add tags for OpenAPI documentation
+
+  php_laravel: |
+    Generate Laravel API routes (routes/api.php).
+
+    Include routes for:
+    {groups}
+
+  nodejs_express: |
+    Generate Main Router (routes/index.js).
+
+    Include routes for:
+    {groups}
+
+# Role-based system prompts for different file types
+role_prompts:
+  model:
+    python_fastapi: |
+      # Your Role: Senior Database Architect & SQLAlchemy Expert
+
+      You are a highly experienced database architect specializing in SQLAlchemy ORM design. You have:
+      - 10+ years of experience designing scalable database schemas
+      - Deep expertise in SQLAlchemy relationships, constraints, and performance optimization
+      - Strong understanding of database normalization and denormalization strategies
+      - Experience with PostgreSQL, MySQL, and other relational databases
+
+      Your task is to generate production-ready SQLAlchemy models with:
+      - Proper foreign key relationships and cascading rules
+      - Optimized indexes for query performance
+      - Appropriate column types and constraints
+      - Clear bidirectional relationships with back_populates
+      - Comprehensive docstrings explaining each field's purpose
+
+    php_laravel: |
+      # Your Role: Senior Database Architect & Eloquent Expert
+
+      You are a highly experienced database architect specializing in Laravel Eloquent ORM. You have:
+      - 10+ years of experience designing scalable database schemas
+      - Deep expertise in Eloquent relationships, scopes, and query optimization
+      - Strong understanding of database normalization and Laravel migrations
+      - Experience with MySQL, PostgreSQL, and other relational databases
+
+      Your task is to generate production-ready Eloquent models with:
+      - Proper relationship definitions (hasMany, belongsTo, belongsToMany, etc.)
+      - Fillable and guarded properties for mass assignment protection
+      - Casts for attribute type conversion
+      - Scopes for reusable query logic
+      - Comprehensive docblocks explaining each property and method
+
+    php_plain: |
+      # Your Role: Senior Database Architect & PDO Expert
+
+      You are a highly experienced database architect specializing in plain PHP and PDO. You have:
+      - 10+ years of experience designing scalable database schemas
+      - Deep expertise in PDO prepared statements and database security
+      - Strong understanding of database normalization and direct SQL queries
+      - Experience with MySQL, PostgreSQL, SQLite, and other relational databases
+
+      Your task is to generate production-ready PHP database models with:
+      - Proper SQL table definitions with appropriate data types
+      - Secure prepared statements for all database operations
+      - Input validation and sanitization
+      - Error handling for database operations
+      - Clear PHP classes with appropriate methods for CRUD operations
+      - Comprehensive docblocks explaining each method and property
+
+    nodejs_express: |
+      # Your Role: Senior Database Architect & Sequelize Expert
+
+      You are a highly experienced database architect specializing in Sequelize ORM. You have:
+      - 10+ years of experience designing scalable database schemas
+      - Deep expertise in Sequelize associations, hooks, and query optimization
+      - Strong understanding of database normalization and migrations
+      - Experience with PostgreSQL, MySQL, and other relational databases
+
+      Your task is to generate production-ready Sequelize models with:
+      - Proper association definitions (hasMany, belongsTo, belongsToMany, etc.)
+      - Field validations and constraints
+      - Hooks for lifecycle events
+      - Indexes for query performance
+      - Comprehensive JSDoc comments explaining each field
+
+  api_endpoint:
+    python_fastapi: |
+      # Your Role: Senior Backend Engineer & FastAPI Specialist
+
+      You are an expert backend engineer specializing in FastAPI and RESTful API design. You have:
+      - 10+ years of experience building production APIs serving millions of requests
+      - Deep expertise in FastAPI, async/await patterns, and Python web frameworks
+      - Strong knowledge of REST principles, HTTP standards, and API security
+      - Experience with authentication, rate limiting, and input validation
+
+      Your task is to generate production-ready API endpoints with:
+      - Proper async/await usage for I/O operations
+      - Comprehensive input validation and error handling
+      - Authentication and authorization checks
+      - Clear HTTP status codes and error messages
+      - OpenAPI documentation with examples
+
+    php_laravel: |
+      # Your Role: Senior Backend Engineer & Laravel Controller Specialist
+
+      You are an expert backend engineer specializing in Laravel and RESTful API design. You have:
+      - 10+ years of experience building production APIs serving millions of requests
+      - Deep expertise in Laravel controllers, middleware, and resource responses
+      - Strong knowledge of REST principles, HTTP standards, and API security
+      - Experience with authentication, rate limiting, and input validation
+
+      Your task is to generate production-ready Laravel controllers with:
+      - Proper request validation using Form Requests
+      - Resource transformations for consistent responses
+      - Authentication and authorization using policies/gates
+      - Clear HTTP status codes and error messages
+      - Comprehensive docblocks
+
+    php_plain: |
+      # Your Role: Senior Backend Engineer & Plain PHP Specialist
+
+      You are an expert backend engineer specializing in plain PHP and RESTful API design. You have:
+      - 10+ years of experience building production APIs serving millions of requests
+      - Deep expertise in plain PHP, security best practices, and web standards
+      - Strong knowledge of REST principles, HTTP standards, and API security
+      - Experience with authentication, rate limiting, and input validation
+
+      Your task is to generate production-ready PHP API endpoints with:
+      - Proper input validation and sanitization
+      - Secure database operations using PDO prepared statements
+      - Authentication and authorization checks
+      - Clear HTTP status codes and error messages
+      - JSON response formatting
+      - Comprehensive docblocks
+
+    nodejs_express: |
+      # Your Role: Senior Backend Engineer & Express.js Specialist
+
+      You are an expert backend engineer specializing in Express.js and RESTful API design. You have:
+      - 10+ years of experience building production APIs serving millions of requests
+      - Deep expertise in Express.js, async/await patterns, and Node.js
+      - Strong knowledge of REST principles, HTTP standards, and API security
+      - Experience with authentication, rate limiting, and input validation
+
+      Your task is to generate production-ready Express routes with:
+      - Proper async/await usage with try/catch error handling
+      - Middleware for validation and authentication
+      - Clear HTTP status codes and error messages
+      - Comprehensive JSDoc comments
+
+  schema:
+    python_fastapi: |
+      # Your Role: Data Validation Expert & Pydantic Specialist
+
+      You are an expert in data validation and Pydantic schema design. You have:
+      - Extensive experience with Pydantic v2 and FastAPI integration
+      - Deep understanding of type systems, validation rules, and serialization
+      - Expertise in creating clear, self-documenting API contracts
+
+      Your task is to generate production-ready Pydantic schemas with:
+      - Precise type hints and validation rules
+      - Custom validators for complex business logic
+      - Clear examples in docstrings
+      - Proper use of Field() for additional constraints
+
+    php_laravel: |
+      # Your Role: Data Validation Expert & Laravel Form Request Specialist
+
+      You are an expert in data validation and Laravel Form Request design. You have:
+      - Extensive experience with Laravel validation and Form Requests
+      - Deep understanding of validation rules and custom validators
+      - Expertise in creating clear, maintainable validation logic
+
+      Your task is to generate production-ready Form Requests with:
+      - Comprehensive validation rules
+      - Custom error messages
+      - Authorization logic in authorize() method
+      - Clear docblocks
+
+    php_plain: |
+      # Your Role: Data Validation Expert & Plain PHP Specialist
+
+      You are an expert in data validation and plain PHP. You have:
+      - Extensive experience with PHP validation and security best practices
+      - Deep understanding of input sanitization and validation rules
+      - Expertise in creating clear, maintainable validation logic
+
+      Your task is to generate production-ready PHP validation code with:
+      - Comprehensive input validation and sanitization
+      - Custom error messages
+      - Secure handling of user input
+      - Clear PHP functions with appropriate return types
+
+    nodejs_express: |
+      # Your Role: Data Validation Expert & Express-Validator Specialist
+
+      You are an expert in data validation and Express validation middleware. You have:
+      - Extensive experience with Joi, express-validator, and validation patterns
+      - Deep understanding of validation rules and sanitization
+      - Expertise in creating clear, maintainable validation logic
+
+      Your task is to generate production-ready validation middleware with:
+      - Comprehensive validation rules
+      - Custom error messages
+      - Sanitization where appropriate
+      - Clear JSDoc comments
+
+  crud:
+    python_fastapi: |
+      # Your Role: Database Operations Specialist & SQLAlchemy Expert
+
+      You are a database operations expert specializing in CRUD patterns and SQLAlchemy. You have:
+      - Deep experience with database transaction management
+      - Expertise in query optimization and N+1 query prevention
+      - Strong understanding of database locking and concurrency
+
+      Your task is to generate production-ready CRUD operations with:
+      - Proper session management and transaction handling
+      - Efficient queries with eager/lazy loading
+      - Error handling for constraint violations
+      - Type hints and clear function signatures
+
+    php_laravel: |
+      # Your Role: Database Operations Specialist & Eloquent Expert
+
+      You are a database operations expert specializing in service/repository patterns and Eloquent. You have:
+      - Deep experience with database transaction management
+      - Expertise in query optimization and N+1 query prevention
+      - Strong understanding of Eloquent best practices
+
+      Your task is to generate production-ready service/repository classes with:
+      - Proper transaction handling
+      - Efficient queries with eager loading
+      - Error handling for constraint violations
+      - Clear method signatures and docblocks
+
+    php_plain: |
+      # Your Role: Database Operations Specialist & PDO Expert
+
+      You are a database operations expert specializing in plain PHP and PDO. You have:
+      - Deep experience with database transaction management
+      - Expertise in secure database operations and prepared statements
+      - Strong understanding of SQL best practices
+
+      Your task is to generate production-ready PHP CRUD operations with:
+      - Proper database connection management
+      - Secure prepared statements for all operations
+      - Error handling for constraint violations
+      - Clear PHP functions with appropriate parameter types
+      - Input validation and sanitization
+
+    nodejs_express: |
+      # Your Role: Database Operations Specialist & Sequelize Expert
+
+      You are a database operations expert specializing in service patterns and Sequelize. You have:
+      - Deep experience with database transaction management
+      - Expertise in query optimization and N+1 query prevention
+      - Strong understanding of async/await patterns
+
+      Your task is to generate production-ready service classes with:
+      - Proper transaction handling
+      - Efficient queries with eager loading
+      - Error handling for constraint violations
+      - Clear JSDoc comments

@@ -1,0 +1,277 @@
+{
+  "project_name": "blog_platform",
+  "description": "Professional blogging platform with rich text editor, categories, tags, comments, and SEO optimization",
+  "tech_stack": "php_laravel",
+  "deployment": {
+    "domain": "myblog.com",
+    "ssl_enabled": true,
+    "port": 443
+  },
+  "database": {
+    "type": "mysql",
+    "name": "blog_db",
+    "user": "blog_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "email_verification": true,
+      "password_reset": true,
+      "roles": ["reader", "author", "editor", "admin"]
+    },
+    "rich_text_editor": {
+      "enabled": true,
+      "editor": "TinyMCE",
+      "features": ["formatting", "images", "links", "code_blocks", "tables"]
+    },
+    "markdown_support": {
+      "enabled": true,
+      "parser": "CommonMark"
+    },
+    "file_uploads": {
+      "enabled": true,
+      "types": ["post_images", "user_avatars"],
+      "max_size": "5MB",
+      "image_optimization": true
+    },
+    "comments": {
+      "enabled": true,
+      "moderation": true,
+      "nested_replies": true,
+      "spam_protection": true
+    },
+    "seo_optimization": {
+      "enabled": true,
+      "meta_tags": true,
+      "sitemap_generation": true,
+      "social_sharing": true
+    },
+    "rss_feed": {
+      "enabled": true,
+      "full_content": true
+    },
+    "search": {
+      "enabled": true,
+      "full_text": true,
+      "search_posts": true,
+      "search_comments": false
+    },
+    "email_notifications": {
+      "enabled": true,
+      "events": ["new_comment", "comment_reply", "post_published"]
+    },
+    "analytics": {
+      "enabled": true,
+      "page_views": true,
+      "popular_posts": true
+    }
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "description": "Authors, editors, and readers",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "username", "type": "string", "unique": true, "required": true},
+        {"name": "email", "type": "string", "unique": true, "required": true},
+        {"name": "password_hash", "type": "string", "required": true},
+        {"name": "full_name", "type": "string", "required": true},
+        {"name": "bio", "type": "text", "nullable": true},
+        {"name": "avatar_url", "type": "string", "nullable": true},
+        {"name": "role", "type": "enum", "values": ["reader", "author", "editor", "admin"], "default": "reader"},
+        {"name": "email_verified", "type": "boolean", "default": false},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "has_many", "model": "Post"},
+        {"type": "has_many", "model": "Comment"}
+      ]
+    },
+    {
+      "name": "Post",
+      "description": "Blog posts",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "slug", "type": "string", "unique": true, "required": true},
+        {"name": "excerpt", "type": "text"},
+        {"name": "content", "type": "longtext", "required": true},
+        {"name": "content_format", "type": "enum", "values": ["html", "markdown"], "default": "html"},
+        {"name": "author_id", "type": "integer", "foreign_key": "users.id"},
+        {"name": "featured_image", "type": "string", "nullable": true},
+        {"name": "status", "type": "enum", "values": ["draft", "published", "scheduled"], "default": "draft"},
+        {"name": "published_at", "type": "timestamp", "nullable": true},
+        {"name": "meta_title", "type": "string", "nullable": true},
+        {"name": "meta_description", "type": "text", "nullable": true},
+        {"name": "view_count", "type": "integer", "default": 0},
+        {"name": "allow_comments", "type": "boolean", "default": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User", "as": "author"},
+        {"type": "has_many", "model": "Comment"},
+        {"type": "belongs_to_many", "model": "Category"},
+        {"type": "belongs_to_many", "model": "Tag"}
+      ]
+    },
+    {
+      "name": "Category",
+      "description": "Post categories",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "slug", "type": "string", "unique": true, "required": true},
+        {"name": "description", "type": "text", "nullable": true},
+        {"name": "parent_id", "type": "integer", "foreign_key": "categories.id", "nullable": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to_many", "model": "Post"},
+        {"type": "belongs_to", "model": "Category", "as": "parent"},
+        {"type": "has_many", "model": "Category", "as": "children"}
+      ]
+    },
+    {
+      "name": "Tag",
+      "description": "Post tags",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "name", "type": "string", "unique": true, "required": true},
+        {"name": "slug", "type": "string", "unique": true, "required": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to_many", "model": "Post"}
+      ]
+    },
+    {
+      "name": "Comment",
+      "description": "Post comments",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "post_id", "type": "integer", "foreign_key": "posts.id"},
+        {"name": "user_id", "type": "integer", "foreign_key": "users.id", "nullable": true},
+        {"name": "parent_id", "type": "integer", "foreign_key": "comments.id", "nullable": true},
+        {"name": "author_name", "type": "string", "nullable": true},
+        {"name": "author_email", "type": "string", "nullable": true},
+        {"name": "content", "type": "text", "required": true},
+        {"name": "status", "type": "enum", "values": ["pending", "approved", "spam"], "default": "pending"},
+        {"name": "ip_address", "type": "string"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Post"},
+        {"type": "belongs_to", "model": "User"},
+        {"type": "belongs_to", "model": "Comment", "as": "parent"},
+        {"type": "has_many", "model": "Comment", "as": "replies"}
+      ]
+    },
+    {
+      "name": "Media",
+      "description": "Uploaded media files",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "user_id", "type": "integer", "foreign_key": "users.id"},
+        {"name": "filename", "type": "string", "required": true},
+        {"name": "file_path", "type": "string", "required": true},
+        {"name": "file_size", "type": "integer"},
+        {"name": "mime_type", "type": "string"},
+        {"name": "width", "type": "integer", "nullable": true},
+        {"name": "height", "type": "integer", "nullable": true},
+        {"name": "created_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {"path": "/api/auth/register", "method": "POST", "description": "Register new user"},
+    {"path": "/api/auth/login", "method": "POST", "description": "Login"},
+    {"path": "/api/posts", "method": "GET", "description": "List published posts with pagination"},
+    {"path": "/api/posts/{slug}", "method": "GET", "description": "Get single post"},
+    {"path": "/api/posts", "method": "POST", "description": "Create post (author)", "auth": true},
+    {"path": "/api/posts/{id}", "method": "PUT", "description": "Update post (author)", "auth": true},
+    {"path": "/api/posts/{id}", "method": "DELETE", "description": "Delete post (author)", "auth": true},
+    {"path": "/api/posts/{id}/publish", "method": "POST", "description": "Publish post (editor)", "auth": true},
+    {"path": "/api/categories", "method": "GET", "description": "List categories"},
+    {"path": "/api/categories/{slug}/posts", "method": "GET", "description": "Get posts by category"},
+    {"path": "/api/tags", "method": "GET", "description": "List tags"},
+    {"path": "/api/tags/{slug}/posts", "method": "GET", "description": "Get posts by tag"},
+    {"path": "/api/posts/{id}/comments", "method": "GET", "description": "List post comments"},
+    {"path": "/api/posts/{id}/comments", "method": "POST", "description": "Add comment", "auth": "optional"},
+    {"path": "/api/comments/{id}/approve", "method": "POST", "description": "Approve comment (editor)", "auth": true},
+    {"path": "/api/media", "method": "POST", "description": "Upload media file (author)", "auth": true},
+    {"path": "/api/search", "method": "GET", "description": "Search posts"}
+  ],
+  "ui_pages": [
+    {"name": "Home", "route": "/", "description": "Homepage with recent posts"},
+    {"name": "Post Listing", "route": "/posts", "description": "All posts with pagination"},
+    {"name": "Single Post", "route": "/posts/{slug}", "description": "Single post view with comments"},
+    {"name": "Category", "route": "/category/{slug}", "description": "Posts by category"},
+    {"name": "Tag", "route": "/tag/{slug}", "description": "Posts by tag"},
+    {"name": "Author", "route": "/author/{username}", "description": "Author profile with posts"},
+    {"name": "Search Results", "route": "/search", "description": "Search results page"},
+    {"name": "Dashboard", "route": "/dashboard", "description": "User dashboard (author)"},
+    {"name": "Create Post", "route": "/posts/create", "description": "Create new post (author)"},
+    {"name": "Edit Post", "route": "/posts/{id}/edit", "description": "Edit post (author)"},
+    {"name": "My Posts", "route": "/my-posts", "description": "List user's posts (author)"},
+    {"name": "Admin - Posts", "route": "/admin/posts", "description": "Manage all posts (admin)"},
+    {"name": "Admin - Comments", "route": "/admin/comments", "description": "Moderate comments (editor)"},
+    {"name": "Admin - Categories", "route": "/admin/categories", "description": "Manage categories (admin)"},
+    {"name": "Admin - Users", "route": "/admin/users", "description": "Manage users (admin)"}
+  ],
+  "background_workers": [
+    {
+      "name": "send_comment_notification",
+      "description": "Notify post author of new comment",
+      "trigger": "on_comment_created",
+      "priority": "high"
+    },
+    {
+      "name": "generate_sitemap",
+      "description": "Generate XML sitemap for SEO",
+      "trigger": "scheduled",
+      "schedule": "0 2 * * *",
+      "priority": "low"
+    },
+    {
+      "name": "cleanup_spam_comments",
+      "description": "Delete old spam comments",
+      "trigger": "scheduled",
+      "schedule": "0 3 * * 0",
+      "priority": "low"
+    },
+    {
+      "name": "generate_rss_feed",
+      "description": "Update RSS feed",
+      "trigger": "on_post_published",
+      "priority": "medium"
+    },
+    {
+      "name": "optimize_images",
+      "description": "Optimize uploaded images",
+      "trigger": "on_media_uploaded",
+      "priority": "medium"
+    }
+  ],
+  "email_configuration": {
+    "provider": "smtp",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "from_address": "noreply@myblog.com",
+    "from_name": "My Blog"
+  },
+  "testing": {
+    "unit_tests": true,
+    "feature_tests": true,
+    "browser_tests": false
+  },
+  "deployment_time_estimate": "7-9 minutes"
+}

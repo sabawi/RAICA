@@ -1,0 +1,9 @@
+{
+  "specification": "Build a simple 'Hello World' web application with:\n- Login page with username/password form (HTML/CSS/JavaScript)\n- After successful login, show a 'Hello World' welcome page with the username\n- Apache2 web server with PHP backend\n- SQLite database with a single 'users' table (id, username, password_hash)\n- Create one test user: username='admin', password='admin123'\n- Simple, clean design with basic CSS styling\n- Session management for logged-in users\n- Logout functionality\n\nKeep it extremely simple - this is a basic hello world demonstration.",
+  "deployment_config": {
+    "web_server": "apache2",
+    "port": 5060,
+    "use_ssl": false,
+    "deploy_path": "/var/www/helloworld"
+  }
+}

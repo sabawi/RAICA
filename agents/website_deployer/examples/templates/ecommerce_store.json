@@ -1,0 +1,437 @@
+{
+  "project_name": "online_store",
+  "description": "Professional e-commerce store with product catalog, shopping cart, checkout, and admin dashboard",
+  "tech_stack": "php_laravel",
+  "deployment": {
+    "domain": "mystore.com",
+    "ssl_enabled": true,
+    "port": 6050
+  },
+  "database": {
+    "type": "mysql",
+    "name": "online_store_db",
+    "user": "store_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "email_verification": true,
+      "password_reset": true,
+      "social_login": false,
+      "roles": ["customer", "admin"]
+    },
+    "payment_processing": {
+      "enabled": true,
+      "provider": "stripe",
+      "currencies": ["USD", "EUR"],
+      "test_mode": true
+    },
+    "file_uploads": {
+      "enabled": true,
+      "types": ["product_images"],
+      "max_size": "5MB",
+      "allowed_extensions": [".jpg", ".png", ".webp"]
+    },
+    "email_notifications": {
+      "enabled": true,
+      "events": [
+        "order_confirmation",
+        "shipping_notification",
+        "password_reset",
+        "account_verification"
+      ]
+    },
+    "search": {
+      "enabled": true,
+      "full_text": true,
+      "filters": ["category", "price_range", "rating"]
+    },
+    "reviews": {
+      "enabled": true,
+      "require_purchase": true,
+      "moderation": false
+    },
+    "inventory": {
+      "enabled": true,
+      "track_stock": true,
+      "low_stock_alerts": true
+    },
+    "analytics": {
+      "enabled": true,
+      "sales_reports": true,
+      "customer_insights": true
+    }
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "description": "Customer and admin accounts",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "email", "type": "string", "unique": true, "required": true},
+        {"name": "password_hash", "type": "string", "required": true},
+        {"name": "first_name", "type": "string", "required": true},
+        {"name": "last_name", "type": "string", "required": true},
+        {"name": "role", "type": "enum", "values": ["customer", "admin"], "default": "customer"},
+        {"name": "email_verified", "type": "boolean", "default": false},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ]
+    },
+    {
+      "name": "Product",
+      "description": "Products in the store",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "slug", "type": "string", "unique": true, "required": true},
+        {"name": "description", "type": "text"},
+        {"name": "price", "type": "decimal", "precision": "10,2", "required": true},
+        {"name": "sale_price", "type": "decimal", "precision": "10,2", "nullable": true},
+        {"name": "sku", "type": "string", "unique": true, "required": true},
+        {"name": "stock_quantity", "type": "integer", "default": 0},
+        {"name": "category_id", "type": "integer", "foreign_key": "categories.id"},
+        {"name": "image_url", "type": "string"},
+        {"name": "is_active", "type": "boolean", "default": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Category"},
+        {"type": "has_many", "model": "OrderItem"},
+        {"type": "has_many", "model": "Review"},
+        {"type": "has_many", "model": "CartItem"}
+      ]
+    },
+    {
+      "name": "Category",
+      "description": "Product categories",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "name", "type": "string", "required": true},
+        {"name": "slug", "type": "string", "unique": true, "required": true},
+        {"name": "description", "type": "text"},
+        {"name": "parent_id", "type": "integer", "foreign_key": "categories.id", "nullable": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "has_many", "model": "Product"},
+        {"type": "belongs_to", "model": "Category", "as": "parent"},
+        {"type": "has_many", "model": "Category", "as": "children"}
+      ]
+    },
+    {
+      "name": "Cart",
+      "description": "Shopping carts",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "user_id", "type": "integer", "foreign_key": "users.id"},
+        {"name": "session_id", "type": "string", "nullable": true},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"},
+        {"type": "has_many", "model": "CartItem"}
+      ]
+    },
+    {
+      "name": "CartItem",
+      "description": "Items in shopping cart",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "cart_id", "type": "integer", "foreign_key": "carts.id"},
+        {"name": "product_id", "type": "integer", "foreign_key": "products.id"},
+        {"name": "quantity", "type": "integer", "default": 1},
+        {"name": "price", "type": "decimal", "precision": "10,2"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Cart"},
+        {"type": "belongs_to", "model": "Product"}
+      ]
+    },
+    {
+      "name": "Order",
+      "description": "Customer orders",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "order_number", "type": "string", "unique": true, "required": true},
+        {"name": "user_id", "type": "integer", "foreign_key": "users.id"},
+        {"name": "status", "type": "enum", "values": ["pending", "processing", "shipped", "delivered", "cancelled"], "default": "pending"},
+        {"name": "subtotal", "type": "decimal", "precision": "10,2"},
+        {"name": "tax", "type": "decimal", "precision": "10,2"},
+        {"name": "shipping", "type": "decimal", "precision": "10,2"},
+        {"name": "total", "type": "decimal", "precision": "10,2"},
+        {"name": "shipping_address", "type": "text"},
+        {"name": "billing_address", "type": "text"},
+        {"name": "payment_method", "type": "string"},
+        {"name": "payment_status", "type": "enum", "values": ["pending", "paid", "failed", "refunded"], "default": "pending"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "User"},
+        {"type": "has_many", "model": "OrderItem"},
+        {"type": "has_one", "model": "Payment"}
+      ]
+    },
+    {
+      "name": "OrderItem",
+      "description": "Items in an order",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "order_id", "type": "integer", "foreign_key": "orders.id"},
+        {"name": "product_id", "type": "integer", "foreign_key": "products.id"},
+        {"name": "quantity", "type": "integer", "required": true},
+        {"name": "price", "type": "decimal", "precision": "10,2"},
+        {"name": "subtotal", "type": "decimal", "precision": "10,2"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Order"},
+        {"type": "belongs_to", "model": "Product"}
+      ]
+    },
+    {
+      "name": "Payment",
+      "description": "Payment transactions",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "order_id", "type": "integer", "foreign_key": "orders.id"},
+        {"name": "stripe_payment_intent_id", "type": "string"},
+        {"name": "amount", "type": "decimal", "precision": "10,2"},
+        {"name": "currency", "type": "string", "default": "usd"},
+        {"name": "status", "type": "string"},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Order"}
+      ]
+    },
+    {
+      "name": "Review",
+      "description": "Product reviews",
+      "fields": [
+        {"name": "id", "type": "integer", "primary_key": true},
+        {"name": "product_id", "type": "integer", "foreign_key": "products.id"},
+        {"name": "user_id", "type": "integer", "foreign_key": "users.id"},
+        {"name": "rating", "type": "integer", "min": 1, "max": 5},
+        {"name": "title", "type": "string"},
+        {"name": "comment", "type": "text"},
+        {"name": "is_verified_purchase", "type": "boolean", "default": false},
+        {"name": "created_at", "type": "timestamp"},
+        {"name": "updated_at", "type": "timestamp"}
+      ],
+      "relationships": [
+        {"type": "belongs_to", "model": "Product"},
+        {"type": "belongs_to", "model": "User"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {
+      "path": "/api/auth/register",
+      "method": "POST",
+      "description": "Register new customer account",
+      "authentication": false,
+      "request_body": {
+        "email": "string",
+        "password": "string",
+        "first_name": "string",
+        "last_name": "string"
+      },
+      "response": {
+        "success": "User created, verification email sent"
+      }
+    },
+    {
+      "path": "/api/auth/login",
+      "method": "POST",
+      "description": "Login to account",
+      "authentication": false,
+      "request_body": {
+        "email": "string",
+        "password": "string"
+      }
+    },
+    {
+      "path": "/api/products",
+      "method": "GET",
+      "description": "List all products with pagination",
+      "authentication": false,
+      "query_params": {
+        "page": "integer",
+        "per_page": "integer",
+        "category_id": "integer",
+        "search": "string",
+        "min_price": "decimal",
+        "max_price": "decimal"
+      }
+    },
+    {
+      "path": "/api/products/{id}",
+      "method": "GET",
+      "description": "Get single product details",
+      "authentication": false
+    },
+    {
+      "path": "/api/cart",
+      "method": "GET",
+      "description": "Get current cart",
+      "authentication": true
+    },
+    {
+      "path": "/api/cart/add",
+      "method": "POST",
+      "description": "Add item to cart",
+      "authentication": true,
+      "request_body": {
+        "product_id": "integer",
+        "quantity": "integer"
+      }
+    },
+    {
+      "path": "/api/cart/update/{item_id}",
+      "method": "PUT",
+      "description": "Update cart item quantity",
+      "authentication": true
+    },
+    {
+      "path": "/api/cart/remove/{item_id}",
+      "method": "DELETE",
+      "description": "Remove item from cart",
+      "authentication": true
+    },
+    {
+      "path": "/api/checkout",
+      "method": "POST",
+      "description": "Create order from cart",
+      "authentication": true,
+      "request_body": {
+        "shipping_address": "object",
+        "billing_address": "object",
+        "payment_method": "string"
+      }
+    },
+    {
+      "path": "/api/orders",
+      "method": "GET",
+      "description": "Get user's orders",
+      "authentication": true
+    },
+    {
+      "path": "/api/orders/{id}",
+      "method": "GET",
+      "description": "Get single order details",
+      "authentication": true
+    },
+    {
+      "path": "/api/admin/products",
+      "method": "GET",
+      "description": "Admin: List all products",
+      "authentication": true,
+      "role": "admin"
+    },
+    {
+      "path": "/api/admin/products",
+      "method": "POST",
+      "description": "Admin: Create new product",
+      "authentication": true,
+      "role": "admin"
+    },
+    {
+      "path": "/api/admin/products/{id}",
+      "method": "PUT",
+      "description": "Admin: Update product",
+      "authentication": true,
+      "role": "admin"
+    },
+    {
+      "path": "/api/admin/products/{id}",
+      "method": "DELETE",
+      "description": "Admin: Delete product",
+      "authentication": true,
+      "role": "admin"
+    },
+    {
+      "path": "/api/admin/orders",
+      "method": "GET",
+      "description": "Admin: List all orders",
+      "authentication": true,
+      "role": "admin"
+    },
+    {
+      "path": "/api/admin/orders/{id}/status",
+      "method": "PUT",
+      "description": "Admin: Update order status",
+      "authentication": true,
+      "role": "admin"
+    }
+  ],
+  "ui_pages": [
+    {"name": "Home", "route": "/", "description": "Homepage with featured products"},
+    {"name": "Products", "route": "/products", "description": "Product listing with filters"},
+    {"name": "Product Detail", "route": "/products/{slug}", "description": "Single product page"},
+    {"name": "Cart", "route": "/cart", "description": "Shopping cart"},
+    {"name": "Checkout", "route": "/checkout", "description": "Checkout process"},
+    {"name": "Order Confirmation", "route": "/orders/{id}/confirmation", "description": "Order confirmation page"},
+    {"name": "My Orders", "route": "/account/orders", "description": "Order history"},
+    {"name": "My Account", "route": "/account", "description": "User account dashboard"},
+    {"name": "Admin Dashboard", "route": "/admin", "description": "Admin dashboard", "role": "admin"},
+    {"name": "Admin Products", "route": "/admin/products", "description": "Manage products", "role": "admin"},
+    {"name": "Admin Orders", "route": "/admin/orders", "description": "Manage orders", "role": "admin"}
+  ],
+  "background_workers": [
+    {
+      "name": "send_order_confirmation",
+      "description": "Send order confirmation email to customer",
+      "trigger": "on_order_created",
+      "priority": "high"
+    },
+    {
+      "name": "update_inventory",
+      "description": "Update product stock quantities after order",
+      "trigger": "on_order_created",
+      "priority": "high"
+    },
+    {
+      "name": "send_shipping_notification",
+      "description": "Send shipping notification when order ships",
+      "trigger": "on_order_status_change",
+      "priority": "medium"
+    },
+    {
+      "name": "low_stock_alert",
+      "description": "Alert admin when product stock is low",
+      "trigger": "scheduled",
+      "schedule": "0 9 * * *",
+      "priority": "low"
+    },
+    {
+      "name": "abandoned_cart_reminder",
+      "description": "Send reminder email for abandoned carts",
+      "trigger": "scheduled",
+      "schedule": "0 10 * * *",
+      "priority": "low"
+    }
+  ],
+  "email_configuration": {
+    "provider": "smtp",
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_encryption": "tls",
+    "from_address": "noreply@mystore.com",
+    "from_name": "My Store"
+  },
+  "testing": {
+    "unit_tests": true,
+    "integration_tests": true,
+    "test_data_seeding": true
+  },
+  "deployment_time_estimate": "8-10 minutes"
+}

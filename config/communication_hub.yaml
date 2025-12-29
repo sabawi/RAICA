@@ -1,0 +1,230 @@
+# Communication Hub - Unified Configuration
+# Single source of truth for ALL external communications
+#
+# Supports environment variable substitution: ${VAR_NAME}
+# Supports defaults: ${VAR_NAME:default_value}
+
+communication_hub:
+
+  # Global Settings - Apply to all channels
+  global:
+
+    # Retry Policy - How to handle failures
+    retry_policy:
+      max_retries: 3
+      backoff_strategy: exponential  # exponential, linear, constant
+      retry_delays: [1, 5, 15]  # seconds between retries
+
+    # Global Rate Limits - Apply to ALL communications
+    rate_limits:
+      per_minute: 10
+      per_hour: 100
+      per_day: 500
+
+    # Security Settings
+    security:
+      # File Validation
+      max_attachment_size: 26214400  # 25MB in bytes
+      forbidden_extensions: [.exe, .bat, .cmd, .sh, .scr, .com, .pif]
+
+      # Content Filtering
+      content_filtering:
+        enabled: true
+        max_content_length: 10485760  # 10MB in bytes
+
+      # Credential Management
+      credentials:
+        encryption: true
+        storage: environment_variables  # environment_variables, secure_vault
+
+  # Channel Configurations
+  channels:
+
+    # Email Channel
+    email:
+      enabled: true
+
+      # Default provider (must match a provider name below)
+      default_provider: gmail_primary
+
+      # Email Provider Configurations
+      providers:
+
+        gmail_primary:
+          email: ${GMAIL_PRIMARY_EMAIL}
+          password: ${GMAIL_PRIMARY_APP_PASSWORD}
+          display_name: ${GMAIL_PRIMARY_DISPLAY_NAME:Agentic RAG System}
+
+          imap:
+            server: imap.gmail.com
+            port: 993
+            use_ssl: true
+
+          smtp:
+            server: smtp.gmail.com
+            port: 587
+            use_tls: true
+
+        outlook_personal:
+          email: ${OUTLOOK_PERSONAL_EMAIL}
+          password: ${OUTLOOK_PERSONAL_PASSWORD}
+          display_name: ${OUTLOOK_PERSONAL_DISPLAY_NAME:Agentic RAG System}
+
+          imap:
+            server: outlook.office365.com
+            port: 993
+            use_ssl: true
+
+          smtp:
+            server: smtp.office365.com
+            port: 587
+            use_tls: true
+
+      # Email-specific settings
+      settings:
+        supports_attachments: true
+        max_content_length: 10485760  # 10MB
+        max_attachments: 10
+        max_attachment_size: 26214400  # 25MB
+        allowed_attachment_types: [.pdf, .doc, .docx, .txt, .html, .csv, .json, .md, .py, .js]
+
+      # Email-specific rate limits (override global)
+      rate_limits:
+        per_minute: 5
+        per_hour: 50
+        per_day: 200
+
+    # Twitter/X Channel
+    twitter:
+      enabled: false  # Enable when implementing Twitter channel
+
+      credentials:
+        api_key: ${TWITTER_API_KEY}
+        api_secret: ${TWITTER_API_SECRET}
+        access_token: ${TWITTER_ACCESS_TOKEN}
+        access_token_secret: ${TWITTER_ACCESS_TOKEN_SECRET}
+        bearer_token: ${TWITTER_BEARER_TOKEN}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 280  # Twitter character limit
+        max_attachments: 4
+        allowed_attachment_types: [.jpg, .jpeg, .png, .gif, .mp4]
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 50
+        per_day: 200
+
+    # Substack Channel
+    substack:
+      enabled: false  # Enable when implementing Substack channel
+
+      credentials:
+        email: ${SUBSTACK_EMAIL}
+        password: ${SUBSTACK_PASSWORD}
+        publication_url: ${SUBSTACK_PUBLICATION_URL}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 1048576  # 1MB
+        content_format: html  # html, markdown
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 10
+        per_day: 50
+
+    # WordPress Channel
+    wordpress:
+      enabled: false  # Enable when implementing WordPress channel
+
+      credentials:
+        site_url: ${WORDPRESS_SITE_URL}
+        username: ${WORDPRESS_USERNAME}
+        password: ${WORDPRESS_APP_PASSWORD}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 1048576  # 1MB
+        content_format: html  # html, markdown
+        post_status: draft  # draft, publish, private
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 10
+        per_day: 50
+
+    # SMS Channel (via Twilio or similar)
+    sms:
+      enabled: false  # Enable when implementing SMS channel
+
+      provider: twilio  # twilio, aws_sns, etc.
+
+      credentials:
+        account_sid: ${TWILIO_ACCOUNT_SID}
+        auth_token: ${TWILIO_AUTH_TOKEN}
+        from_number: ${TWILIO_FROM_NUMBER}
+
+      settings:
+        supports_attachments: false
+        max_content_length: 1600  # SMS character limit
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 20
+        per_day: 100
+
+    # Slack Channel
+    slack:
+      enabled: false  # Enable when implementing Slack channel
+
+      credentials:
+        bot_token: ${SLACK_BOT_TOKEN}
+        app_token: ${SLACK_APP_TOKEN}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 40000  # Slack message limit
+        max_attachments: 10
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 60
+        per_day: 500
+
+    # Discord Channel
+    discord:
+      enabled: false  # Enable when implementing Discord channel
+
+      credentials:
+        bot_token: ${DISCORD_BOT_TOKEN}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 2000  # Discord character limit
+        max_attachments: 10
+        max_attachment_size: 8388608  # 8MB
+
+      rate_limits:
+        per_minute: 5
+        per_hour: 100
+        per_day: 1000
+
+    # Telegram Channel
+    telegram:
+      enabled: false  # Enable when implementing Telegram channel
+
+      credentials:
+        bot_token: ${TELEGRAM_BOT_TOKEN}
+
+      settings:
+        supports_attachments: true
+        max_content_length: 4096  # Telegram message limit
+        max_attachments: 10
+        max_attachment_size: 52428800  # 50MB
+
+      rate_limits:
+        per_minute: 1
+        per_hour: 30
+        per_day: 300

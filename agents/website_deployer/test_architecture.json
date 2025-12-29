@@ -1,0 +1,619 @@
+{
+  "project_name": "User Profile Manager",
+  "api_endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/auth/register",
+      "handler_name": "register_user",
+      "description": "Register a new user account",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "first_name",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "last_name",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 201,
+        "example": {
+          "id": 1,
+          "email": "user@example.com",
+          "first_name": "John",
+          "last_name": "Doe",
+          "created_at": "2023-01-01T00:00:00Z"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "handler_name": "login_user",
+      "description": "Authenticate and login user",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "password",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+          "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...",
+          "user": {
+            "id": 1,
+            "email": "user@example.com"
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "handler_name": "logout_user",
+      "description": "Logout current user session",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Successfully logged out"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/refresh",
+      "handler_name": "refresh_token",
+      "description": "Refresh access token using refresh token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "refresh_token",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "access_token": "new_access_token_here"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/verify-email",
+      "handler_name": "verify_email",
+      "description": "Verify user's email address using token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "token",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Email successfully verified"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/forgot-password",
+      "handler_name": "forgot_password",
+      "description": "Request password reset email",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Password reset email sent"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/reset-password",
+      "handler_name": "reset_password",
+      "description": "Reset user password using token",
+      "auth_required": false,
+      "request_body": {
+        "fields": [
+          {
+            "name": "token",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "new_password",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "message": "Password successfully reset"
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/profile",
+      "handler_name": "get_profile",
+      "description": "Get authenticated user's profile information",
+      "auth_required": true,
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "email": "user@example.com",
+          "first_name": "John",
+          "last_name": "Doe",
+          "phone": "+1234567890",
+          "address": "123 Main St, City, Country",
+          "bio": "Software developer with 5 years experience",
+          "created_at": "2023-01-01T00:00:00Z",
+          "updated_at": "2023-01-02T00:00:00Z"
+        }
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/profile",
+      "handler_name": "update_profile",
+      "description": "Update authenticated user's profile information",
+      "auth_required": true,
+      "request_body": {
+        "fields": [
+          {
+            "name": "first_name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "last_name",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "phone",
+            "type": "string",
+            "required": false
+          },
+          {
+            "name": "address",
+            "type": "text",
+            "required": false
+          },
+          {
+            "name": "bio",
+            "type": "text",
+            "required": false
+          }
+        ]
+      },
+      "response": {
+        "status_code": 200,
+        "example": {
+          "id": 1,
+          "email": "user@example.com",
+          "first_name": "John",
+          "last_name": "Doe",
+          "phone": "+1234567890",
+          "address": "123 Main St, City, Country",
+          "bio": "Updated bio information",
+          "created_at": "2023-01-01T00:00:00Z",
+          "updated_at": "2023-01-03T00:00:00Z"
+        }
+      }
+    }
+  ],
+  "database_schema": {
+    "database_type": "mysql",
+    "tables": [
+      {
+        "name": "users",
+        "description": "Registered user with login credentials and profile information",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true
+          },
+          {
+            "name": "email",
+            "type": "String",
+            "max_length": 255,
+            "unique": true,
+            "indexed": true,
+            "nullable": false
+          },
+          {
+            "name": "password_hash",
+            "type": "String",
+            "max_length": 255,
+            "nullable": false
+          },
+          {
+            "name": "first_name",
+            "type": "String",
+            "max_length": 100,
+            "nullable": false
+          },
+          {
+            "name": "last_name",
+            "type": "String",
+            "max_length": 100,
+            "nullable": false
+          },
+          {
+            "name": "phone",
+            "type": "String",
+            "max_length": 20,
+            "nullable": true
+          },
+          {
+            "name": "address",
+            "type": "Text",
+            "nullable": true
+          },
+          {
+            "name": "bio",
+            "type": "Text",
+            "nullable": true
+          },
+          {
+            "name": "is_active",
+            "type": "Boolean",
+            "default": true,
+            "nullable": false
+          },
+          {
+            "name": "is_verified",
+            "type": "Boolean",
+            "default": false,
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false
+          },
+          {
+            "name": "updated_at",
+            "type": "DateTime",
+            "nullable": false
+          }
+        ]
+      },
+      {
+        "name": "email_verification_tokens",
+        "description": "Email verification tokens for new users",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true
+          },
+          {
+            "name": "user_id",
+            "type": "Integer",
+            "nullable": false,
+            "foreign_key": {
+              "references": "users.id",
+              "ondelete": "CASCADE"
+            }
+          },
+          {
+            "name": "token",
+            "type": "String",
+            "max_length": 255,
+            "unique": true,
+            "nullable": false
+          },
+          {
+            "name": "expires_at",
+            "type": "DateTime",
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false
+          }
+        ]
+      },
+      {
+        "name": "password_reset_tokens",
+        "description": "Password reset tokens for users requesting password reset",
+        "columns": [
+          {
+            "name": "id",
+            "type": "Integer",
+            "primary_key": true
+          },
+          {
+            "name": "user_id",
+            "type": "Integer",
+            "nullable": false,
+            "foreign_key": {
+              "references": "users.id",
+              "ondelete": "CASCADE"
+            }
+          },
+          {
+            "name": "token",
+            "type": "String",
+            "max_length": 255,
+            "unique": true,
+            "nullable": false
+          },
+          {
+            "name": "expires_at",
+            "type": "DateTime",
+            "nullable": false
+          },
+          {
+            "name": "created_at",
+            "type": "DateTime",
+            "nullable": false
+          }
+        ]
+      }
+    ],
+    "relationships": []
+  },
+  "workers": [
+    {
+      "name": "send_welcome_email",
+      "description": "Send welcome email to newly registered users",
+      "function_name": "send_welcome_email_task",
+      "schedule": {
+        "type": "on_demand"
+      },
+      "parameters": [
+        {
+          "name": "user_id",
+          "type": "integer",
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 3,
+        "retry_delay_seconds": 60
+      }
+    },
+    {
+      "name": "send_email_verification",
+      "description": "Send email verification link to new users",
+      "function_name": "send_email_verification_task",
+      "schedule": {
+        "type": "on_demand"
+      },
+      "parameters": [
+        {
+          "name": "user_id",
+          "type": "integer",
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 3,
+        "retry_delay_seconds": 60
+      }
+    },
+    {
+      "name": "send_password_reset_email",
+      "description": "Send password reset email to users who requested it",
+      "function_name": "send_password_reset_email_task",
+      "schedule": {
+        "type": "on_demand"
+      },
+      "parameters": [
+        {
+          "name": "user_id",
+          "type": "integer",
+          "required": true
+        },
+        {
+          "name": "email",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "retry_policy": {
+        "max_retries": 3,
+        "retry_delay_seconds": 60
+      }
+    }
+  ],
+  "security": {
+    "authentication": {
+      "method": "jwt",
+      "jwt_config": {
+        "algorithm": "HS256",
+        "access_token_expire_minutes": 30,
+        "refresh_token_expire_days": 7
+      },
+      "password_hashing": {
+        "algorithm": "bcrypt",
+        "rounds": 12
+      }
+    },
+    "cors": {
+      "allow_origins": [
+        "https://userprofilemanager.com"
+      ],
+      "allow_credentials": true,
+      "allow_methods": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "requests_per_minute": 60,
+      "burst_size": 10
+    },
+    "input_validation": {
+      "max_request_size_mb": 10,
+      "sanitize_html_inputs": true
+    }
+  },
+  "infrastructure": {
+    "web_server": "nginx",
+    "app_server": "apache2",
+    "workers_per_instance": 4,
+    "redis": {
+      "enabled": true,
+      "use_cases": [
+        "task_queue",
+        "session_storage"
+      ]
+    },
+    "ssl": {
+      "enabled": true,
+      "provider": "letsencrypt"
+    },
+    "monitoring": {
+      "enabled": true,
+      "tools": [
+        "systemd_logs",
+        "nginx_logs"
+      ]
+    },
+    "backup": {
+      "enabled": true,
+      "schedule": "daily"
+    }
+  },
+  "frontend": {
+    "framework": "html_js_css",
+    "pages": [
+      {
+        "name": "Landing",
+        "route": "/",
+        "template_file": "landing.html",
+        "components": [
+          "navbar",
+          "footer"
+        ],
+        "api_dependencies": []
+      },
+      {
+        "name": "Login",
+        "route": "/login",
+        "template_file": "login.html",
+        "components": [
+          "navbar",
+          "login_form"
+        ],
+        "api_dependencies": [
+          "/api/auth/login"
+        ]
+      },
+      {
+        "name": "Register",
+        "route": "/register",
+        "template_file": "register.html",
+        "components": [
+          "navbar",
+          "registration_form"
+        ],
+        "api_dependencies": [
+          "/api/auth/register"
+        ]
+      },
+      {
+        "name": "Dashboard",
+        "route": "/dashboard",
+        "template_file": "dashboard.html",
+        "components": [
+          "navbar",
+          "profile_summary"
+        ],
+        "api_dependencies": [
+          "/api/profile"
+        ]
+      },
+      {
+        "name": "Profile",
+        "route": "/profile",
+        "template_file": "profile.html",
+        "components": [
+          "navbar",
+          "profile_form"
+        ],
+        "api_dependencies": [
+          "/api/profile"
+        ]
+      }
+    ]
+  }
+}

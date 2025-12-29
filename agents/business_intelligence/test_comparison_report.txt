@@ -1,0 +1,92 @@
+========================================================================
+BI AGENT v1.0.5 - TEST COMPARISON REPORT
+========================================================================
+Test Date: 2025-11-01
+Command: ./business_intelligence.py --strategic --company "AAPL" --competitors "MSFT" "GOOGL"
+
+========================================================================
+RESULTS SUMMARY
+========================================================================
+
+ISSUE 1: INLINE CITATION MARKERS
+---------------------------------
+BEFORE (report_20251101_105813.html):
+  - Inline citations: ~0 (user reported: "no Citation Markers within the text body")
+  - Only bottom "Data Sources & Citations" section existed
+
+AFTER (report_20251101_121732.html):
+  - Inline citations: 107 <span class="citation"> markers
+  - ✅ FIXED: Citations now appear throughout the text body
+
+IMPROVEMENT: 🎉 MASSIVE SUCCESS - 107 inline citations added!
+
+ISSUE 2: USELESS VISUALIZATION SECTIONS
+---------------------------------------
+BEFORE:
+  - User reported: "useless top 'Analytical Visualization' section (at the very top)"
+  - Multiple placeholder visualizations
+
+AFTER:
+  - "Analytical Visualization" sections: 2 occurrences
+  - ⚠️  PARTIALLY FIXED: Still some visualizations present
+
+NOTE: Remaining visualizations may be from:
+  1. Competitor analysis (uses REAL stock data with annotations - potentially useful)
+  2. Dashboard or market research (may still need suppression)
+
+ISSUE 3: CHART DETAILS & ANNOTATIONS
+------------------------------------
+BEFORE:
+  - User reported: "charts lack details (annotations/numbers/meanings) and citations"
+
+AFTER:
+  - Competitor visualization prompt now has MANDATORY requirements:
+    ✓ "Include data value annotations ON EACH BAR/POINT (show the actual numbers)"
+    ✓ "Add citation below chart"
+    ✓ "VERIFICATION: Ensure chart includes numerical annotations and citation marker"
+
+========================================================================
+NEW FEATURES CONFIRMED WORKING
+========================================================================
+✅ Step 6.5: Peer comparison table created (1670 chars)
+✅ Step 6.75: Investment recommendation generated (3126 chars)
+✅ Step 7: Data sources collected (3187 chars)
+
+========================================================================
+CODE CHANGES MADE
+========================================================================
+1. Citation Enforcement - Made MANDATORY
+   - Added 🚨 emoji warnings
+   - Changed language: "This is NOT optional - failure to include citations will result in rejection"
+   - Added VERIFICATION CHECKLIST
+   - Added requirement: "Citation appears IMMEDIATELY after the data value"
+   - Applied to: analyze_company_financials(), analyze_competitors(), research_market_trends()
+
+2. Visualization Suppression
+   - Dashboard: Removed "Market trends visualization" request
+   - Market Research: Removed "Use analytical_visualizer" request
+   - Competitor Analysis: Enhanced with mandatory annotation/citation requirements
+
+========================================================================
+RECOMMENDATIONS
+========================================================================
+1. CITATIONS: ✅ READY TO COMMIT - Massive improvement achieved
+
+2. VISUALIZATIONS: User review needed:
+   - Option A: Accept current state (2 visualizations, potentially with real data)
+   - Option B: Completely suppress ALL visualizations (additional code changes needed)
+   - Option C: Keep only competitor visualization (real data), suppress dashboard/market
+
+Recommend user tests report_20251101_121732.html to verify:
+  a) Are inline citations working correctly?
+  b) Are the 2 remaining visualizations acceptable?
+  c) Do charts have proper annotations and citations?
+
+========================================================================
+NEXT STEPS IF USER APPROVES
+========================================================================
+1. Update version.py to v1.0.3.44
+2. Create changelog
+3. Commit and push to GitHub
+
+========================================================================

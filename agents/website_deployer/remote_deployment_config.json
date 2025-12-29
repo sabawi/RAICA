@@ -1,0 +1,29 @@
+{
+  "deployment_config": {
+    "ssh": {
+      "host": "192.168.1.58",
+      "user": "sabawi",
+      "password": "Down2earth!",
+      "port": 22
+    },
+    "mysql": {
+      "admin_user": "root",
+      "admin_password": "Down2earth!",
+      "database_name": "user_profile_db",
+      "web_user": "webuser",
+      "web_password": "webuser",
+      "permissions": ["SELECT", "INSERT", "UPDATE", "DELETE"]
+    },
+    "web_server": {
+      "port": 6020,
+      "protocol": "https",
+      "landing_page": "/login",
+      "document_root": "/var/www/user_profile_manager"
+    },
+    "application": {
+      "name": "User Profile Manager",
+      "base_url": "https://192.168.1.58:6020"
+    }
+  },
+  "specification": "Create a full functioning website with friendly and beautifully designed interface. The frontend is HTML/JavaScript/CSS while the backend is Apache2/PHP/MySQL. Security is SSL/HTTPS, landing page is Login or register for new users. The opening page is made of left sidebar, header bar and footer bar while the main pane is where the message and input forms are displayed. For this website, it has only one form: User profile filled by the logged in user (first and last names, email, phone, address, a short bio). CRITICAL: Email verification is REQUIRED - users must verify their email before they can login."
+}

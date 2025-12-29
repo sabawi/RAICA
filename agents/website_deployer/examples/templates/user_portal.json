@@ -1,0 +1,173 @@
+{
+  "description": "A complete, user-friendly web portal with login/registration, dashboard with sidebar navigation, and user management features. MUST include working HTML pages, forms, and navigation - NOT just API endpoints.",
+  "features": [
+    {
+      "name": "Welcome/Login Page",
+      "type": "html_page",
+      "description": "CRITICAL: Create an actual HTML page (login.html or index.php) with a login form. NOT a JSON API endpoint. Users must see a web page with username/password fields and a login button. Include link to registration page.",
+      "requirements": [
+        "Full HTML page with DOCTYPE, proper CSS styling",
+        "Login form with username and password fields",
+        "Submit button that POSTs to backend API",
+        "Link to registration page",
+        "Responsive design with center-aligned form",
+        "Display error messages from backend",
+        "Session management after successful login"
+      ]
+    },
+    {
+      "name": "Registration Page",
+      "type": "html_page",
+      "description": "CRITICAL: Create registration.html (or register.php) with HTML form for new user registration. NOT just an API endpoint.",
+      "requirements": [
+        "Full HTML page with registration form",
+        "Fields: username, email, password, confirm password",
+        "Client-side validation (password match, email format)",
+        "Submit button that POSTs to /api/register",
+        "Success message and redirect to login",
+        "Link back to login page"
+      ]
+    },
+    {
+      "name": "Dashboard Page",
+      "type": "html_page",
+      "description": "CRITICAL: Create dashboard.html (or dashboard.php) - the main page after login with sidebar navigation and content area. This is an HTML PAGE that users see in their browser.",
+      "requirements": [
+        "Full HTML page with header, sidebar, and main content area",
+        "Left sidebar with menu items (icons + text): Dashboard Home, List Users, Update Profile, Settings, Logout",
+        "Main content pane that shows different content based on menu selection",
+        "Welcome message with logged-in username",
+        "Navigation must use JavaScript to load content without full page refresh",
+        "Responsive sidebar (collapsible on mobile)",
+        "Professional styling with modern CSS"
+      ]
+    },
+    {
+      "name": "List Users Feature",
+      "type": "dashboard_feature",
+      "description": "When user clicks 'List Users' in sidebar, display table of all users in main pane",
+      "requirements": [
+        "Fetch users from /api/users endpoint",
+        "Display in HTML table with columns: ID, Username, Email, Created Date",
+        "Add search/filter functionality",
+        "Show loading state while fetching",
+        "Pagination if many users",
+        "Styled table with hover effects"
+      ]
+    },
+    {
+      "name": "Update Profile Feature",
+      "type": "dashboard_feature",
+      "description": "When user clicks 'Update Profile', show profile update form in main pane",
+      "requirements": [
+        "HTML form with current user data pre-filled",
+        "Fields: username, email, bio, avatar URL",
+        "Change password section (optional, separate)",
+        "Save button that PUTs to /api/profile",
+        "Show success/error messages",
+        "Form validation"
+      ]
+    },
+    {
+      "name": "Settings Feature",
+      "type": "dashboard_feature",
+      "description": "When user clicks 'Settings', show settings form in main pane",
+      "requirements": [
+        "HTML form with settings options",
+        "Email notifications toggle",
+        "Language preference dropdown",
+        "Theme selection (Light/Dark)",
+        "Save button that PUTs to /api/settings",
+        "Show current settings on load"
+      ]
+    },
+    {
+      "name": "About Page",
+      "type": "html_page",
+      "description": "Static about page accessible from public navigation",
+      "requirements": [
+        "Full HTML page describing the User Portal",
+        "Information about features and purpose",
+        "Link to login page",
+        "Professional layout with images/icons"
+      ]
+    },
+    {
+      "name": "Contact Page",
+      "type": "html_page",
+      "description": "Contact form page accessible from public navigation",
+      "requirements": [
+        "Full HTML page with contact form",
+        "Fields: name, email, subject, message",
+        "Submit button that POSTs to /api/contact",
+        "Show success message after submission"
+      ]
+    }
+  ],
+  "backend_api_endpoints": [
+    {"path": "/api/register", "method": "POST", "description": "Register new user - validates input, hashes password, stores in database", "returns": "JSON with success/error message"},
+    {"path": "/api/login", "method": "POST", "description": "Authenticate user - validates credentials, creates session", "returns": "JSON with success message and user data"},
+    {"path": "/api/logout", "method": "POST", "description": "Logout user - destroys session", "returns": "JSON with success message"},
+    {"path": "/api/users", "method": "GET", "description": "Get list of all users (requires authentication)", "returns": "JSON array of user objects"},
+    {"path": "/api/profile", "method": "GET", "description": "Get current user's profile data", "returns": "JSON with user profile"},
+    {"path": "/api/profile", "method": "PUT", "description": "Update user profile", "returns": "JSON with success/error message"},
+    {"path": "/api/settings", "method": "GET", "description": "Get user settings", "returns": "JSON with settings"},
+    {"path": "/api/settings", "method": "PUT", "description": "Update user settings", "returns": "JSON with success message"},
+    {"path": "/api/contact", "method": "POST", "description": "Submit contact form", "returns": "JSON with success message"}
+  ],
+  "database_tables": [
+    {
+      "name": "users",
+      "columns": [
+        {"name": "id", "type": "INT AUTO_INCREMENT PRIMARY KEY"},
+        {"name": "username", "type": "VARCHAR(50) UNIQUE NOT NULL"},
+        {"name": "email", "type": "VARCHAR(100) UNIQUE NOT NULL"},
+        {"name": "password_hash", "type": "VARCHAR(255) NOT NULL"},
+        {"name": "bio", "type": "TEXT"},
+        {"name": "avatar_url", "type": "VARCHAR(255)"},
+        {"name": "created_at", "type": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"},
+        {"name": "updated_at", "type": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"}
+      ]
+    },
+    {
+      "name": "user_settings",
+      "columns": [
+        {"name": "id", "type": "INT AUTO_INCREMENT PRIMARY KEY"},
+        {"name": "user_id", "type": "INT NOT NULL"},
+        {"name": "email_notifications", "type": "BOOLEAN DEFAULT TRUE"},
+        {"name": "language", "type": "VARCHAR(10) DEFAULT 'en'"},
+        {"name": "theme", "type": "VARCHAR(20) DEFAULT 'light'"},
+        {"name": "FOREIGN KEY (user_id)", "type": "REFERENCES users(id) ON DELETE CASCADE"}
+      ]
+    },
+    {
+      "name": "contact_submissions",
+      "columns": [
+        {"name": "id", "type": "INT AUTO_INCREMENT PRIMARY KEY"},
+        {"name": "name", "type": "VARCHAR(100) NOT NULL"},
+        {"name": "email", "type": "VARCHAR(100) NOT NULL"},
+        {"name": "subject", "type": "VARCHAR(200) NOT NULL"},
+        {"name": "message", "type": "TEXT NOT NULL"},
+        {"name": "submitted_at", "type": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"}
+      ]
+    }
+  ],
+  "styling_requirements": {
+    "framework": "Tailwind CSS or custom CSS",
+    "colors": {"primary": "#3B82F6", "secondary": "#8B5CF6", "background": "#F9FAFB", "sidebar": "#1F2937", "text": "#111827"},
+    "fonts": "Modern sans-serif (Inter, Roboto, or system fonts)",
+    "responsive": "Mobile-first design, sidebar collapses to hamburger menu on mobile",
+    "icons": "Use Font Awesome or SVG icons for menu items"
+  },
+  "critical_requirements": {
+    "MUST_HAVE_HTML_PAGES": "CRITICAL: Generate actual HTML pages that users can visit in a browser. Do NOT generate only API endpoints. Every feature must have a corresponding HTML page or section.",
+    "MUST_HAVE_FORMS": "CRITICAL: All user input must be through HTML forms with proper input fields, labels, and buttons. Users must see forms they can fill out.",
+    "MUST_HAVE_NAVIGATION": "CRITICAL: Include working navigation with proper href attributes or JavaScript navigation. Users must be able to click links and navigate between pages.",
+    "MUST_HAVE_HTACCESS": "CRITICAL: Generate .htaccess file for URL rewriting so all routes work properly.",
+    "MUST_HAVE_SESSION_MANAGEMENT": "Implement PHP sessions for login/authentication state",
+    "MUST_HAVE_PASSWORD_HASHING": "Use password_hash() and password_verify() for security",
+    "MUST_HAVE_SQL_INJECTION_PROTECTION": "Use prepared statements for all database queries",
+    "MUST_HAVE_XSS_PROTECTION": "Escape all user input with htmlspecialchars()",
+    "MUST_BE_IMMEDIATELY_USABLE": "After deployment, user should be able to open browser, visit the site, see login page, register, login, and use all features WITHOUT any manual configuration or code fixes"
+  }
+}

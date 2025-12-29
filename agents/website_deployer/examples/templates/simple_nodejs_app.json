@@ -1,0 +1,72 @@
+{
+  "project_name": "simple_node_app",
+  "description": "Simple Node.js/Express application with authentication and REST API",
+  "tech_stack": "nodejs_express",
+  "deployment": {
+    "domain": "localhost",
+    "ssl_enabled": false,
+    "port": 3000
+  },
+  "database": {
+    "type": "postgresql",
+    "name": "node_app_db",
+    "user": "node_user"
+  },
+  "features": {
+    "authentication": {
+      "enabled": true,
+      "method": "session",
+      "email_verification": true,
+      "password_reset": true
+    },
+    "email_notifications": {
+      "enabled": true,
+      "provider": "nodemailer",
+      "smtp_host": "smtp.gmail.com"
+    },
+    "template_engine": "ejs"
+  },
+  "database_models": [
+    {
+      "name": "User",
+      "fields": [
+        {"name": "id", "type": "UUID", "primary_key": true},
+        {"name": "email", "type": "STRING", "unique": true},
+        {"name": "password_hash", "type": "STRING"},
+        {"name": "full_name", "type": "STRING"},
+        {"name": "email_verified", "type": "BOOLEAN", "default": false},
+        {"name": "createdAt", "type": "DATE"},
+        {"name": "updatedAt", "type": "DATE"}
+      ]
+    },
+    {
+      "name": "Post",
+      "fields": [
+        {"name": "id", "type": "UUID", "primary_key": true},
+        {"name": "title", "type": "STRING"},
+        {"name": "content", "type": "TEXT"},
+        {"name": "user_id", "type": "UUID", "references": "User"},
+        {"name": "createdAt", "type": "DATE"},
+        {"name": "updatedAt", "type": "DATE"}
+      ]
+    }
+  ],
+  "api_endpoints": [
+    {"path": "/api/auth/register", "method": "POST"},
+    {"path": "/api/auth/login", "method": "POST"},
+    {"path": "/api/auth/logout", "method": "POST"},
+    {"path": "/api/posts", "method": "GET"},
+    {"path": "/api/posts", "method": "POST", "auth": true},
+    {"path": "/api/posts/:id", "method": "GET"},
+    {"path": "/api/posts/:id", "method": "PUT", "auth": true},
+    {"path": "/api/posts/:id", "method": "DELETE", "auth": true}
+  ],
+  "ui_pages": [
+    {"name": "Home", "route": "/"},
+    {"name": "Register", "route": "/register"},
+    {"name": "Login", "route": "/login"},
+    {"name": "Dashboard", "route": "/dashboard"},
+    {"name": "Posts", "route": "/posts"}
+  ],
+  "deployment_time_estimate": "4-5 minutes"
+}

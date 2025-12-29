@@ -1,0 +1,9 @@
+{
+  "specification": "Build a simple Task Manager web application where users can:\n- Register and log in with email/password\n- Create, view, update, and delete tasks\n- Mark tasks as complete/incomplete\n- Filter tasks by status (all, active, completed)\n- Each task has: title, description, status, due date, priority (low/medium/high)\n\nUI Requirements:\n- Clean, responsive interface\n- Task list with inline editing\n- Quick add task form\n- Filter buttons for task status\n- Priority color coding (green/yellow/red)\n\nTech Stack: FastAPI backend, PostgreSQL database, simple HTML/CSS/JavaScript frontend",
+  "deployment_config": {
+    "web_server": "nginx",
+    "port": 8080,
+    "use_ssl": false,
+    "deploy_path": "/var/www/taskmanager"
+  }
+}

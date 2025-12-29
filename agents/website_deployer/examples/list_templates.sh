@@ -1,0 +1,70 @@
+#!/bin/bash
+# List all available templates and auto-deploy configs
+
+echo "================================================================================"
+echo "AVAILABLE DEPLOYMENT TEMPLATES"
+echo "================================================================================"
+echo ""
+
+echo "QUICK-START TEMPLATES (3-5 minutes):"
+echo "-------------------------------------"
+echo "1. Simple PHP Website"
+echo "   Template:    templates/simple_php_website.json"
+echo "   Auto-Deploy: auto_deploy_simple_php.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_simple_php.json"
+echo ""
+
+echo "2. Simple Python API"
+echo "   Template:    templates/simple_python_api.json"
+echo "   Auto-Deploy: auto_deploy_simple_python.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_simple_python.json"
+echo ""
+
+echo "3. Simple Node.js App"
+echo "   Template:    templates/simple_nodejs_app.json"
+echo "   Auto-Deploy: auto_deploy_simple_nodejs.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_simple_nodejs.json"
+echo ""
+
+echo "PRODUCTION TEMPLATES (5-9 minutes):"
+echo "------------------------------------"
+echo "4. E-commerce Store"
+echo "   Template:    templates/ecommerce_store.json"
+echo "   Auto-Deploy: auto_deploy_ecommerce.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_ecommerce.json"
+echo ""
+
+echo "5. SaaS Task Manager"
+echo "   Template:    templates/task_manager_saas.json"
+echo "   Auto-Deploy: auto_deploy_task_manager.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_task_manager.json"
+echo ""
+
+echo "6. Blog/CMS Platform"
+echo "   Template:    templates/blog_cms.json"
+echo "   Auto-Deploy: auto_deploy_blog_cms.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_blog_cms.json"
+echo ""
+
+echo "7. API Gateway Service"
+echo "   Template:    templates/api_service.json"
+echo "   Auto-Deploy: auto_deploy_api_service.json"
+echo "   Command:     ./zero_shot_deployment.py --auto-input auto_deploy_api_service.json"
+echo ""
+
+echo "================================================================================"
+echo "FILES SUMMARY"
+echo "================================================================================"
+echo "Templates:     $(ls templates/*.json | wc -l) files in templates/"
+echo "Auto-Configs:  $(ls auto_deploy_*.json 2>/dev/null | wc -l) files"
+echo ""
+
+echo "To customize any deployment:"
+echo "1. Copy an auto_deploy_*.json file"
+echo "2. Edit SSH credentials, database settings, ports"
+echo "3. Run: ./zero_shot_deployment.py --auto-input your_config.json"
+echo ""
+
+echo "For more information:"
+echo "- AUTO_INPUT_GUIDE.md - Detailed configuration guide"
+echo "- QUICK_DEPLOY_REFERENCE.md - Quick reference for all templates"

@@ -1,0 +1,126 @@
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Log files
+*.log
+server.log
+fastapi_complete.log
+fastapi_simple.log
+
+# Environment variables
+.env
+.venv
+
+# Database
+*.db
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Temporary files
+*.tmp
+*.temp
+
+# Backup files
+*.backup
+*.backup_*
+*backup_before_*
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Credentials and sensitive files
+credentials.json*
+token.json
+token.pickle
+*.key
+*.pem
+secrets/
+server_complete.pid
+*.log
+
+# 🚨 CRITICAL PROTECTION: Never ignore these multi-tool calling protection files
+!CRITICAL_MULTI_TOOL_CALLING_PROTECTION.md
+!verify_multi_tool_calling.sh
+
+# Protected: Keep disabled conflicting tool visible but disabled
+!user_tools/_disabled_stock_analyzer.py
+
+# 🚨 CRITICAL SECURITY: NEVER COMMIT SANDBOX WORKSPACE CONTENTS 🚨
+# This directory contains user-generated files, personal data, resumes, cover letters,
+# and other potentially sensitive information that must NEVER be committed to git
+sandbox_workspace/
+sandbox_workspace/*
+sandbox_workspace/**/*
+
+# Test directory - needs major maintenance and rewriting
+test/
+
+# Runtime data files that should not be committed
+document_store/faiss.index
+watched_directories.json
+logs/
+runtime/
+venv_*/

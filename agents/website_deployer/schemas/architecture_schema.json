@@ -1,0 +1,469 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Website Architecture Specification",
+  "description": "Detailed technical architecture for website deployment",
+  "type": "object",
+  "required": ["project_name", "api_endpoints", "database_schema", "security", "infrastructure"],
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Project identifier (lowercase, underscores)"
+    },
+    "api_endpoints": {
+      "type": "array",
+      "description": "RESTful API endpoint specifications",
+      "items": {
+        "type": "object",
+        "required": ["method", "path", "handler_name", "description"],
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+            "description": "HTTP method"
+          },
+          "path": {
+            "type": "string",
+            "description": "URL path with route parameters",
+            "examples": ["/api/tasks", "/api/tasks/{task_id}", "/api/users/{user_id}/profile"]
+          },
+          "handler_name": {
+            "type": "string",
+            "description": "Function name for the handler",
+            "examples": ["get_tasks", "create_task", "update_task"]
+          },
+          "description": {
+            "type": "string",
+            "description": "What this endpoint does"
+          },
+          "auth_required": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether authentication is required"
+          },
+          "request_body": {
+            "type": "object",
+            "description": "Request body schema (for POST/PUT/PATCH)",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {"type": "string"},
+                    "type": {"type": "string"},
+                    "required": {"type": "boolean"},
+                    "validation": {"type": "string"}
+                  }
+                }
+              },
+              "example": {"type": "object"}
+            }
+          },
+          "response": {
+            "type": "object",
+            "description": "Response schema",
+            "properties": {
+              "status_code": {"type": "integer", "default": 200},
+              "schema": {"type": "object"},
+              "example": {"type": "object"}
+            }
+          },
+          "query_parameters": {
+            "type": "array",
+            "description": "Query parameters for filtering/pagination",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string"},
+                "required": {"type": "boolean"},
+                "description": {"type": "string"}
+              }
+            }
+          },
+          "permissions": {
+            "type": "array",
+            "description": "Required permissions/roles",
+            "items": {"type": "string"},
+            "examples": [["authenticated"], ["admin"], ["owner"]]
+          }
+        }
+      }
+    },
+    "database_schema": {
+      "type": "object",
+      "description": "Complete database schema with migrations",
+      "properties": {
+        "database_type": {
+          "type": "string",
+          "enum": ["postgresql", "mysql", "sqlite"],
+          "default": "postgresql"
+        },
+        "tables": {
+          "type": "array",
+          "description": "Database table definitions",
+          "items": {
+            "type": "object",
+            "required": ["name", "columns"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Table name (plural, snake_case)",
+                "examples": ["users", "tasks", "projects"]
+              },
+              "description": {
+                "type": "string",
+                "description": "What this table stores"
+              },
+              "columns": {
+                "type": "array",
+                "description": "Table columns",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "type"],
+                  "properties": {
+                    "name": {"type": "string"},
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "Integer", "String", "Text", "Boolean", "DateTime",
+                        "Date", "Time", "Float", "Numeric", "JSON", "UUID",
+                        "LargeBinary", "Enum"
+                      ]
+                    },
+                    "primary_key": {"type": "boolean", "default": false},
+                    "nullable": {"type": "boolean", "default": true},
+                    "unique": {"type": "boolean", "default": false},
+                    "indexed": {"type": "boolean", "default": false},
+                    "default": {"type": ["string", "number", "boolean", "null"]},
+                    "foreign_key": {
+                      "type": "object",
+                      "properties": {
+                        "references": {"type": "string", "description": "table.column"},
+                        "ondelete": {
+                          "type": "string",
+                          "enum": ["CASCADE", "SET NULL", "RESTRICT"],
+                          "default": "CASCADE"
+                        }
+                      }
+                    },
+                    "max_length": {"type": "integer"},
+                    "precision": {"type": "integer"},
+                    "scale": {"type": "integer"}
+                  }
+                }
+              },
+              "indexes": {
+                "type": "array",
+                "description": "Additional indexes",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {"type": "string"},
+                    "columns": {"type": "array", "items": {"type": "string"}},
+                    "unique": {"type": "boolean", "default": false}
+                  }
+                }
+              },
+              "constraints": {
+                "type": "array",
+                "description": "Table constraints",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["unique", "check", "foreign_key"]
+                    },
+                    "definition": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "description": "ORM relationship definitions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "model": {"type": "string"},
+              "relationship_name": {"type": "string"},
+              "target_model": {"type": "string"},
+              "relationship_type": {
+                "type": "string",
+                "enum": ["one_to_many", "many_to_one", "many_to_many"]
+              },
+              "back_populates": {"type": "string"},
+              "cascade": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "workers": {
+      "type": "array",
+      "description": "Background worker task definitions",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "function_name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Task name",
+            "examples": ["send_welcome_email", "process_report", "cleanup_old_data"]
+          },
+          "description": {
+            "type": "string",
+            "description": "What this task does"
+          },
+          "function_name": {
+            "type": "string",
+            "description": "Python function name",
+            "examples": ["send_welcome_email_task", "process_daily_report"]
+          },
+          "schedule": {
+            "type": "object",
+            "description": "Schedule configuration",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["periodic", "on_demand", "triggered"],
+                "default": "on_demand"
+              },
+              "cron": {
+                "type": "string",
+                "description": "Cron expression for periodic tasks",
+                "examples": ["0 0 * * *", "*/15 * * * *"]
+              },
+              "interval_seconds": {
+                "type": "integer",
+                "description": "Interval for periodic tasks"
+              },
+              "trigger_event": {
+                "type": "string",
+                "description": "Event that triggers this task",
+                "examples": ["user_registered", "order_placed"]
+              }
+            }
+          },
+          "parameters": {
+            "type": "array",
+            "description": "Task parameters",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {"type": "string"},
+                "type": {"type": "string"},
+                "required": {"type": "boolean"}
+              }
+            }
+          },
+          "retry_policy": {
+            "type": "object",
+            "properties": {
+              "max_retries": {"type": "integer", "default": 3},
+              "retry_delay_seconds": {"type": "integer", "default": 60}
+            }
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "default": 300
+          }
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "description": "Security configuration",
+      "required": ["authentication", "cors"],
+      "properties": {
+        "authentication": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": ["jwt", "session", "oauth"],
+              "default": "jwt"
+            },
+            "jwt_config": {
+              "type": "object",
+              "properties": {
+                "algorithm": {"type": "string", "default": "HS256"},
+                "access_token_expire_minutes": {"type": "integer", "default": 30},
+                "refresh_token_expire_days": {"type": "integer", "default": 7}
+              }
+            },
+            "password_hashing": {
+              "type": "object",
+              "properties": {
+                "algorithm": {"type": "string", "default": "bcrypt"},
+                "rounds": {"type": "integer", "default": 12}
+              }
+            },
+            "oauth_providers": {
+              "type": "array",
+              "items": {"type": "string"},
+              "examples": [["google", "github"]]
+            }
+          }
+        },
+        "cors": {
+          "type": "object",
+          "properties": {
+            "allow_origins": {
+              "type": "array",
+              "items": {"type": "string"},
+              "default": ["http://localhost:3000"]
+            },
+            "allow_credentials": {"type": "boolean", "default": true},
+            "allow_methods": {
+              "type": "array",
+              "items": {"type": "string"},
+              "default": ["GET", "POST", "PUT", "DELETE", "PATCH"]
+            }
+          }
+        },
+        "rate_limiting": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "requests_per_minute": {"type": "integer", "default": 60},
+            "burst_size": {"type": "integer", "default": 10}
+          }
+        },
+        "input_validation": {
+          "type": "object",
+          "properties": {
+            "sanitize_html": {"type": "boolean", "default": true},
+            "max_request_size_mb": {"type": "integer", "default": 10}
+          }
+        }
+      }
+    },
+    "infrastructure": {
+      "type": "object",
+      "description": "Infrastructure components",
+      "properties": {
+        "web_server": {
+          "type": "string",
+          "enum": ["nginx", "apache"],
+          "default": "nginx"
+        },
+        "app_server": {
+          "type": "string",
+          "enum": ["uvicorn", "gunicorn"],
+          "default": "uvicorn"
+        },
+        "workers_per_instance": {
+          "type": "integer",
+          "default": 4
+        },
+        "redis": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "use_cases": {
+              "type": "array",
+              "items": {"type": "string"},
+              "examples": [["caching", "session_storage", "task_queue"]]
+            }
+          }
+        },
+        "ssl": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "provider": {
+              "type": "string",
+              "enum": ["letsencrypt", "custom"],
+              "default": "letsencrypt"
+            }
+          }
+        },
+        "monitoring": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": true},
+            "tools": {
+              "type": "array",
+              "items": {"type": "string"},
+              "default": ["systemd_logs", "nginx_logs"]
+            }
+          }
+        }
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "description": "Frontend architecture",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "enum": ["alpine_tailwind", "react", "vue"],
+          "default": "alpine_tailwind"
+        },
+        "pages": {
+          "type": "array",
+          "description": "Frontend page specifications",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {"type": "string"},
+              "route": {"type": "string"},
+              "template_file": {"type": "string"},
+              "components": {
+                "type": "array",
+                "items": {"type": "string"}
+              },
+              "api_dependencies": {
+                "type": "array",
+                "description": "API endpoints this page uses",
+                "items": {"type": "string"}
+              }
+            }
+          }
+        },
+        "static_assets": {
+          "type": "object",
+          "properties": {
+            "css_framework": {"type": "string", "default": "tailwind"},
+            "js_libraries": {
+              "type": "array",
+              "items": {"type": "string"},
+              "default": ["alpinejs"]
+            }
+          }
+        }
+      }
+    },
+    "file_structure": {
+      "type": "object",
+      "description": "Recommended project file structure",
+      "properties": {
+        "backend_root": {"type": "string", "default": "/var/www/app"},
+        "static_files": {"type": "string", "default": "/var/www/app/static"},
+        "templates": {"type": "string", "default": "/var/www/app/templates"},
+        "logs": {"type": "string", "default": "/var/log/app"}
+      }
+    },
+    "deployment_plan": {
+      "type": "array",
+      "description": "Ordered deployment steps",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {"type": "integer"},
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "commands": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "estimated_duration_seconds": {"type": "integer"}
+        }
+      }
+    }
+  }
+}

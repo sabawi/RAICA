@@ -1,0 +1,14 @@
+{
+  "specification": "Create a professional website for \"Bytes, Baits & Tackle International, LLC\", a unique company that combines software development services with fishing equipment sales.\n\nThe website should include:\n\n1. Homepage with:\n   - Hero section with company tagline \"Where Code Meets Catch\"\n   - Featured services/products\n   - Testimonials\n   - Call to action\n\n2. Services page with:\n   - Custom software development\n   - Mobile app development\n   - Web development\n   - IT consulting\n\n3. Products page with:\n   - Fishing rods and reels\n   - Fishing tackle and bait\n   - Fishing apparel and accessories\n   - Electronic fish finders\n\n4. About page with:\n   - Company history\n   - Mission statement\n   - Team members\n\n5. Contact page with:\n   - Contact form\n   - Company address and phone\n   - Email contact\n   - Business hours\n\n6. Backend features:\n   - User registration and login\n   - Product catalog with search and filtering\n   - Shopping cart functionality\n   - Contact form submissions\n   - Admin panel for managing products and orders\n\nUse HTML, CSS, JavaScript for frontend with a modern, responsive design.\nUse PHP for backend with SQLite database for simplicity.\nUse Apache2 as the web server.\nInclude proper security measures for user data.",
+  "deployment_config": {
+    "domain": "bytes-baits-tackle.com",
+    "port": 5090,
+    "use_ssl": false,
+    "web_server": "apache2",
+    "deploy_path": "/var/www/bytes_baits_tackle"
+  },
+  "ssh_auth": {
+    "method": "password",
+    "password": "Down2earth!"
+  }
+}

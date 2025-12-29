@@ -1,0 +1,9 @@
+{
+  "specification": "Build a simple todo app where users can add, remove, and mark tasks as complete. It should have a clean UI.",
+  "deployment_config": {
+    "web_server": "nginx",
+    "port": 8080,
+    "use_ssl": false,
+    "deploy_path": "/var/www"
+  }
+}

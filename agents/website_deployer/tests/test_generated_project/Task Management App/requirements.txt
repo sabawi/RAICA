@@ -1,0 +1,16 @@
+# Auto-generated requirements
+# Generated: 2025-11-23T22:11:11.910564
+
+alembic==1.12.1
+emails==0.6
+fastapi==0.104.1
+passlib[bcrypt]==1.7.4
+psycopg2-binary==2.9.9
+pydantic-settings==2.1.0
+pydantic==2.5.0
+python-dotenv==1.0.0
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+redis==5.0.1
+sqlalchemy==2.0.23
+uvicorn[standard]==0.24.0
