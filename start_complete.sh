@@ -4,6 +4,9 @@
 # Enhanced with optimizations, API-controllable features, and streamlined logging
 cd "$(dirname "$0")"
 
+# Ensure runtime directories exist
+mkdir -p logs runtime document_store
+
 # Check if server is already running
 if pgrep -f "python3 fastapi_server_complete.py" > /dev/null; then
     echo "❌ Server is already running!"
