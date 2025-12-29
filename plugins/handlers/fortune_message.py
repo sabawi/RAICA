@@ -6,7 +6,7 @@ Complies with Plugin System v1.0.0
 This plugin calls the Linux 'fortune' command to generate random
 funny, inspirational, or philosophical messages.
 
-Author: Agentic-RAG System
+Author: RAICA
 Created: 2025-10-02
 Version: 1.0.0
 """

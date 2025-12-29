@@ -1,6 +1,6 @@
 # Business Intelligence Automation Agent
 
-Automated business intelligence and strategic decision support agent that leverages the Agentic-RAG server's comprehensive capabilities.
+Automated business intelligence and strategic decision support agent that leverages the RAICA server's comprehensive capabilities.
 
 ## 🚀 Features
 
@@ -19,7 +19,7 @@ This agent automates the complete business intelligence workflow that typically 
 
 ## 🛠️ Capabilities
 
-The agent leverages these Agentic-RAG server tools:
+The agent leverages these RAICA server tools:
 - `get_news_summaries` - Latest news and market updates
 - `search_web` - Comprehensive web research
 - `published_papers_search` - Academic research
@@ -32,7 +32,7 @@ The agent leverages these Agentic-RAG server tools:
 ## 📋 Usage
 
 ### Prerequisites
-- Agentic-RAG server running on `http://localhost:5000`
+- RAICA server running on `http://localhost:5000`
 - Required environment variables configured (API keys, email settings)
 
 ### Quick Start
@@ -94,7 +94,7 @@ The agent can be scheduled to run weekly analysis every Monday at 9:00 AM, provi
 
 - Uses the server's secure email sender for report delivery
 - Handles sensitive document analysis with proper access controls
-- All API calls go through the Agentic-RAG server
+- All API calls go through the RAICA server
 - No local storage of sensitive data beyond the configured output directory
 
 ## 📁 Directory Structure

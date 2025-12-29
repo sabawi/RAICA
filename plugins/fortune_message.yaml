@@ -1,5 +1,5 @@
 # =============================================================================
-# Fortune Message Plugin - Example Plugin for Agentic-RAG Server
+# Fortune Message Plugin - Example Plugin for RAICA Server
 # =============================================================================
 # This plugin demonstrates the simplified plugin architecture by calling
 # the Linux "fortune" command to generate random funny/inspirational messages.
@@ -13,7 +13,7 @@ metadata:
   name: "fortune_message"
   version: "1.0.0"
   category: "productivity"
-  author: "Agentic-RAG System"
+  author: "RAICA"
   description: |
     Generate random funny, inspirational, or philosophical messages using
     the classic Linux fortune command. Returns a formatted message with

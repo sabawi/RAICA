@@ -11,7 +11,7 @@ Provides consistent citation formatting across all data source types:
 
 This is an ADD-ON module that enhances data presentation without breaking existing functionality.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

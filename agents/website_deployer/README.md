@@ -765,8 +765,8 @@ For developers working on this project, see the comprehensive development memo:
 
 ## License
 
-Part of the Agentic-RAG System
-Copyright © 2025 Agentic-RAG Development Team
+Part of the RAICA
+Copyright © 2025 RAICA Development Team
 
 ---
 

@@ -63,7 +63,7 @@ curl http://localhost:5000/health
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What is the current date and time?"}]
   }'
 ```
@@ -829,7 +829,7 @@ Simple text processing with OpenAI-compatible format.
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What is artificial intelligence?"}],
     "max_tokens": 500,
     "temperature": 0.7
@@ -846,7 +846,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
     },
     "finish_reason": "stop"
   }],
-  "model": "Agentic-RAG-Model1",
+  "model": "RAICA-Model1",
   "usage": {
     "prompt_tokens": 12,
     "completion_tokens": 245,
@@ -864,7 +864,7 @@ Advanced processing with full tool calling capabilities.
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "system", "content": "You are a helpful AI assistant with access to real-time information."},
       {"role": "user", "content": "Get the latest news about artificial intelligence and summarize it"}
@@ -874,7 +874,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 ```
 
 **Key Parameters:**
-- `model`: Use "Agentic-RAG-Model1" for full tool access (19-tool system)
+- `model`: Use "RAICA-Model1" for full tool access (19-tool system)
 - `stream`: Enable real-time response streaming
 - `messages`: Array with conversation history (system, user, assistant messages)
 - `temperature`: Control randomness (0.0-1.0)
@@ -916,13 +916,13 @@ curl "http://localhost:5000/v1/models"
   "object": "list",
   "data": [
     {
-      "id": "Agentic-RAG-Model1",
+      "id": "RAICA-Model1",
       "object": "model",
       "created": 1755089362,
       "owned_by": "local"
     },
     {
-      "id": "Agentic-RAG-Model2", 
+      "id": "RAICA-Model2", 
       "object": "model",
       "created": 1755089362,
       "owned_by": "local"
@@ -940,7 +940,7 @@ Full OpenAI API compatibility with agentic capabilities.
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Research the latest developments in quantum computing and create a summary report"}
     ],
@@ -954,7 +954,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
   "id": "chatcmpl-1755089514",
   "object": "chat.completion",
   "created": 1755089514,
-  "model": "Agentic-RAG-Model1",
+  "model": "RAICA-Model1",
   "choices": [
     {
       "index": 0,
@@ -1100,7 +1100,7 @@ curl "http://localhost:5000/metrics"
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Hi, I am working on a machine learning project about NLP"}
     ]
@@ -1110,7 +1110,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Hi, I am working on a machine learning project about NLP"},
       {"role": "assistant", "content": "That sounds exciting! NLP is a fascinating field with many applications. What specific aspect of NLP are you focusing on in your project?"},
@@ -1331,7 +1331,7 @@ Post-Processing
 # Test complete workflow
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Research latest tech news and create a report, then email it to user@example.com"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Research latest tech news and create a report, then email it to user@example.com"}]}'
 
 # Expected Results:
 # - 2 files created: report.md + report.html  
@@ -1344,7 +1344,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \
 # Test new append_file functionality
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Create a test file called notes.txt with Hello, then append World to it"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Create a test file called notes.txt with Hello, then append World to it"}]}'
 
 # Expected Results:
 # - File created with "Hello"
@@ -1465,7 +1465,7 @@ tail -f logs/server_complete.log | grep "🔌"
 # Test via API
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Use my_tool with input hello"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Use my_tool with input hello"}]}'
 ```
 
 #### Plugin Resource Configuration (Optional)
@@ -1799,7 +1799,7 @@ curl -f "http://localhost:5000/health" && echo "✅ Server responding" || echo "
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What time is it?"}]
   }' | jq '.choices[0].message.content' | grep -q "$(date +%Y)" && echo "✅ Tool calling works" || echo "❌ Tool calling failed"
 ```
@@ -1819,7 +1819,7 @@ curl -X POST "http://localhost:5000/documents/search" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": false
   }' | jq '.choices[0].message.content' | grep -q "." && echo "✅ OpenAI compatibility works" || echo "❌ OpenAI compatibility failed"
@@ -1846,7 +1846,7 @@ echo -n "Testing tool calling system... "
 RESPONSE=$(curl -s -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What is the current date?"}]
   }')
 echo "$RESPONSE" | jq -r '.choices[0].message.content' | grep -q "$(date +%Y)" && echo "✅ PASS" || echo "❌ FAIL"
@@ -1862,7 +1862,7 @@ echo -n "Testing OpenAI compatibility... "
 curl -s -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "Hello"}],
     "stream": false
   }' | jq '.choices[0]' > /dev/null && echo "✅ PASS" || echo "❌ FAIL"
@@ -1884,7 +1884,7 @@ ab -n 100 -c 10 -T "application/json" -p test_payload.json "http://localhost:500
 **Create test_payload.json:**
 ```json
 {
-  "model": "Agentic-RAG-Model1",
+  "model": "RAICA-Model1",
   "messages": [{"role": "user", "content": "What is artificial intelligence?"}],
   "stream": false
 }
@@ -2097,7 +2097,7 @@ if is_meta_task:
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1", 
+    "model": "RAICA-Model1", 
     "messages": [
       {"role": "user", "content": "Hi, I am working on a Python project"}
     ]
@@ -2107,7 +2107,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Hi, I am working on a Python project"},
       {"role": "assistant", "content": "Great! I'd be happy to help you with your Python project. What specific aspect are you working on or what challenges are you facing?"},
@@ -2142,8 +2142,8 @@ REQUEST_TIMEOUT=600    # 10 minutes
 
 **Step 2: Available Models**
 In Open-WebUI, you'll see these agentic models:
-- **Agentic-RAG-Model1** (Primary agentic model)
-- **Agentic-RAG-Model2** (Alternative agentic model)
+- **RAICA-Model1** (Primary agentic model)
+- **RAICA-Model2** (Alternative agentic model)
 
 #### Security Design
 
@@ -2394,7 +2394,7 @@ python -m py_compile fastapi_server_complete.py
 ./stop_complete.sh && ./start_complete.sh
 
 # 3. Multi-tool calling verification
-curl -X POST http://localhost:5000/v1/chat/completions -H "Content-Type: application/json" -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "test multiple tools"}]}'
+curl -X POST http://localhost:5000/v1/chat/completions -H "Content-Type: application/json" -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "test multiple tools"}]}'
 
 # 4. Configuration validation
 grep -E "context_window_size|num_predict" config/llm_config.yaml
@@ -2415,12 +2415,12 @@ grep -E "context_window_size|num_predict" config/llm_config.yaml
    # Simple test (direct tool calls)
    curl -X POST http://localhost:5000/v1/chat/completions \
      -H "Content-Type: application/json" \
-     -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Create a PDF file called test.pdf with content Hello World and email it to user@example.com"}]}'
+     -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Create a PDF file called test.pdf with content Hello World and email it to user@example.com"}]}'
    
    # Complex test (post-LLM execution)
    curl -X POST http://localhost:5000/v1/chat/completions \
      -H "Content-Type: application/json" \
-     -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Look up news and create a PDF report and email it to user@example.com"}]}'
+     -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Look up news and create a PDF report and email it to user@example.com"}]}'
    ```
 
 3. **Verification Steps**:
@@ -2496,7 +2496,7 @@ tail -f logs/server_complete.log | grep -i embed
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What is the current date and time?"}]
   }'
 
@@ -2539,7 +2539,7 @@ curl -v telnet://smtp.gmail.com:587
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "List my recent emails from gmail"}]
   }'
 
@@ -2547,7 +2547,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "Send a test email to yourself@gmail.com with subject Test"}]
   }'
 ```

@@ -23,7 +23,7 @@ class EDGARConfig:
     # See: https://www.sec.gov/os/accessing-edgar-data
     USER_AGENT = os.getenv(
         'SEC_USER_AGENT',
-        'Agentic-RAG-System/1.0 research@example.com'  # Replace with real email if needed
+        'RAICA/1.0 research@example.com'  # Replace with real email if needed
     )
 
     # Rate limiting (SEC allows 10 requests/second)

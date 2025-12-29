@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Agent Template for Agentic-RAG Server
+Agent Template for RAICA Server
 =====================================
 
-Copy this template to create new agents that interact with the Agentic-RAG server.
+Copy this template to create new agents that interact with the RAICA server.
 
 Instructions:
 1. Copy this file: cp agent_template.py my_new_agent.py
@@ -57,7 +57,7 @@ class MyAgent:
         Initialize the agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             output_dir: Directory to save output files
             max_retries: Maximum number of retry attempts on failure
         """
@@ -80,7 +80,7 @@ class MyAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -105,7 +105,7 @@ class MyAgent:
                 logger.info(f"Executing task (attempt {attempt}/{self.max_retries})...")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.7,
                     max_tokens=4096
@@ -247,7 +247,7 @@ class MyAgent:
 def main():
     """Main entry point with argument parsing."""
     parser = argparse.ArgumentParser(
-        description="[AGENT_NAME] for Agentic-RAG Server",
+        description="[AGENT_NAME] for RAICA Server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

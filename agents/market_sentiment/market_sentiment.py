@@ -12,7 +12,7 @@ Features:
 - Create sentiment trend reports
 - Send investment recommendations
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -113,7 +113,7 @@ class MarketSentimentAgent:
         Initialize the market sentiment agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             symbols: List of stock symbols to monitor (e.g., ['AAPL', 'TSLA'])
             sectors: List of sectors to monitor (e.g., ['technology', 'finance'])
             recipient_email: Email for sentiment reports
@@ -145,7 +145,7 @@ class MarketSentimentAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -218,7 +218,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Balanced for analysis
                     max_tokens=4096
@@ -294,7 +294,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,  # Balanced for practical recommendations
                     max_tokens=2048
@@ -368,7 +368,7 @@ CRITICAL FORMATTING REQUIREMENTS:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Balanced for dashboard
                     max_tokens=2048
@@ -443,7 +443,7 @@ CRITICAL FORMATTING REQUIREMENTS:
             logger.info(f"Sending sentiment report to {self.recipient_email}...")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (
@@ -580,7 +580,7 @@ CRITICAL FORMATTING REQUIREMENTS:
                 logger.info(f"Analyzing weekly trends (attempt {attempt}/{self.max_retries})...")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": trend_prompt}],
                     temperature=0.4,
                     max_tokens=2048

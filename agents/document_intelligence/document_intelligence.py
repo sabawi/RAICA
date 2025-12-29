@@ -13,7 +13,7 @@ Features:
 - Generate searchable archives
 - Send document insights via email
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -61,7 +61,7 @@ class DocumentIntelligenceAgent:
         Initialize the document intelligence agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             document_dirs: List of directories to monitor for documents
             watch_subdirs: Whether to monitor subdirectories recursively
             recipient_email: Email for document reports
@@ -93,7 +93,7 @@ class DocumentIntelligenceAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -153,7 +153,7 @@ Format as an HTML report with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Balanced for analysis
                     max_tokens=4096
@@ -217,7 +217,7 @@ Provide a structured intelligence summary with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,  # Slightly higher for strategic analysis
                     max_tokens=2048
@@ -277,7 +277,7 @@ Format as clear, scannable executive summaries with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,  # Lower for factual summaries
                     max_tokens=2048
@@ -337,7 +337,7 @@ Create a relationship map showing how documents connect and relate to each other
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.6,  # Higher for relationship analysis
                     max_tokens=2048
@@ -414,7 +414,7 @@ Create a relationship map showing how documents connect and relate to each other
             logger.info(f"Sending document report to {self.recipient_email}...")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (
@@ -667,7 +667,7 @@ Format as a comprehensive weekly trend analysis.
                 logger.info(f"Analyzing weekly trends (attempt {attempt}/{self.max_retries})...")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": trend_prompt}],
                     temperature=0.5,
                     max_tokens=2048

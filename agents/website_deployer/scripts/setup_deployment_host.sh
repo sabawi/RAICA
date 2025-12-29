@@ -9,7 +9,7 @@
 # Usage:
 #   ./scripts/setup_deployment_host.sh
 #
-# Author: Agentic-RAG Development Team
+# Author: RAICA Development Team
 # Version: 1.0.0
 ################################################################################
 

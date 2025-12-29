@@ -2,7 +2,7 @@ metadata:
   name: "file_stats"
   version: "1.0.0"
   category: "system"
-  author: "Agentic-RAG System"
+  author: "RAICA"
   description: |
     Get file or directory statistics including size, permissions, modification time, and line count.
     Use this when user asks about file size, file info, or directory contents.

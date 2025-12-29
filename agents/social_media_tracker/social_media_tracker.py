@@ -13,7 +13,7 @@ Features:
 - Create weekly social media reports
 - Send insights via email
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -60,7 +60,7 @@ class SocialMediaTrackerAgent:
         Initialize the social media tracker agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             brands: List of brands to monitor
             topics: List of topics to track
             recipient_email: Email for social media reports
@@ -94,7 +94,7 @@ class SocialMediaTrackerAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -155,7 +155,7 @@ Format as an HTML report with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,  # Balanced for social analysis
                     max_tokens=4096
@@ -212,7 +212,7 @@ Format as a structured brand sentiment report.
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Balanced for sentiment
                     max_tokens=2048
@@ -273,7 +273,7 @@ For each piece of viral content, provide:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,  # Balanced for web search
                     max_tokens=2048
@@ -339,7 +339,7 @@ Format as a comprehensive competitor analysis report with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.6,  # Higher for comparative analysis
                     max_tokens=2048
@@ -415,7 +415,7 @@ Format as a comprehensive competitor analysis report with:
             logger.info(f"Sending social media report to {self.recipient_email}...")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (
@@ -610,7 +610,7 @@ Format as a comprehensive weekly trend analysis.
                 logger.info(f"Analyzing weekly trends (attempt {attempt}/{self.max_retries})...")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": trend_prompt}],
                     temperature=0.5,
                     max_tokens=2048

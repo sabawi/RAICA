@@ -184,7 +184,7 @@ python news_retriever_improved.py --test
 - Verify network connectivity
 - Run with `--verbose` for detailed output
 
-## Integration with Agentic-RAG Server
+## Integration with RAICA Server
 
 This agent leverages the server's `get_news_summaries` tool by:
 1. Sending optimized prompt to server
@@ -216,7 +216,7 @@ This agent leverages the server's `get_news_summaries` tool by:
 
 ## License
 
-Part of the Agentic-RAG Server project.
+Part of the RAICA Server project.
 
 ## Support
 

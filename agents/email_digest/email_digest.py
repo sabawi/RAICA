@@ -12,7 +12,7 @@ Features:
 - Send HTML-formatted digest reports
 - Track email patterns and trends
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -70,7 +70,7 @@ class EmailDigestAgent:
         Initialize the email digest agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             email_provider: Email provider to retrieve from (e.g., gmail_primary) - REQUIRED
             hours_back: Number of hours to look back for emails
             recipient_email: Email for digest reports
@@ -121,7 +121,7 @@ class EmailDigestAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -174,7 +174,7 @@ DO NOT send any additional emails or call other analysis agents.
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,  # Low temperature for factual content
                     max_tokens=4096
@@ -234,7 +234,7 @@ DO NOT call other agents (stock_monitor, news_retriever, etc.) even if emails me
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Slightly higher for analysis
                     max_tokens=2048
@@ -302,7 +302,7 @@ DO NOT call other agents (stock_monitor, news_retriever, etc.) even if emails me
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,  # Low temperature for accuracy
                     max_tokens=2048
@@ -480,7 +480,7 @@ DO NOT call other agents (stock_monitor, news_retriever, etc.) even if emails me
                 logger.info(f"Analyzing email patterns (attempt {attempt}/{self.max_retries})...")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": trend_prompt}],
                     temperature=0.4,
                     max_tokens=2048

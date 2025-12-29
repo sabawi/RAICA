@@ -3,7 +3,7 @@
 Enhanced News Retriever Agent
 =============================
 
-An improved news retrieval agent that leverages the Agentic-RAG server's
+An improved news retrieval agent that leverages the RAICA server's
 full capabilities including proper tool usage, error handling, and flexible output.
 
 Features:
@@ -15,7 +15,7 @@ Features:
 - Proper logging with rotation
 - Retry logic with exponential backoff
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 2.0.0
 """
 
@@ -60,7 +60,7 @@ class NewsRetrieverAgent:
         Initialize the news retriever agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             recipient_email: Email address to send news summaries to
             output_dir: Directory to save HTML output files
             max_retries: Maximum number of retry attempts on failure
@@ -88,7 +88,7 @@ class NewsRetrieverAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -111,7 +111,7 @@ class NewsRetrieverAgent:
 
                 # Improved prompt that leverages the server's news tool
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{
                         "role": "user",
                         "content": (
@@ -204,7 +204,7 @@ class NewsRetrieverAgent:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (
@@ -310,7 +310,7 @@ class NewsRetrieverAgent:
 def main():
     """Main entry point with argument parsing."""
     parser = argparse.ArgumentParser(
-        description="Enhanced News Retriever Agent for Agentic-RAG Server",
+        description="Enhanced News Retriever Agent for RAICA Server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

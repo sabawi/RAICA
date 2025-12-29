@@ -24,7 +24,7 @@ Usage:
     # With automation file:
     python examples/zero_shot_deployment.py --auto-input config.json
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 2.0.0
 """
 

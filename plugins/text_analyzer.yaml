@@ -2,7 +2,7 @@ metadata:
   name: "text_analyzer"
   version: "1.0.0"
   category: "data"
-  author: "Agentic-RAG System"
+  author: "RAICA"
   description: |
     Analyze text for word count, character count, reading time, sentiment, and common words.
     Use this when user asks to analyze text, count words, or assess readability.

@@ -24,7 +24,7 @@ CONFIGURATION:
 All configuration values are loaded from config/agents_config.yaml.
 No hardcoded configuration values per PROJECT_CONFIGURATION_DIRECTIVE.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.1.0
 """
 

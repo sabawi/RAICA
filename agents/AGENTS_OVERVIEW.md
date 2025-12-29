@@ -1,6 +1,6 @@
-# Agentic-RAG Client Agents
+# RAICA Client Agents
 
-This directory contains client agents that interact with the Agentic-RAG server to perform automated tasks.
+This directory contains client agents that interact with the RAICA server to perform automated tasks.
 
 ## 📋 Available Agents
 

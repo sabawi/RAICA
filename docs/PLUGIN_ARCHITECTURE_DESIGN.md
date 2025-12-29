@@ -1,5 +1,5 @@
 # Plugin Architecture Design Document
-**Agentic-RAG Server - Plugin System Enhancement**
+**RAICA Server - Plugin System Enhancement**
 
 **Version:** 1.0.0
 **Status:** Design Phase
@@ -28,7 +28,7 @@
 ## 1. Executive Summary
 
 ### Purpose
-Enhance the Agentic-RAG server's tool system with a robust, secure, and extensible plugin architecture that enables:
+Enhance the RAICA server's tool system with a robust, secure, and extensible plugin architecture that enables:
 - **Config-driven plugin definitions** (YAML/JSON)
 - **Process isolation** for plugin execution
 - **Security sandboxing** with resource limits

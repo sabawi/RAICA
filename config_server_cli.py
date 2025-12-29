@@ -37,7 +37,7 @@ Examples:
     # Delete an alias
     ./config_server_cli.py delete --alias openrouter_deepseek
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.1
 """
 

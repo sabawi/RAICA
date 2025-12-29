@@ -20,7 +20,7 @@ def test_gaza_email():
 
     url = "http://localhost:5000/v1/chat/completions"
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [{"role": "user", "content": prompt}]
     }
 

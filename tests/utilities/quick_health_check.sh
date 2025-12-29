@@ -69,7 +69,7 @@ echo -n "OpenAI compatibility... "
 OPENAI_RESPONSE=$(curl -s -X POST "$BASE_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": false
     }' 2>/dev/null)

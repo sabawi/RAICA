@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide explains how to effectively use email workflows in the Agentic-RAG system. The system intelligently routes email requests through two different execution paths based on your intent:
+This guide explains how to effectively use email workflows in the RAICA system. The system intelligently routes email requests through two different execution paths based on your intent:
 
 - **PRE-LLM Execution**: When you want to email existing content (like previous responses)
 - **POST-LLM Execution**: When you want the AI to generate new content and email it

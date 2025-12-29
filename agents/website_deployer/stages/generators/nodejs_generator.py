@@ -5,7 +5,7 @@ Node.js Code Generator for Website Deployer Agent
 
 Generates production-ready Node.js code from architecture specifications.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

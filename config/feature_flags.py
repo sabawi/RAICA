@@ -1,7 +1,7 @@
 """
 Feature Flags Configuration
 
-Controls rollout of enhanced features for the Agentic-RAG System.
+Controls rollout of enhanced features for the RAICA.
 
 All flags default to False (disabled) for safety.
 Enable only after thorough testing.

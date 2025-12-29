@@ -15,7 +15,7 @@ Migration Guide:
 All CSS classes from this module have been merged into the central
 template at templates/html_report_template.html.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 2.0.0 (Compatibility Wrapper)
 """
 
@@ -179,7 +179,7 @@ def send_email_report(
             email_content += f"Attach: {attachment_path.absolute()}"
 
         response = client.chat.completions.create(
-            model="Agentic-RAG-Model1",
+            model="RAICA-Model1",
             messages=[{"role": "user", "content": email_content}],
             max_tokens=500
         )

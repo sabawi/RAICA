@@ -8,7 +8,7 @@ Implements validation layers for the CLI Coding Agent v2.0:
 - Layer 4: Import Resolution
 - Layer 7: Execution Validation (sandbox)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 2.0.0
 """
 

@@ -2,7 +2,7 @@
 Security Validator - Input/output validation and security policy enforcement
 Validates plugin inputs/outputs, detects injection attacks, enforces security policies.
 
-Author: Agentic-RAG System
+Author: RAICA
 Created: 2025-10-02
 Version: 1.0.0
 """

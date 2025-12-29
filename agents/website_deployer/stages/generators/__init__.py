@@ -11,7 +11,7 @@ Specialized generators for different code components:
 - FrontendGenerator: HTML templates
 - ConfigGenerator: Configuration files
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

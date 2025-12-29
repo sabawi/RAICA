@@ -179,7 +179,7 @@ curl -X POST http://localhost:5000/llama3_1b/stream \
 ```bash
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ---

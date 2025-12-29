@@ -16,7 +16,7 @@ Usage:
 
     python examples/command_execution_demo.py
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

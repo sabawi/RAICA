@@ -27,8 +27,8 @@ All configuration is loaded from `config/agents_config.yaml`. See [Agent Configu
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `server.base_url` | `http://localhost:5000/v1` | Agentic-RAG server URL |
-| `llm.model` | `Agentic-RAG-Model1` | LLM model for code generation |
+| `server.base_url` | `http://localhost:5000/v1` | RAICA server URL |
+| `llm.model` | `RAICA-Model1` | LLM model for code generation |
 | `llm.temperature` | `0.3` | Lower for deterministic code output |
 | `llm.max_tokens` | `8192` | Larger for complete code files |
 | `execution.max_iterations` | `10` | Maximum debug/test iterations |

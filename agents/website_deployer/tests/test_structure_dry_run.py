@@ -12,7 +12,7 @@ This test verifies:
 - Class definitions are correct
 - Method signatures are correct
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

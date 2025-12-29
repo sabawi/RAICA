@@ -1,5 +1,5 @@
 """
-Common utilities for Agentic-RAG agents.
+Common utilities for RAICA agents.
 
 This module provides shared functionality across all agents including:
 - Centralized configuration loading from config/agents_config.yaml

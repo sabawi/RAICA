@@ -1518,4 +1518,4 @@ The Zero-Shot Website Deployment System eliminates the complexity of web deploym
 **Last Updated:** 2025-12-02
 **License:** MIT
 
-**Built with ❤️ by Agentic-RAG Development Team**
+**Built with ❤️ by RAICA Development Team**

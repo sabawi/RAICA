@@ -437,7 +437,7 @@ After changing model configurations:
 - **Tool Name:** config_server_cli.py
 - **Version:** 1.0.1
 - **Last Updated:** 2025-10-25
-- **Compatibility:** Agentic-RAG Server v1.0.3.26+
+- **Compatibility:** RAICA Server v1.0.3.26+
 - **Python:** 3.8+
 - **Dependencies:** PyYAML
 

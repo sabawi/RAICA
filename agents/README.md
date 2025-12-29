@@ -1,6 +1,6 @@
-# Agentic-RAG Server - Autonomous Agents
+# RAICA Server - Autonomous Agents
 
-This directory contains autonomous agents that leverage the Agentic-RAG server's capabilities to perform automated tasks.
+This directory contains autonomous agents that leverage the RAICA server's capabilities to perform automated tasks.
 
 ## 📁 Directory Structure
 
@@ -249,7 +249,7 @@ python autonomous_system_tuner.py --dry-run
 
 ### Prerequisites
 
-1. **Agentic-RAG Server Running:**
+1. **RAICA Server Running:**
 ```bash
 # From project root
 ./start_complete.sh
@@ -515,7 +515,7 @@ tail -f agent_name.log
 
 ## 📄 License
 
-Part of the Agentic-RAG Server project.
+Part of the RAICA Server project.
 
 ---
 

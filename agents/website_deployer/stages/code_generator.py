@@ -14,7 +14,7 @@ Generates:
 - Frontend templates (Alpine.js + Tailwind)
 - Configuration files (nginx, systemd, .env)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

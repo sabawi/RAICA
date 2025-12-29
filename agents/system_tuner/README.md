@@ -21,8 +21,8 @@ All configuration is loaded from `config/agents_config.yaml`. See [Agent Configu
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `server.base_url` | `http://localhost:5000/v1` | Agentic-RAG server URL |
-| `llm.model` | `Agentic-RAG-Model1` | LLM model for research |
+| `server.base_url` | `http://localhost:5000/v1` | RAICA server URL |
+| `llm.model` | `RAICA-Model1` | LLM model for research |
 | `llm.temperature` | `0.3` | Lower for factual responses |
 | `safety.dry_run_default` | `true` | Default to safe mode |
 | `safety.forbidden_patterns` | `["rm -rf", ...]` | Commands never allowed |

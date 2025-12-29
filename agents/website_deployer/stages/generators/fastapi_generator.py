@@ -5,7 +5,7 @@ FastAPI Backend Generator
 
 Generates FastAPI application with all endpoints.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

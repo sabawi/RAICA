@@ -350,7 +350,7 @@ async def test_fortune_plugin_validation():
         name="fortune_message",
         version="1.0.0",
         category="productivity",
-        author="Agentic-RAG System",
+        author="RAICA",
         description="Generate random messages",
         handler="handlers/fortune_message.py",
         timeout=10,

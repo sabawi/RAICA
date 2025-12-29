@@ -2,7 +2,7 @@
 
 ## Overview
 
-All autonomous agents in the Agentic-RAG system use a centralized configuration file located at `config/agents_config.yaml`. This configuration is **separate** from the server's `llm_config.yaml` to allow:
+All autonomous agents in the RAICA system use a centralized configuration file located at `config/agents_config.yaml`. This configuration is **separate** from the server's `llm_config.yaml` to allow:
 
 - Agents to run on different hosts than the server
 - Independent agent deployment and configuration
@@ -30,7 +30,7 @@ defaults:
     api_key: "not-required"
 
   llm:
-    model: "Agentic-RAG-Model1"
+    model: "RAICA-Model1"
     temperature: 0.7
     max_tokens: 4096
     timeout: 600

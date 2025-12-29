@@ -9,7 +9,7 @@ Tests the following enhancements:
 4. Investment recommendation (for public companies)
 5. Data sources section (always included)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Date: 2025-11-01
 """
 

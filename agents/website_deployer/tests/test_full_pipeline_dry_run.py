@@ -12,7 +12,7 @@ Phases tested:
 3. Code Generation (real file generation)
 4. Deployment Orchestration (logic only, no SSH)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Agentic-RAG Server Service Installer
+# RAICA Server Service Installer
 # This script installs the server as a systemd service
 
 set -e  # Exit on any error
@@ -18,7 +18,7 @@ CURRENT_DIR="$(pwd)"
 CURRENT_USER="$(whoami)"
 CURRENT_GROUP="$(id -gn)"
 
-echo -e "${BLUE}🚀 Agentic-RAG Server Service Installer${NC}"
+echo -e "${BLUE}🚀 RAICA Server Service Installer${NC}"
 echo -e "${BLUE}======================================${NC}"
 echo ""
 
@@ -32,7 +32,7 @@ fi
 # Check if we're in the correct directory
 if [ ! -f "fastapi_server_complete.py" ]; then
     echo -e "${RED}❌ Error: fastapi_server_complete.py not found${NC}"
-    echo -e "${YELLOW}💡 Please run this script from the Agentic-RAG server directory${NC}"
+    echo -e "${YELLOW}💡 Please run this script from the RAICA server directory${NC}"
     exit 1
 fi
 
@@ -64,7 +64,7 @@ echo -e "${BLUE}📝 Creating systemd service file...${NC}"
 
 cat > /tmp/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=Agentic-RAG Server - AI-powered multi-LLM orchestration server
+Description=RAICA Server - AI-powered multi-LLM orchestration server
 Documentation=file://${CURRENT_DIR}/README.md
 After=network.target ollama.service
 Wants=ollama.service
@@ -183,4 +183,4 @@ esac
 
 echo ""
 echo -e "${GREEN}🎉 Installation complete!${NC}"
-echo -e "${BLUE}The Agentic-RAG server is now configured as a system service.${NC}"
+echo -e "${BLUE}The RAICA server is now configured as a system service.${NC}"

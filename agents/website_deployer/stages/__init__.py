@@ -9,7 +9,7 @@ Multi-stage deployment pipeline:
 4. DeploymentOrchestrator - Deploy application to server (Phase 6-7) ✅
 5. Validator - Validate deployment (Phase 8)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

@@ -5,7 +5,7 @@ PHP Code Generator for Website Deployer Agent
 
 Generates production-ready PHP code from architecture specifications.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

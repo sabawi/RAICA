@@ -94,7 +94,7 @@ Test that everything is working:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Hello! What can you help me with today?"}
     ],
@@ -179,7 +179,7 @@ POST /v1/chat/completions
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Your question here"}
     ],
@@ -189,7 +189,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 
 **Parameters:**
 - `messages`: Array of message objects with role and content
-- `model`: AI model to use ("Agentic-RAG-Model1")
+- `model`: AI model to use ("RAICA-Model1")
 - `stream`: Stream responses in real-time (true/false)
 - `temperature`: Controls randomness in responses (0.0-1.0)
 - `max_tokens`: Maximum response length
@@ -202,7 +202,7 @@ For applications expecting OpenAI API format:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "What is the weather like today?"}
     ]
@@ -224,7 +224,7 @@ curl "http://localhost:5000/ollama/models"
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Find the latest news about electric vehicles and summarize the key developments"}
     ],
@@ -237,7 +237,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Analyze this research paper and explain the methodology: https://arxiv.org/pdf/2501.00139v2.pdf"}
     ],
@@ -254,7 +254,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Summarize my last 3 emails from Gmail"}
     ],
@@ -267,7 +267,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Find unread emails from work about the project deadline"}
     ],
@@ -280,7 +280,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Send a professional email to john@company.com about our project meeting tomorrow at 2 PM, include agenda items"}
     ],
@@ -299,7 +299,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Find round-trip flights from Chicago to Miami, leaving January 15, returning January 20, for 2 people"}
     ],
@@ -312,7 +312,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Analyze Apple stock performance over the last 30 days and provide investment insights"}
     ],
@@ -325,7 +325,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Create a Python script that calculates compound interest and run it with principal=1000, rate=5%, time=10 years"}
     ],
@@ -338,7 +338,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Explain quantum computing concepts"}
     ],
@@ -517,7 +517,7 @@ When multiple versions of the same document exist (PDF, HTML, Markdown), you can
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Email the quarterly report in PDF format to manager@company.com"}
     ]
@@ -529,7 +529,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Send me the HTML version of the documentation"}
     ]
@@ -567,7 +567,7 @@ You can customize the AI's behavior for specific tasks by providing system promp
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "system", "content": "You are a senior financial analyst. Provide detailed technical analysis with specific recommendations. Always include risk assessment and market context."},
       {"role": "user", "content": "Analyze this financial data"}
@@ -584,7 +584,7 @@ The AI can handle complex workflows involving multiple tools:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Research the latest developments in renewable energy, create a comprehensive market analysis report with charts, and email it to the board of directors with high priority"}
     ]
@@ -606,7 +606,7 @@ Process and analyze images:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": [
@@ -625,7 +625,7 @@ Schedule meetings and manage your calendar:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Schedule a team meeting for next Tuesday at 2 PM, invite john@company.com and sarah@company.com, set agenda for project review"}
     ]
@@ -640,7 +640,7 @@ Generate, execute, and test code:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Create a Python web scraper that extracts product prices from an e-commerce site, include error handling and save results to CSV"}
     ]
@@ -655,7 +655,7 @@ Send professional emails with file attachments:
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Generate a quarterly sales report based on our latest data and email it to stakeholders@company.com with the raw data file attached"}
     ]
@@ -685,7 +685,7 @@ curl "http://localhost:5000/health"
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Hello, are you working correctly?"}
     ],
@@ -740,7 +740,7 @@ ollama ps
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "What time is it?"}
     ]
@@ -832,7 +832,7 @@ curl -I https://duckduckgo.com
 curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [
       {"role": "user", "content": "Search for today's technology news"}
     ]

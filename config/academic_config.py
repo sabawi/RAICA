@@ -96,7 +96,7 @@ class AcademicConfig:
     MAX_RESULTS_PER_SOURCE = 20
 
     # User-Agent for API requests
-    USER_AGENT = "Agentic-RAG-System/1.0 (Academic Research; research@example.com)"
+    USER_AGENT = "RAICA/1.0 (Academic Research; research@example.com)"
 
     @classmethod
     def get_headers(cls, api: str = None) -> dict:

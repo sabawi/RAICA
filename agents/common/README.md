@@ -1,6 +1,6 @@
 # Common Agent Utilities
 
-This directory contains shared utilities used by all Agentic-RAG agents.
+This directory contains shared utilities used by all RAICA agents.
 
 ## Modules
 

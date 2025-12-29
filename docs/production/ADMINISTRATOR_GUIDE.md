@@ -647,7 +647,7 @@ time curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
@@ -1611,7 +1611,7 @@ tail -f logs/server_complete.log | grep "🔌 Plugin: your_plugin"
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": "Use your_plugin to test functionality"
@@ -1938,7 +1938,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "Send a test email to test@example.com with subject Test Email"}],
     "stream": false
   }'
@@ -1955,7 +1955,7 @@ The system supports multiple authentication methods:
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Hello"}]}'
 
 # Basic API key validation
 # Configure API keys in environment or configuration files
@@ -2141,7 +2141,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "What is the current date and time?"}],
     "stream": false
   }'
@@ -2732,7 +2732,7 @@ POST /documents/search
 # OpenAI-compatible chat
 POST /v1/chat/completions
 {
-  "model": "Agentic-RAG-Model1",
+  "model": "RAICA-Model1",
   "messages": [{"role": "user", "content": "Hello"}],
   "stream": false
 }

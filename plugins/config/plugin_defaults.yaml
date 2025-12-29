@@ -1,7 +1,7 @@
 # =============================================================================
 # Plugin System Default Configuration
 # =============================================================================
-# This file contains default settings for all plugins in the Agentic-RAG server.
+# This file contains default settings for all plugins in the RAICA server.
 # Individual plugins can override these settings in their YAML definitions.
 #
 # IMPORTANT: This file is required for fail-fast configuration compliance.

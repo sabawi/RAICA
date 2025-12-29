@@ -2,7 +2,7 @@ metadata:
   name: "weather_info"
   version: "1.0.0"
   category: "productivity"
-  author: "Agentic-RAG System"
+  author: "RAICA"
   description: |
     Get current weather information for a specified city using wttr.in service.
     Returns temperature, conditions, humidity, and wind speed.

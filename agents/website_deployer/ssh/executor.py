@@ -13,7 +13,7 @@ Features:
 - Execution history tracking
 - Rollback support
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

@@ -85,20 +85,20 @@ class WorkflowPlanner:
         self.intelligent_resolver = IntelligentDependencyResolver()
         self.researched_dependencies = []  # Cache for researched dependencies
         self.security_patterns = {}  # Cache for security patterns
-        logger.info("WorkflowPlanner initialized with enhanced dependency resolution and Agentic-RAG integration")
+        logger.info("WorkflowPlanner initialized with enhanced dependency resolution and RAICA integration")
 
     def _research_dependencies_sync(self, spec: DetailedSpecification):
         """
-        Synchronous wrapper for async dependency research using Agentic-RAG.
+        Synchronous wrapper for async dependency research using RAICA.
 
-        Queries the parent server's Agentic-RAG model to get:
+        Queries the parent server's RAICA model to get:
         - Latest dependencies with versions
         - Security implementation patterns
         - Best practices for the tech stack
         """
         import asyncio
 
-        logger.info("🔬 Researching dependencies via parent Agentic-RAG model...")
+        logger.info("🔬 Researching dependencies via parent RAICA model...")
 
         # Extract features from spec
         features = []
@@ -160,7 +160,7 @@ class WorkflowPlanner:
             self.tech_config = spec.get_tech_config()
             logger.info(f"Using tech config: {self.tech_config.tech_key}")
 
-        # NEW: Research dependencies using Agentic-RAG BEFORE generating prompts
+        # NEW: Research dependencies using RAICA BEFORE generating prompts
         self._research_dependencies_sync(spec)
 
         # Step 1: Identify all files needed
@@ -228,7 +228,7 @@ class WorkflowPlanner:
                     prompt=f"Generate empty __init__.py for {path}"
                 )
 
-        # Dependency file with Agentic-RAG researched dependencies
+        # Dependency file with RAICA researched dependencies
         dep_file = self.tech_config.get_dependency_file_name()
         if dep_file != "none":
             files[dep_file] = FileSpecification(
@@ -629,15 +629,15 @@ class WorkflowPlanner:
         """
         Create prompt for dependency file generation with researched dependencies injected.
 
-        If Agentic-RAG research succeeded, inject researched dependencies.
+        If RAICA research succeeded, inject researched dependencies.
         Otherwise, use generic prompt and let LLM guess (old behavior).
         """
         if self.researched_dependencies:
-            # SUCCESS: Inject researched dependencies from Agentic-RAG
+            # SUCCESS: Inject researched dependencies from RAICA
             deps_str = "\n".join(self.researched_dependencies)
             return f"""Generate {dep_file} for {self.tech_config.get_tech_stack_description()}.
 
-REQUIRED DEPENDENCIES (researched via parent Agentic-RAG model with tool calling):
+REQUIRED DEPENDENCIES (researched via parent RAICA model with tool calling):
 {deps_str}
 
 CRITICAL INSTRUCTIONS:
@@ -821,7 +821,7 @@ Include routers from: {groups_str}
         Create prompt for security utilities using workflow-based approach.
 
         If email verification is enabled, includes complete workflow integration.
-        Enhanced with Agentic-RAG researched security patterns.
+        Enhanced with RAICA researched security patterns.
         """
         auth_method = spec.authentication.get('method', 'JWT')
         token_expiry = spec.authentication.get('token_expiry', '30 minutes')
@@ -845,7 +845,7 @@ Use python-jose for JWT, passlib for password hashing.
         # Inject researched security patterns if available
         if self.security_patterns:
             logger.info(f"✅ Injecting {len(self.security_patterns)} security patterns into security prompt")
-            patterns_prompt = "\n\nSECURITY IMPLEMENTATION PATTERNS (from Agentic-RAG research):\n"
+            patterns_prompt = "\n\nSECURITY IMPLEMENTATION PATTERNS (from RAICA research):\n"
 
             for pattern_name, pattern_code in self.security_patterns.items():
                 patterns_prompt += f"\n{pattern_name.upper()} PATTERN:\n```\n{pattern_code}\n```\n"

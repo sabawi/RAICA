@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Quick test to verify workflow planner integration with Agentic-RAG research.
+Quick test to verify workflow planner integration with RAICA research.
 """
 import sys
 import os

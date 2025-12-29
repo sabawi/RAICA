@@ -8,7 +8,7 @@ Verifies:
 3. Citation formatter works
 4. No breaking changes to existing functionality
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Date: 2025-11-01
 """
 

@@ -1,6 +1,6 @@
-# 🚀 Agentic-RAG Server Examples
+# 🚀 RAICA Server Examples
 
-This directory contains comprehensive examples showcasing the full power of the Agentic-RAG server. These examples demonstrate creative, real-world scenarios using OpenAI-compatible endpoints with sophisticated multi-tool coordination.
+This directory contains comprehensive examples showcasing the full power of the RAICA server. These examples demonstrate creative, real-world scenarios using OpenAI-compatible endpoints with sophisticated multi-tool coordination.
 
 ## 📁 Examples Overview
 
@@ -89,7 +89,7 @@ python examples/mega_multitool_orchestrator.py
 ## 🛠️ Setup Requirements
 
 ### Server Configuration
-Ensure your Agentic-RAG server is running:
+Ensure your RAICA server is running:
 ```bash
 ./start_complete.sh
 ```
@@ -115,7 +115,7 @@ Content-Type: application/json
 Authorization: Bearer test-key
 
 {
-  "model": "Agentic-RAG-Model1",
+  "model": "RAICA-Model1",
   "messages": [{"role": "user", "content": "Your prompt here"}],
   "stream": false
 }
@@ -142,7 +142,7 @@ The examples demonstrate sophisticated coordination of:
 
 ### Streaming (Real-time Response)
 ```python
-payload = {"model": "Agentic-RAG-Model1", "messages": [...], "stream": True}
+payload = {"model": "RAICA-Model1", "messages": [...], "stream": True}
 ```
 - Watch analysis happen in real-time
 - Better for long-running tasks
@@ -150,7 +150,7 @@ payload = {"model": "Agentic-RAG-Model1", "messages": [...], "stream": True}
 
 ### Standard (Complete Response)
 ```python  
-payload = {"model": "Agentic-RAG-Model1", "messages": [...], "stream": False}
+payload = {"model": "RAICA-Model1", "messages": [...], "stream": False}
 ```
 - Get complete response when finished
 - Better for automated processing
@@ -189,7 +189,7 @@ Use all available tools to [comprehensive workflow description]"
 curl -X POST http://localhost:5000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test-key" \
-  -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Test multi-tool coordination: get news, search documents, create report, send email"}]}'
+  -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Test multi-tool coordination: get news, search documents, create report, send email"}]}'
 ```
 
 ### Health Check

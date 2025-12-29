@@ -1,4 +1,4 @@
-# Agentic-RAG Plugin System
+# RAICA Plugin System
 
 **Version:** 1.0.0
 **Status:** Example Implementation
@@ -8,7 +8,7 @@
 
 ## 📋 Overview
 
-This directory contains the **simplified plugin system** for the Agentic-RAG server. The plugin system enables users to extend the server's capabilities by creating custom tools that the LLM can invoke.
+This directory contains the **simplified plugin system** for the RAICA server. The plugin system enables users to extend the server's capabilities by creating custom tools that the LLM can invoke.
 
 ### Key Features:
 - ✅ **Process Isolation**: Each plugin runs in a separate subprocess

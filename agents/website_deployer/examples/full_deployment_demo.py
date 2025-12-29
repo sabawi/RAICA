@@ -19,7 +19,7 @@ Usage:
 
     python examples/full_deployment_demo.py
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

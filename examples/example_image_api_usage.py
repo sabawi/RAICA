@@ -21,7 +21,7 @@ def example_file_analysis():
     """Analyze local image files."""
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {
                 "role": "user", 
@@ -62,7 +62,7 @@ def example_base64_analysis():
         return
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {
                 "role": "user",
@@ -96,7 +96,7 @@ def example_url_analysis():
     """Analyze images from URLs."""
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {
                 "role": "user",
@@ -141,5 +141,5 @@ if __name__ == "__main__":
     print("")
     print("Remember to:")
     print("1. Update file paths to point to real image files")
-    print("2. Ensure your Agentic-RAG server is running on http://localhost:5000")
+    print("2. Ensure your RAICA server is running on http://localhost:5000")
     print("3. Configure image processing models using: python llm_config_tool.py")

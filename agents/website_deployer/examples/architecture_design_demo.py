@@ -10,7 +10,7 @@ Usage:
     export ANTHROPIC_API_KEY="your-api-key"
     python examples/architecture_design_demo.py
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

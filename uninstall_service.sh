@@ -1,5 +1,5 @@
 #!/bin/bash
-# Agentic-RAG Server Service Uninstaller
+# RAICA Server Service Uninstaller
 # This script removes the systemd service
 
 set -e  # Exit on any error
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 SERVICE_NAME="agentic-rag-server"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-echo -e "${BLUE}🗑️  Agentic-RAG Server Service Uninstaller${NC}"
+echo -e "${BLUE}🗑️  RAICA Server Service Uninstaller${NC}"
 echo -e "${BLUE}===========================================${NC}"
 echo ""
 

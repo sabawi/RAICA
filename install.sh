@@ -12,14 +12,14 @@
 #   ./install.sh verify             - Verify existing installation
 #   ./install.sh --dry-run          - Show what would be done without executing
 #
-# Repository: https://github.com/sabawi/Agentic-RAG-System
+# Repository: https://github.com/sabawi/RAICA
 # =============================================================================
 
 set -e  # Exit on any error
 
 # Script configuration
 SCRIPT_VERSION="1.1.0"
-REPO_URL="https://github.com/sabawi/Agentic-RAG-System.git"
+REPO_URL="https://github.com/sabawi/RAICA.git"
 REQUIRED_PYTHON_VERSION="3.13"
 DRY_RUN=false
 UPGRADE_MODE=false
@@ -481,7 +481,7 @@ setup_project_directory() {
             log_error "Please run this script from the Agentic RAG System project directory"
             echo "If you need to clone the repository:"
             echo "  git clone $REPO_URL"
-            echo "  cd Agentic-RAG-System"
+            echo "  cd RAICA"
             echo "  ./install.sh"
             exit 1
         fi
@@ -880,7 +880,7 @@ test_server() {
     log_step "Testing 'Hello World!' prompt"
     local response=$(curl -s -X POST http://localhost:5000/v1/chat/completions \
         -H "Content-Type: application/json" \
-        -d '{"model": "Agentic-RAG-Model1", "messages": [{"role": "user", "content": "Hello World!"}]}' \
+        -d '{"model": "RAICA-Model1", "messages": [{"role": "user", "content": "Hello World!"}]}' \
         --max-time 60 2>/dev/null || echo "")
     
     if [ -n "$response" ]; then

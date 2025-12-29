@@ -95,7 +95,7 @@ MODELS_RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" "$BASE_URL/v1/models")
 HTTP_CODE=$(echo "$MODELS_RESPONSE" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
 RESPONSE_BODY=$(echo "$MODELS_RESPONSE" | sed 's/HTTP_CODE:[0-9]*$//')
 
-if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE_BODY" | jq -e '.data[0].id' | grep -q "Agentic-RAG"; then
+if [ "$HTTP_CODE" = "200" ] && echo "$RESPONSE_BODY" | jq -e '.data[0].id' | grep -q "RAICA"; then
     success "OpenAI models endpoint works"
 else
     error "OpenAI models endpoint failed (HTTP: $HTTP_CODE)"
@@ -107,7 +107,7 @@ echo -e "\nTesting POST /v1/chat/completions (non-streaming)"
 CHAT_RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" -X POST "$BASE_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {"role": "user", "content": "What is 3+3? Just give me the number."}
         ],
@@ -129,7 +129,7 @@ echo -e "\nTesting POST /v1/chat/completions (with agentic tools)"
 AGENTIC_RESPONSE=$(curl -s -w "HTTP_CODE:%{http_code}" -X POST "$BASE_URL/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {"role": "user", "content": "What time is it now?"}
         ],

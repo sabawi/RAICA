@@ -22,7 +22,7 @@ Usage:
     model = config.get_llm_setting("model")
     max_retries = config.get_execution_setting("max_retries")
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

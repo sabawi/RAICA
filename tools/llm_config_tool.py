@@ -411,7 +411,7 @@ class LLMConfigTool:
         """Main interactive loop"""
         print("🤖 LLM Configuration Tool")
         print("=" * 50)
-        print("Configure your Agentic-RAG server with any combination of:")
+        print("Configure your RAICA server with any combination of:")
         print("• Ollama (Local): llama3.2, qwen3, deepseek-r1, etc.")
         print("• OpenAI (Cloud): GPT-4o, GPT-4-turbo, etc.")
         print("• Qwen Cloud: qwen-plus, qwen-max, etc.")

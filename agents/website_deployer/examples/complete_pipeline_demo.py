@@ -15,7 +15,7 @@ Usage:
     export ANTHROPIC_API_KEY="your-api-key"
     python examples/complete_pipeline_demo.py
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

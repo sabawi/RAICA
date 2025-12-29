@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Intelligent Dependency Resolver - Uses Parent Agentic-RAG Model for Research
+Intelligent Dependency Resolver - Uses Parent RAICA Model for Research
 ============================================================================
 
 Instead of hardcoding dependencies, this module queries the parent FastAPI server's
-Agentic-RAG model (with tool calling) to get:
+RAICA model (with tool calling) to get:
 1. Latest dependencies for any tech stack
 2. Security best practices
 3. Solutions to verification failures
 
 Architecture:
-- Parent Server: http://localhost:5050 (Agentic-RAG with OpenAI tool calling)
+- Parent Server: http://localhost:5050 (RAICA with OpenAI tool calling)
 - This Agent: Queries parent for research on dependencies/solutions
 - Retry Logic: 3 attempts with increasingly specific queries
 """
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DependencyResearchResult:
-    """Result from Agentic-RAG research query."""
+    """Result from RAICA research query."""
     success: bool
     dependencies: List[str]
     explanation: str
@@ -36,7 +36,7 @@ class DependencyResearchResult:
 
 class IntelligentDependencyResolver:
     """
-    Queries parent Agentic-RAG model to resolve dependencies dynamically.
+    Queries parent RAICA model to resolve dependencies dynamically.
 
     Instead of hardcoding:
         requirements.txt = ["fastapi", "sqlalchemy", ...]
@@ -59,7 +59,7 @@ class IntelligentDependencyResolver:
         max_retries: int = 3
     ) -> Dict[str, Any]:
         """
-        Query parent Agentic-RAG model with tool calling enabled.
+        Query parent RAICA model with tool calling enabled.
 
         Args:
             query: Research question
@@ -68,10 +68,10 @@ class IntelligentDependencyResolver:
         Returns:
             Response from parent model
         """
-        logger.info(f"🔬 Querying parent Agentic-RAG model: {query[:100]}...")
+        logger.info(f"🔬 Querying parent RAICA model: {query[:100]}...")
 
         payload = {
-            "model": "Agentic-RAG-Model1",  # Parent's Agentic-RAG model with tool calling
+            "model": "RAICA-Model1",  # Parent's RAICA model with tool calling
             "messages": [
                 {
                     "role": "user",
@@ -125,7 +125,7 @@ class IntelligentDependencyResolver:
         database: Optional[str] = None
     ) -> DependencyResearchResult:
         """
-        Research required dependencies for a tech stack using Agentic-RAG.
+        Research required dependencies for a tech stack using RAICA.
 
         Args:
             tech_stack: "python", "php", "nodejs"
@@ -188,7 +188,7 @@ SECURITY_PATTERNS:
         generated_code_sample: str
     ) -> Dict[str, Any]:
         """
-        Research solutions to verification failures using Agentic-RAG.
+        Research solutions to verification failures using RAICA.
 
         When verification fails (e.g., "Password hashing not detected"), query
         the parent model for specific implementation patterns.
@@ -242,7 +242,7 @@ Focus on concrete, copy-pasteable code solutions.
 
     def _extract_dependencies(self, content: str, tech_stack: str) -> List[str]:
         """
-        Extract dependency list from Agentic-RAG response.
+        Extract dependency list from RAICA response.
 
         Looks for patterns like:
         - fastapi==0.104.1

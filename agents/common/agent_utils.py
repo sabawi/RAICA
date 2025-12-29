@@ -5,7 +5,7 @@ Core agent utilities for server communication and common operations.
 All configuration values are loaded from config/agents_config.yaml.
 No hardcoded configuration values allowed per PROJECT_CONFIGURATION_DIRECTIVE.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.1.0
 """
 
@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 
 def create_openai_client(server_url: str, api_key: str = "not-required") -> openai.OpenAI:
     """
-    Create and configure an OpenAI client for the Agentic-RAG server.
+    Create and configure an OpenAI client for the RAICA server.
 
     Args:
-        server_url: URL of the Agentic-RAG server (e.g., 'http://localhost:5000/v1')
+        server_url: URL of the RAICA server (e.g., 'http://localhost:5000/v1')
         api_key: API key for authentication (default: 'not-required' for local server)
 
     Returns:
@@ -65,7 +65,7 @@ def test_server_connection(
     config: Optional['AgentConfig'] = None
 ) -> bool:
     """
-    Test connection to the Agentic-RAG server.
+    Test connection to the RAICA server.
 
     Args:
         client: OpenAI client instance

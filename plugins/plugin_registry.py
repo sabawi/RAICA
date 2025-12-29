@@ -2,7 +2,7 @@
 Plugin Registry - Discovery and metadata management
 Scans /plugins/ directory for YAML definitions and loads plugin metadata.
 
-Author: Agentic-RAG System
+Author: RAICA
 Created: 2025-10-02
 Version: 1.0.0
 """

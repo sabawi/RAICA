@@ -2,7 +2,7 @@
 Plugin Executor - Process isolation and execution
 Executes plugins in isolated subprocesses with resource limits and timeout enforcement.
 
-Author: Agentic-RAG System
+Author: RAICA
 Created: 2025-10-02
 Version: 1.0.0
 """

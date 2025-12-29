@@ -195,8 +195,8 @@ class IntelligentCodeGenerator:
                 logger.info(f"🔄 Preparing to retry with validation feedback...")
                 feedback = self._create_validation_feedback(verification, critical_issues, detailed_spec)
 
-                # NEW: Query Agentic-RAG for intelligent fixes based on verification failures
-                logger.info(f"🔬 Querying parent Agentic-RAG for solutions to verification failures...")
+                # NEW: Query RAICA for intelligent fixes based on verification failures
+                logger.info(f"🔬 Querying parent RAICA for solutions to verification failures...")
                 import asyncio
                 try:
                     loop = asyncio.get_event_loop()
@@ -213,8 +213,8 @@ class IntelligentCodeGenerator:
                 )
 
                 if fix_research['success']:
-                    logger.info(f"✅ Got {len(fix_research['fixes'])} fix suggestions from Agentic-RAG research")
-                    # Append Agentic-RAG fixes to feedback string
+                    logger.info(f"✅ Got {len(fix_research['fixes'])} fix suggestions from RAICA research")
+                    # Append RAICA fixes to feedback string
                     feedback += "\n\n" + "=" * 60 + "\n"
                     feedback += "INTELLIGENT FIXES FROM AGENTIC-RAG RESEARCH:\n"
                     feedback += "=" * 60 + "\n\n"
@@ -271,7 +271,7 @@ class IntelligentCodeGenerator:
         generated_files: Dict[str, str]
     ) -> Dict[str, Any]:
         """
-        Query parent Agentic-RAG model for solutions to verification failures.
+        Query parent RAICA model for solutions to verification failures.
 
         This is called on retry attempts to get intelligent fixes for specific
         issues like "Password hashing not detected" or "Auth middleware not found".

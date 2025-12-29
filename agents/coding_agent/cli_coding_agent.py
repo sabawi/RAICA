@@ -19,7 +19,7 @@ Features:
 - Persistent project context across phases
 - Direct LLM access using code_generation config
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.1.0
 """
 

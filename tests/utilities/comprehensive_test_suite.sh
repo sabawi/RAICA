@@ -262,7 +262,7 @@ test_openai_compatibility() {
     CHAT_RESPONSE=$(curl -s -X POST "$BASE_URL/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d '{
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [
                 {"role": "user", "content": "What is 2+2? Just give me the number."}
             ],
@@ -281,7 +281,7 @@ test_openai_compatibility() {
     AGENTIC_RESPONSE=$(curl -s -X POST "$BASE_URL/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d '{
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [
                 {"role": "user", "content": "What time is it right now?"}
             ],

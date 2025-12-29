@@ -14,7 +14,7 @@ Features:
 - Executive summary creation and PDF generation
 - Automated email delivery of reports
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.5
 """
 
@@ -122,7 +122,7 @@ class BusinessIntelligenceAgent:
         Initialize the business intelligence agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             company: Target company to analyze
             competitors: List of competitor companies
             sectors: Industry sectors to monitor

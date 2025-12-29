@@ -3,7 +3,7 @@
 Stock Portfolio Monitor Agent
 ==============================
 
-Monitors stock portfolio and sends alerts/reports using the Agentic-RAG server.
+Monitors stock portfolio and sends alerts/reports using the RAICA server.
 
 Features:
 - Daily portfolio performance reports
@@ -12,7 +12,7 @@ Features:
 - Historical trend analysis
 - Automatic market open/close scheduling
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -59,7 +59,7 @@ class StockMonitorAgent:
         Initialize the stock monitor agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             stocks: List of stock symbols to monitor (e.g., ['AAPL', 'TSLA'])
             recipient_email: Email for alerts
             output_dir: Directory to save reports
@@ -91,7 +91,7 @@ class StockMonitorAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -126,7 +126,7 @@ class StockMonitorAgent:
                     raise ValueError(f"Unknown analysis type: {analysis_type}")
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,  # Lower temperature for factual analysis
                     max_tokens=4096
@@ -256,7 +256,7 @@ If no stocks meet criteria, return "No significant movements today."
             logger.info(f"Sending report to {self.recipient_email}...")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (

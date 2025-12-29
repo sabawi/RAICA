@@ -12,7 +12,7 @@ Uses LLM to parse user prompts and extract:
 - Technology preferences
 - Complexity estimation
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

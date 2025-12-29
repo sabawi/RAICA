@@ -190,7 +190,7 @@ def test_server_startup():
 
 def main():
     """Run all validation tests."""
-    print("🧪 Agentic-RAG Server Installation Validation")
+    print("🧪 RAICA Server Installation Validation")
     print("=" * 50)
     
     tests = [

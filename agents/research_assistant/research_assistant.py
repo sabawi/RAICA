@@ -12,7 +12,7 @@ Features:
 - Generate reading lists and literature reviews
 - Send curated research digests via email
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
@@ -59,7 +59,7 @@ class ResearchAssistantAgent:
         Initialize the research assistant agent.
 
         Args:
-            server_url: URL of the Agentic-RAG server
+            server_url: URL of the RAICA server
             topics: List of research topics to monitor
             recipient_email: Email for research digests
             output_dir: Directory to save research reports
@@ -89,7 +89,7 @@ class ResearchAssistantAgent:
         """Test connection to the server."""
         try:
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{"role": "user", "content": "Hello, are you working?"}],
                 max_tokens=50
             )
@@ -137,7 +137,7 @@ Format as a structured HTML report with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,  # Low temperature for factual content
                     max_tokens=4096
@@ -200,7 +200,7 @@ Format as an HTML report with charts and visualizations where possible.
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.4,  # Slightly higher for analysis
                     max_tokens=4096
@@ -260,7 +260,7 @@ Format as an organized HTML document with:
 """
 
                 response = self.client.chat.completions.create(
-                    model="Agentic-RAG-Model1",
+                    model="RAICA-Model1",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.5,  # Balanced for practical recommendations
                     max_tokens=2048
@@ -344,7 +344,7 @@ Format as an organized HTML document with:
             logger.info(f"Sending research report to {self.recipient_email}...")
 
             response = self.client.chat.completions.create(
-                model="Agentic-RAG-Model1",
+                model="RAICA-Model1",
                 messages=[{
                     "role": "user",
                     "content": (

@@ -4,7 +4,7 @@
 ===============================
 
 This is the ultimate showcase! A complex, creative example that demonstrates
-the full power of the Agentic-RAG server by orchestrating ALL available tools
+the full power of the RAICA server by orchestrating ALL available tools
 in sophisticated, realistic workflows that showcase the true potential of
 agentic AI systems.
 
@@ -294,7 +294,7 @@ class MegaMultiToolOrchestrator:
     def _send_streaming_request(self, prompt, mission_name):
         """Send streaming request"""
         payload = {
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True
         }
@@ -343,7 +343,7 @@ class MegaMultiToolOrchestrator:
     def _send_standard_request(self, prompt, mission_name):
         """Send standard request"""
         payload = {
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         }
@@ -393,7 +393,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Authorization: Bearer test-key" \\
   --max-time 900 \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": "ULTIMATE CHALLENGE: Find breaking tech news, search our documents for related analysis, get current stock prices for mentioned companies, create a comprehensive analysis PDF called ULTIMATE_ANALYSIS.pdf, email it to user@example.com with strategic insights, and schedule a follow-up meeting. Use maximum tool coordination!"
@@ -421,7 +421,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Authorization: Bearer test-key" \\
   --max-time 900 \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "stream": true,
     "messages": [{
       "role": "user",

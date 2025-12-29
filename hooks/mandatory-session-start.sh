@@ -23,9 +23,9 @@ main() {
     log_message "========== SESSION START HOOK TRIGGERED =========="
     log_message "Project: $PROJECT_ROOT"
 
-    # Check if this is the Agentic-RAG development project
+    # Check if this is the RAICA development project
     if [[ -f "fastapi_server_complete.py" || -f "CLAUDE.md" || -d "docs" ]]; then
-        log_message "DETECTED: Agentic-RAG project - displaying mandatory directive"
+        log_message "DETECTED: RAICA project - displaying mandatory directive"
 
         # Output the mandatory directive message
         cat << 'EOF'
@@ -74,7 +74,7 @@ EOF
         echo ""
 
     else
-        log_message "Non-Agentic-RAG project - skipping directive"
+        log_message "Non-RAICA project - skipping directive"
     fi
 
     log_message "========== HOOK COMPLETED SUCCESSFULLY =========="

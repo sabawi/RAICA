@@ -48,7 +48,7 @@ def standard_api_example():
     """
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {"role": "user", "content": creative_prompt}
         ],
@@ -117,7 +117,7 @@ def market_intelligence_example():
     """
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [
             {"role": "user", "content": market_intelligence_prompt}
         ],
@@ -179,7 +179,7 @@ def streaming_example():
     """
     
     payload = {
-        "model": "Agentic-RAG-Model1",
+        "model": "RAICA-Model1",
         "messages": [{"role": "user", "content": streaming_prompt}],
         "stream": True
     }
@@ -229,7 +229,7 @@ def main():
     """
     🎬 Main example runner
     """
-    print("🎉 Welcome to the Agentic-RAG News Analysis Showcase!")
+    print("🎉 Welcome to the RAICA News Analysis Showcase!")
     print("=" * 60)
     
     print("\n🔥 This example will demonstrate:")

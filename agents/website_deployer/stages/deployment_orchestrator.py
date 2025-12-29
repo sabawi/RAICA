@@ -17,7 +17,7 @@ Deployment Steps:
 9. Create systemd services
 10. Start services and verify
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

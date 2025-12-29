@@ -9,7 +9,7 @@ Detects and classifies analysis context to determine:
 
 This is an ADD-ON module that enhances the agent without breaking existing functionality.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

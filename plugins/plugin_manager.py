@@ -3,7 +3,7 @@ Plugin Manager - Orchestration and lifecycle management
 Coordinates PluginRegistry, PluginExecutor, and SecurityValidator.
 Implements degraded mode, retry logic, and metrics tracking.
 
-Author: Agentic-RAG System
+Author: RAICA
 Created: 2025-10-02
 Version: 1.0.0
 """

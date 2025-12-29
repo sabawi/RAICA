@@ -143,7 +143,7 @@ curl -k -s -N https://localhost:8080/api/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{"role": "user", "content": "hello"}],
     "stream": true
   }'

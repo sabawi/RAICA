@@ -5,7 +5,7 @@ Test Suite for Architecture Designer
 
 Tests the LLM-powered architecture generation from requirements.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

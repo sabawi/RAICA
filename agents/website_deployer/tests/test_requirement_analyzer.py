@@ -5,7 +5,7 @@ Test Suite for Requirement Analyzer
 
 Tests the LLM-powered requirement extraction from natural language.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

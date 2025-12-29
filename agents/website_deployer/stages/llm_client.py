@@ -12,7 +12,7 @@ Unified interface for multiple LLM providers:
 
 Reads configuration from central config/llm_config.yaml (code_generation section)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

@@ -4,7 +4,7 @@
 =================================
 
 This example showcases advanced document search, analysis, and knowledge discovery.
-Demonstrates how the Agentic-RAG server can act as your personal research assistant,
+Demonstrates how the RAICA server can act as your personal research assistant,
 diving deep into your document collection to find connections and insights.
 """
 
@@ -180,7 +180,7 @@ class DocumentIntelligenceExplorer:
     def _send_request(self, prompt, mode_name):
         """Send request to the agentic server"""
         payload = {
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         }
@@ -229,7 +229,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer test-key" \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user", 
       "content": "Search our documents for any mentions of machine learning or AI. Create a summary of findings and email it to user@example.com with the subject 'AI Research Summary'"
@@ -243,7 +243,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer test-key" \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": "I need a comprehensive analysis! Search all documents for business strategies, extract key insights, cross-reference with current market data, create a strategic report PDF called business_intelligence.pdf, and email it to user@example.com"

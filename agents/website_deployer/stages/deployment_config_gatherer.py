@@ -6,7 +6,7 @@ Deployment Configuration Gatherer
 Interactive module for gathering deployment configuration and preferences.
 Detects existing server configuration and prompts user for deployment choices.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

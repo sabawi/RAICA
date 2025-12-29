@@ -2,7 +2,7 @@ metadata:
   name: "system_monitor"
   version: "1.0.0"
   category: "system"
-  author: "Agentic-RAG System"
+  author: "RAICA"
   description: |
     Monitor system resources including CPU usage, memory, disk space, and running processes.
     Use this when user asks about system performance, resource usage, or running processes.

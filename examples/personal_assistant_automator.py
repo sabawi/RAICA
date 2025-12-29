@@ -207,7 +207,7 @@ class PersonalAssistantAutomator:
     def _send_openai_request(self, prompt, workflow_name):
         """Send request using OpenAI compatible endpoint"""
         payload = {
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [{"role": "user", "content": prompt}],
             "stream": False
         }
@@ -246,7 +246,7 @@ class PersonalAssistantAutomator:
     def _send_native_request(self, prompt, workflow_name):
         """Send request using OpenAI Compatible API"""
         payload = {
-            "model": "Agentic-RAG-Model1",
+            "model": "RAICA-Model1",
             "messages": [
                 {"role": "user", "content": prompt}
             ],
@@ -297,7 +297,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer test-key" \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": "Check the latest tech news, create a summary PDF called daily_tech_update.pdf, and email it to user@example.com with subject Daily Tech Update"
@@ -312,7 +312,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer test-key" \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user",
       "content": "Schedule a calendar event for tomorrow at 2 PM called Team Meeting, then send an email to user@example.com with meeting agenda and recent project updates from our documents"
@@ -328,7 +328,7 @@ curl -X POST http://localhost:5000/v1/chat/completions \\
   -H "Content-Type: application/json" \\  
   -H "Authorization: Bearer test-key" \\
   -d '{
-    "model": "Agentic-RAG-Model1",
+    "model": "RAICA-Model1",
     "messages": [{
       "role": "user", 
       "content": "Act as my productivity assistant: 1) Search documents for any TODO items or action items, 2) Check current stock prices for companies mentioned, 3) Create a productivity report PDF, 4) Schedule a calendar review session, 5) Email everything to user@example.com"

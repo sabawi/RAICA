@@ -11,7 +11,7 @@ Specialized modules for deployment tasks:
 - SystemdService: Create systemd services
 - DeploymentVerifier: Verify deployment health
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

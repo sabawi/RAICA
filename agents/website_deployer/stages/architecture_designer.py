@@ -13,7 +13,7 @@ Generates:
 - Infrastructure component selection
 - Deployment plan
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

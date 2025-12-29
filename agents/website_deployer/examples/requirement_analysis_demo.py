@@ -14,7 +14,7 @@ Usage:
     # The system will use the provider configured in config/llm_config.yaml
     python examples/requirement_analysis_demo.py
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.1
 """
 

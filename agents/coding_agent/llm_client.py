@@ -17,7 +17,7 @@ Supports:
 - Google Gemini
 - Qwen
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

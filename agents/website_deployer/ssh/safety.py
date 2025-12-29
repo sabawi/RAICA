@@ -11,7 +11,7 @@ Safety Levels:
 - PRIVILEGED (2): Commands requiring elevated privileges (systemctl, database ops)
 - DANGEROUS (3): Commands that can cause data loss (rm -rf, DROP DATABASE)
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 

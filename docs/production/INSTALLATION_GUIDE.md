@@ -17,8 +17,8 @@ The Agentic RAG System comes with a comprehensive installation script (`install.
 
 ```bash
 # Clone the repository
-git clone https://github.com/sabawi/Agentic-RAG-System.git
-cd Agentic-RAG-System
+git clone https://github.com/sabawi/RAICA.git
+cd RAICA
 
 # Run the installation script
 ./install.sh

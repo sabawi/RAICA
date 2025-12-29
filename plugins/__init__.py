@@ -1,5 +1,5 @@
 """
-Agentic-RAG Plugin System
+RAICA Plugin System
 Simplified plugin architecture for extensible tool integration
 
 Version: 1.0.0

@@ -4,14 +4,14 @@
 
 ## Executive Summary
 
-Instead of hardcoding dependencies and security patterns in prompts, we leverage the **parent Agentic-RAG model** with tool calling to dynamically research:
+Instead of hardcoding dependencies and security patterns in prompts, we leverage the **parent RAICA model** with tool calling to dynamically research:
 
 1. **Latest dependencies** for any tech stack (with versions)
 2. **Security best practices** (password hashing, auth middleware, etc.)
 3. **Solutions to verification failures** (retry with intelligent fixes)
 
 **Architecture**:
-- Parent Server (`http://localhost:5050`) - Agentic-RAG with OpenAI tool calling (web search, documentation, research)
+- Parent Server (`http://localhost:5050`) - RAICA with OpenAI tool calling (web search, documentation, research)
 - Website Deployer Agent - Queries parent for research, uses results in code generation
 
 ## Current Problem (Root Cause)
@@ -131,7 +131,7 @@ class WorkflowPlanner:
         """Enhanced with Agentic research."""
 
         # STEP 1: Research dependencies BEFORE code generation
-        logger.info("🔬 Researching dependencies via parent Agentic-RAG...")
+        logger.info("🔬 Researching dependencies via parent RAICA...")
 
         dep_research = await self.dependency_resolver.research_dependencies(
             tech_stack=spec.tech_stack,
@@ -167,7 +167,7 @@ def generate_file(self, file_path: str, prompt: str, context: Dict) -> str:
         # Use researched dependencies instead of asking LLM
         deps = '\n'.join(self.researched_dependencies)
 
-        return f"""# Auto-generated via Agentic-RAG research
+        return f"""# Auto-generated via RAICA research
 # Researched dependencies for {context['tech_stack']} project
 
 {deps}
@@ -285,7 +285,7 @@ Security patterns: 2
 
 **Expected**:
 ```
-🔬 Researching dependencies via parent Agentic-RAG...
+🔬 Researching dependencies via parent RAICA...
 ✅ Researched 12 dependencies
 📝 Injecting researched dependencies into requirements.txt
 ...
@@ -335,7 +335,7 @@ After implementation:
 
 If parent server is unavailable:
 
-1. **Log warning**: "Parent Agentic-RAG unavailable, using static fallback"
+1. **Log warning**: "Parent RAICA unavailable, using static fallback"
 2. **Use static prompts**: Fall back to current hardcoded approach
 3. **Continue deployment**: Don't block on research failure
 4. **Cache last successful research**: Use cached results if available

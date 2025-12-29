@@ -5,7 +5,7 @@ SQLAlchemy Model Generator
 
 Generates SQLAlchemy ORM models from database schema specification.
 
-Author: Agentic-RAG Development Team
+Author: RAICA Development Team
 Version: 1.0.0
 """
 
