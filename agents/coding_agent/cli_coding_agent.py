@@ -94,7 +94,41 @@ except ImportError:
 
 # Agent name for configuration
 AGENT_NAME = "coding_agent"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+# Import new enhancement modules (v2.1)
+# These provide TUI, hooks, knowledge, planning, verification, and state features
+try:
+    from .state.persistence import StatePersistence, check_resumable_session
+    from .hooks.hook_manager import HookManager, HookTrigger
+    from .hooks.builtin_hooks import register_builtin_hooks
+    from .knowledge.raica_client import RAICAKnowledgeClient
+    from .planning.iterative_planner import IterativePlanner, PlanStep
+    from .planning.refinement_loop import RefinementLoop
+    from .verification.success_verifier import SuccessVerifier, VerificationResult
+except ImportError:
+    # Fallback for direct execution
+    try:
+        from state.persistence import StatePersistence, check_resumable_session
+        from hooks.hook_manager import HookManager, HookTrigger
+        from hooks.builtin_hooks import register_builtin_hooks
+        from knowledge.raica_client import RAICAKnowledgeClient
+        from planning.iterative_planner import IterativePlanner, PlanStep
+        from planning.refinement_loop import RefinementLoop
+        from verification.success_verifier import SuccessVerifier, VerificationResult
+    except ImportError:
+        # Modules not yet installed - set to None for graceful degradation
+        StatePersistence = None
+        check_resumable_session = None
+        HookManager = None
+        HookTrigger = None
+        register_builtin_hooks = None
+        RAICAKnowledgeClient = None
+        IterativePlanner = None
+        PlanStep = None
+        RefinementLoop = None
+        SuccessVerifier = None
+        VerificationResult = None
 
 
 class DevelopmentPhase(Enum):
@@ -198,7 +232,8 @@ class CLICodingAgent:
         verbose: bool = False,
         max_iterations: int = 10,
         provider: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        use_existing_project: bool = False
     ):
         """
         Initialize the CLI Coding Agent.
@@ -210,10 +245,22 @@ class CLICodingAgent:
             max_iterations: Maximum development iterations
             provider: Optional LLM provider override (ollama, openai, anthropic, gemini, qwen)
             model: Optional model name override (e.g., deepseek-v3.2:cloud, gpt-4o, claude-sonnet-4-20250514)
+            use_existing_project: If True, uses output_dir directly as project root
         """
         # Setup logging first
         log_level = logging.DEBUG if verbose else logging.INFO
         self.logger = setup_agent_logging(AGENT_NAME, level=log_level)
+
+        # Fallback if logger is None (can happen when TUI patches logging)
+        if self.logger is None:
+            self.logger = logging.getLogger(AGENT_NAME)
+            self.logger.setLevel(log_level)
+            if not self.logger.handlers:
+                handler = logging.StreamHandler()
+                handler.setFormatter(logging.Formatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                ))
+                self.logger.addHandler(handler)
 
         # Load agent-specific configuration (for non-LLM settings)
         try:
@@ -247,8 +294,13 @@ class CLICodingAgent:
         # Project setup
         self.project_name = project_name or f"project_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.output_dir = create_output_directory(output_dir)
-        self.project_dir = self.output_dir / self.project_name
-        self.project_dir.mkdir(exist_ok=True, parents=True)
+        
+        if use_existing_project:
+            self.logger.info(f"Using existing project directory: {self.output_dir}")
+            self.project_dir = self.output_dir
+        else:
+            self.project_dir = self.output_dir / self.project_name
+            self.project_dir.mkdir(exist_ok=True, parents=True)
 
         # State machine
         self.current_phase = DevelopmentPhase.REQUIREMENTS
@@ -272,11 +324,122 @@ class CLICodingAgent:
         self.code_validator = None  # Initialized after first file is generated
         self._project_language = 'python'  # Default, updated during coding phase
 
+        # Initialize v2.1 enhancement modules
+        self._init_enhancement_modules()
+
         self.logger.info(f"CLI Coding Agent v{VERSION} initialized")
         self.logger.info(f"Project: {self.project_name}")
         self.logger.info(f"Output: {self.project_dir}")
         self.logger.info(f"LLM Provider: {self._provider}")
         self.logger.info(f"LLM Model: {self._model}")
+
+    def _init_enhancement_modules(self) -> None:
+        """Initialize v2.1 enhancement modules with graceful degradation."""
+        # State Persistence
+        if StatePersistence is not None:
+            try:
+                self.state_persistence = StatePersistence(self.project_dir)
+                self.logger.debug("State persistence initialized")
+            except Exception as e:
+                self.logger.warning(f"State persistence unavailable: {e}")
+                self.state_persistence = None
+        else:
+            self.state_persistence = None
+
+        # Hook Manager
+        if HookManager is not None:
+            try:
+                hooks_config_path = Path(__file__).parent / "config" / "hooks_config.yaml"
+                self.hook_manager = HookManager(hooks_config_path)
+
+                # Register built-in hooks
+                if register_builtin_hooks is not None:
+                    hooks_config = {}
+                    if self.config:
+                        hooks_config = self.config.get('hooks', 'builtin', default={})
+                    register_builtin_hooks(self.hook_manager, hooks_config)
+                    self.logger.debug("Built-in hooks registered")
+            except Exception as e:
+                self.logger.warning(f"Hook manager unavailable: {e}")
+                self.hook_manager = None
+        else:
+            self.hook_manager = None
+
+        # RAICA Knowledge Client
+        if RAICAKnowledgeClient is not None:
+            try:
+                knowledge_config = {}
+                if self.config:
+                    knowledge_config = self.config.get('knowledge', default={})
+
+                raica_url = knowledge_config.get('raica_server_url', 'http://localhost:5000')
+                self.knowledge_client = RAICAKnowledgeClient(base_url=raica_url)
+                self.logger.debug(f"Knowledge client initialized: {raica_url}")
+            except Exception as e:
+                self.logger.warning(f"Knowledge client unavailable: {e}")
+                self.knowledge_client = None
+        else:
+            self.knowledge_client = None
+
+        # Iterative Planner
+        if IterativePlanner is not None:
+            try:
+                self.iterative_planner = IterativePlanner(
+                    self.llm_client,
+                    self.knowledge_client
+                )
+                self.logger.debug("Iterative planner initialized")
+            except Exception as e:
+                self.logger.warning(f"Iterative planner unavailable: {e}")
+                self.iterative_planner = None
+        else:
+            self.iterative_planner = None
+
+        # Refinement Loop
+        if RefinementLoop is not None:
+            try:
+                threshold = 90.0
+                if self.config:
+                    threshold = float(self.config.get('verification', 'success_threshold', default=90))
+                self.refinement_loop = RefinementLoop(
+                    self.llm_client,
+                    completeness_threshold=threshold
+                )
+                self.logger.debug("Refinement loop initialized")
+            except Exception as e:
+                self.logger.warning(f"Refinement loop unavailable: {e}")
+                self.refinement_loop = None
+        else:
+            self.refinement_loop = None
+
+        # Success Verifier
+        if SuccessVerifier is not None:
+            try:
+                threshold = 90.0
+                if self.config:
+                    threshold = float(self.config.get('verification', 'success_threshold', default=90))
+                self.success_verifier = SuccessVerifier(
+                    self.llm_client,
+                    success_threshold=threshold
+                )
+                self.logger.debug("Success verifier initialized")
+            except Exception as e:
+                self.logger.warning(f"Success verifier unavailable: {e}")
+                self.success_verifier = None
+        else:
+            self.success_verifier = None
+
+        # Log enhancement module status
+        modules_status = {
+            'state_persistence': self.state_persistence is not None,
+            'hook_manager': self.hook_manager is not None,
+            'knowledge_client': self.knowledge_client is not None,
+            'iterative_planner': self.iterative_planner is not None,
+            'refinement_loop': self.refinement_loop is not None,
+            'success_verifier': self.success_verifier is not None
+        }
+        enabled_count = sum(modules_status.values())
+        self.logger.info(f"Enhancement modules: {enabled_count}/6 enabled")
 
     def _print_header(self, text: str, char: str = "=") -> None:
         """Print a formatted header."""
@@ -1486,6 +1649,118 @@ import pytest
         return True
 
     # =========================================================================
+    # DOCUMENTATION GENERATION
+    # =========================================================================
+
+    def _generate_or_update_readme(self) -> bool:
+        """
+        Generate or update README.md for the project.
+
+        - Creates README.md if it doesn't exist
+        - Updates README.md if project files have changed
+
+        Returns:
+            True if successful, False otherwise
+        """
+        readme_path = self.project_dir / "README.md"
+        existing_readme = ""
+
+        # Check if README exists and read it
+        if readme_path.exists():
+            existing_readme = readme_path.read_text()
+            # Check if update is needed by comparing file list
+            existing_files = set()
+            for line in existing_readme.split('\n'):
+                if line.strip().startswith('- `') or line.strip().startswith('│'):
+                    # Extract filename from markdown
+                    import re
+                    match = re.search(r'`([^`]+)`', line)
+                    if match:
+                        existing_files.add(match.group(1))
+
+            current_files = set(self.context.generated_files.keys())
+            if current_files and existing_files == current_files:
+                print("   📄 README.md is up to date")
+                return True
+
+            print("   📝 Updating README.md (files changed)...")
+        else:
+            print("   📝 Generating README.md...")
+
+        # Build file structure for prompt
+        file_list = []
+        for file_path in sorted(self.context.generated_files.keys()):
+            full_path = self.project_dir / file_path
+            size = full_path.stat().st_size if full_path.exists() else 0
+            file_list.append(f"- {file_path} ({size} bytes)")
+
+        # Detect project type and dependencies
+        project_type = "Unknown"
+        run_command = ""
+        install_command = ""
+
+        files = list(self.context.generated_files.keys())
+        if any(f.endswith('.html') for f in files):
+            project_type = "Web Application (HTML/CSS/JS)"
+            run_command = "python -m http.server 8080\n# Then open http://localhost:8080"
+        elif any(f.endswith('.py') for f in files):
+            project_type = "Python Application"
+            if any('flask' in self.context.original_request.lower() for _ in [1]):
+                run_command = "python app.py"
+            elif any('streamlit' in self.context.original_request.lower() for _ in [1]):
+                run_command = "streamlit run main.py"
+            else:
+                main_file = next((f for f in files if 'main' in f.lower() and f.endswith('.py')), files[0] if files else 'main.py')
+                run_command = f"python {main_file}"
+            install_command = "pip install -r requirements.txt"
+
+        prompt = f"""Generate a professional README.md for this project.
+
+PROJECT DESCRIPTION:
+{self.context.original_request}
+
+REQUIREMENTS:
+{chr(10).join(self.context.refined_requirements[:10])}
+
+PROJECT TYPE: {project_type}
+
+FILES GENERATED:
+{chr(10).join(file_list)}
+
+{"EXISTING README (update this):" + chr(10) + existing_readme[:1000] if existing_readme else ""}
+
+Generate a complete README.md with these sections:
+1. # Project Title (derived from description)
+2. ## Description (2-3 sentences)
+3. ## Features (bullet list)
+4. ## Installation (if applicable)
+5. ## Usage (how to run)
+6. ## Project Structure (file tree)
+7. ## Dependencies (if any)
+8. ## License (MIT)
+
+Use proper markdown formatting. Be concise but informative.
+Return ONLY the README content, no code blocks."""
+
+        response = self._call_llm(prompt, max_tokens=2000)
+        if not response:
+            self.logger.warning("Failed to generate README.md")
+            return False
+
+        # Clean up response (remove code blocks if present)
+        content = response.strip()
+        if content.startswith('```'):
+            lines = content.split('\n')
+            content = '\n'.join(lines[1:-1] if lines[-1].startswith('```') else lines[1:])
+
+        # Write README
+        readme_path.write_text(content)
+        self.context.generated_files["README.md"] = content
+        print(f"   ✅ {'Updated' if existing_readme else 'Generated'}: README.md ({len(content)} bytes)")
+
+        return True
+
+    # =========================================================================
     # STATE MACHINE CONTROL
     # =========================================================================
 
@@ -1575,6 +1850,11 @@ import pytest
             if self.current_phase == DevelopmentPhase.COMPLETE:
                 if self._should_iterate():
                     continue  # Loop back
+
+        # Generate or update README.md
+        if self.context.generated_files:
+            self._print_header("📄 DOCUMENTATION", "-")
+            self._generate_or_update_readme()
 
         # Final summary
         self._print_header("✅ DEVELOPMENT COMPLETE", "=")

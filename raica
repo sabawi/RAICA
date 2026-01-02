@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""
+RAICA - RAG AI Coding Agent
+============================
+
+Interactive terminal-based AI coding agent powered by Ollama LLMs.
+
+Usage:
+    raica                      # Launch interactive TUI
+    raica --project-dir PATH   # Specify project directory
+    raica --resume             # Resume previous session
+    raica debug                # Debug existing project (current directory)
+    raica debug -d PATH        # Debug specific project
+    raica --help               # Show this help
+
+Features:
+    - Interactive terminal UI with scrolling output
+    - Multi-phase development: Requirements -> Planning -> Architecture ->
+      Design -> Coding -> Debugging -> Testing -> Complete
+    - Real-time progress display
+    - Clarification prompts when needed
+    - Approval dialogs for key decisions
+    - Session persistence and resumption
+    - Automated testing and verification (90% success gate)
+    - Knowledge integration via RAICA Server API
+    - Automated hooks: documentation, testing, git commits
+
+Author: RAICA Project
+Version: 2.1.0
+"""
+
+import os
+import sys
+import argparse
+import signal
+from pathlib import Path
+
+# Add RAICA root to Python path
+RAICA_ROOT = Path(__file__).parent.resolve()
+sys.path.insert(0, str(RAICA_ROOT))
+
+
+def check_dependencies():
+    """Check that required dependencies are installed."""
+    missing = []
+
+    try:
+        import rich
+    except ImportError:
+        missing.append("rich>=13.0.0")
+
+    try:
+        import textual
+    except ImportError:
+        missing.append("textual>=0.50.0")
+
+    try:
+        import yaml
+    except ImportError:
+        missing.append("PyYAML>=6.0.0")
+
+    if missing:
+        print("ERROR: Missing required dependencies:")
+        for dep in missing:
+            print(f"  - {dep}")
+        print("\nInstall with:")
+        print(f"  pip install {' '.join(missing)}")
+        print("\nOr install all requirements:")
+        print(f"  pip install -r {RAICA_ROOT}/requirements.txt")
+        sys.exit(1)
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        prog='raica',
+        description='RAICA - Interactive AI Coding Agent',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  raica                         Launch interactive TUI
+  raica -d ./my-project         Work in specified directory
+  raica --resume                Resume previous session
+  raica --no-hooks              Disable automated hooks
+  raica debug                   Debug existing project in current directory
+  raica debug -d ./my-project   Debug specific project
+  raica debug --max-attempts 5  Debug with custom retry limit
+
+For more information, visit: https://github.com/sabawi/RAICA
+        """
+    )
+
+    # Create subparsers for commands
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+
+    # Debug subcommand
+    debug_parser = subparsers.add_parser(
+        'debug',
+        help='Debug/fix bugs in existing project (DO NO HARM mode)',
+        description="""
+Debug Mode - Fix bugs and add enhancements to existing projects.
+
+This mode operates with "DO NO HARM" principle:
+- Captures baseline state before any changes
+- Detects regressions after fixes
+- Auto-iterates with different strategies (up to 3 attempts)
+- Rolls back if regression cannot be fixed
+        """
+    )
+    debug_parser.add_argument(
+        '-d', '--project-dir',
+        type=str,
+        default='.',
+        help='Project directory to debug (default: current directory)'
+    )
+    debug_parser.add_argument(
+        '--max-attempts',
+        type=int,
+        default=10,
+        help='Maximum fix attempts per regression (default: 10)'
+    )
+    debug_parser.add_argument(
+        '--no-rollback',
+        action='store_true',
+        help='Disable automatic rollback on failure (use with caution!)'
+    )
+    debug_parser.add_argument(
+        '-i', '--issue',
+        type=str,
+        default=None,
+        help='Issue description to fix (will prompt if not provided)'
+    )
+    debug_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose output'
+    )
+    debug_parser.add_argument(
+        '--model',
+        type=str,
+        default=None,
+        help='Override LLM model (default: from config)'
+    )
+
+    # Main parser arguments (for default mode)
+    parser.add_argument(
+        '-d', '--project-dir',
+        type=str,
+        default='.',
+        help='Project directory to work in (default: current directory)'
+    )
+
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume previous session if available'
+    )
+
+    parser.add_argument(
+        '--no-hooks',
+        action='store_true',
+        help='Disable automated hooks (docs, tests, git commits)'
+    )
+
+    parser.add_argument(
+        '--no-knowledge',
+        action='store_true',
+        help='Disable RAICA knowledge server integration'
+    )
+
+    parser.add_argument(
+        '--no-verification',
+        action='store_true',
+        help='Disable 90%% success verification gate'
+    )
+
+    parser.add_argument(
+        '--model',
+        type=str,
+        default=None,
+        help='Override LLM model (default: from config)'
+    )
+
+    parser.add_argument(
+        '--raica-server',
+        type=str,
+        default='http://localhost:5000',
+        help='RAICA server URL for knowledge queries'
+    )
+
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose output'
+    )
+
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='%(prog)s 2.1.0 (RAICA CLI Coding Agent)'
+    )
+
+    return parser.parse_args()
+
+
+def run_debug_mode(args, project_dir):
+    """Run the debug mode for fixing existing projects."""
+    import asyncio
+
+    # Import debug agent
+    try:
+        from agents.coding_agent.code_debug_agent import CodeDebugAgent
+        from agents.common.llm_client import create_llm_client
+    except ImportError as e:
+        print(f"ERROR: Failed to import debug agent: {e}")
+        print("\nMake sure the CODE_DEBUG feature is properly installed.")
+        sys.exit(1)
+
+    # Print debug banner
+    print("\n" + "=" * 60)
+    print("🔧 RAICA DEBUG MODE - DO NO HARM")
+    print("=" * 60)
+    print(f"Project: {project_dir}")
+    print(f"Max Attempts: {args.max_attempts}")
+    print(f"Auto-rollback: {'disabled' if args.no_rollback else 'enabled'}")
+    print("=" * 60)
+
+    # Get issue description
+    issue = args.issue
+    if not issue:
+        print("\nDescribe the issue to fix (or 'q' to quit):")
+        print(">" * 3, end=" ")
+        issue = input().strip()
+        if issue.lower() in ('q', 'quit', 'exit'):
+            print("Exiting debug mode.")
+            sys.exit(0)
+
+    if not issue:
+        print("ERROR: No issue description provided.")
+        sys.exit(1)
+
+    print(f"\n📋 Issue: {issue}")
+    print("\n" + "-" * 60)
+
+    # Create LLM client
+    try:
+        llm_client = create_llm_client(model_override=args.model)
+    except Exception as e:
+        print(f"ERROR: Failed to create LLM client: {e}")
+        sys.exit(1)
+
+    # Create simple callbacks for CLI output
+    class CLIDebugCallbacks:
+        async def on_phase_change(self, phase, description):
+            print(f"\n=== {phase}: {description} ===")
+
+        async def on_progress(self, message, progress):
+            print(f"[{int(progress * 100):3d}%] {message}")
+
+        async def on_baseline_captured(self, file_count):
+            print(f"✓ Baseline captured: {file_count} files")
+
+        async def on_regression_detected(self, regressions):
+            print(f"⚠️  Detected {len(regressions)} regression(s)")
+            for reg in regressions[:5]:
+                print(f"  - {reg}")
+
+        async def on_fix_attempt(self, attempt, strategy, target):
+            print(f"🔧 Fix attempt {attempt} ({strategy}): {target}")
+
+        async def on_rollback(self, reason):
+            print(f"↩️  Rolling back: {reason}")
+
+        async def on_approval_needed(self, message, risk_level):
+            print(f"\n⚠️  Approval needed ({risk_level}): {message}")
+            response = input("Approve? [y/N]: ").strip().lower()
+            return response in ('y', 'yes')
+
+        async def on_user_input(self, prompt):
+            print(f"\n{prompt}")
+            return input("> ").strip()
+
+        async def on_error(self, error):
+            print(f"❌ Error: {error}")
+
+        async def on_success(self, summary):
+            print(f"✅ {summary}")
+
+    async def run_debug():
+        debug_agent = CodeDebugAgent(
+            project_dir=project_dir,
+            llm_client=llm_client,
+            callbacks=CLIDebugCallbacks(),
+            max_fix_attempts=args.max_attempts,
+            auto_rollback=not args.no_rollback
+        )
+
+        result = await debug_agent.run(issue)
+        return result
+
+    # Run the debug agent
+    try:
+        result = asyncio.run(run_debug())
+
+        print("\n" + "=" * 60)
+        if result.success:
+            print("✅ DEBUG COMPLETE - Issue fixed successfully!")
+            if result.files_modified:
+                print(f"   Modified files: {len(result.files_modified)}")
+                for f in result.files_modified[:10]:
+                    print(f"   - {f}")
+        else:
+            print("❌ DEBUG FAILED")
+            if result.error_message:
+                print(f"   Error: {result.error_message}")
+            if result.rolled_back:
+                print("   ↩️  Changes have been rolled back.")
+        print("=" * 60 + "\n")
+
+        sys.exit(0 if result.success else 1)
+
+    except Exception as e:
+        print(f"\n❌ Debug failed with error: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+def main():
+    """Main entry point for the RAICA CLI."""
+    # Check dependencies first
+    check_dependencies()
+
+    # Parse arguments
+    args = parse_args()
+
+    # Handle debug subcommand
+    if args.command == 'debug':
+        project_dir = Path(args.project_dir).resolve()
+        if not project_dir.exists():
+            print(f"ERROR: Project directory does not exist: {project_dir}")
+            sys.exit(1)
+
+        # Change to project directory
+        os.chdir(project_dir)
+
+        run_debug_mode(args, project_dir)
+        return
+
+    # Default: Run interactive TUI
+
+    # Resolve project directory
+    project_dir = Path(args.project_dir).resolve()
+    if not project_dir.exists():
+        print(f"ERROR: Project directory does not exist: {project_dir}")
+        sys.exit(1)
+
+    # Change to project directory
+    os.chdir(project_dir)
+
+    # Import after path setup and dependency check
+    try:
+        from agents.coding_agent.tui.agent_runner import run_interactive_agent
+    except ImportError as e:
+        print(f"ERROR: Failed to import agent runner: {e}")
+        print("\nMake sure you're running from the RAICA project directory")
+        print("or specify the correct path with --project-dir")
+        sys.exit(1)
+
+    # Build configuration from command line args
+    config = {
+        'project_dir': str(project_dir),
+        'resume': args.resume,
+        'hooks_enabled': not args.no_hooks,
+        'knowledge_enabled': not args.no_knowledge,
+        'verification_enabled': not args.no_verification,
+        'model_override': args.model,
+        'raica_server_url': args.raica_server,
+        'verbose': args.verbose,
+    }
+
+    # Print banner
+    if args.verbose:
+        print("\n" + "=" * 60)
+        print("RAICA - RAG AI Coding Agent v2.1.0")
+        print("=" * 60)
+        print(f"Project Directory: {project_dir}")
+        print(f"Hooks: {'enabled' if config['hooks_enabled'] else 'disabled'}")
+        print(f"Knowledge: {'enabled' if config['knowledge_enabled'] else 'disabled'}")
+        print(f"Verification: {'enabled' if config['verification_enabled'] else 'disabled'}")
+        if args.model:
+            print(f"Model Override: {args.model}")
+        print("=" * 60 + "\n")
+
+    # Run the interactive agent
+    try:
+        run_interactive_agent(config)
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user. Goodbye!")
+        # Force cleanup
+        try:
+            os.kill(os.getpid(), signal.SIGKILL)
+        except:
+            sys.exit(0)
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+
+        # Ensure we exit with error code
+        try:
+            sys.exit(1)
+        except SystemExit:
+            # Force kill if stuck
+            os.kill(os.getpid(), signal.SIGKILL)
+
+
+if __name__ == '__main__':
+    # Register aggressive cleanup on exit
+    import atexit
+    
+    def cleanup():
+        # This is a last resort to ensure we don't leave zombie processes
+        # The TUI should have cleaned up by now, but if we're here, we might be stuck
+        pass
+
+    atexit.register(cleanup)
+    
+    main()

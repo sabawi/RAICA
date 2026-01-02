@@ -265,3 +265,154 @@ def create_output_directory(output_dir: str) -> Path:
     path = Path(output_dir)
     path.mkdir(exist_ok=True, parents=True)
     return path
+
+
+def generate_semantic_name(request: str) -> str:
+    """
+    Generate a semantic project name from a request string.
+    
+    Args:
+        request: The user's request string
+        
+    Returns:
+        A snake_case project name with timestamp suffix
+    """
+    import re
+    from datetime import datetime
+    from .config_defaults import SEMANTIC_NAMING_STOP_WORDS
+    
+    # Basic cleaning
+    clean = re.sub(r'[^\w\s]', '', request).lower()
+    words = clean.split()
+    
+    # Remove common stop words
+    keywords = [w for w in words if w not in SEMANTIC_NAMING_STOP_WORDS][:5]
+    
+    if not keywords:
+        keywords = ["project"]
+        
+    name = "_".join(keywords)
+    timestamp = datetime.now().strftime("%H%M")
+    return f"{name}_{timestamp}"
+
+
+def get_patched_logger(logger: logging.Logger) -> logging.Logger:
+    """
+    Patch a logger to remove console handlers.
+    
+    Useful when running in TUI mode where stdout is captured/interferes.
+    
+    Args:
+        logger: The logger to patch
+        
+    Returns:
+        The patched logger
+    """
+    new_handlers = []
+    for handler in logger.handlers:
+        is_console = (isinstance(handler, logging.StreamHandler) and 
+                     (getattr(handler, 'stream', None) == sys.stdout or 
+                      getattr(handler, 'stream', None) == sys.stderr))
+        if not is_console:
+            new_handlers.append(handler)
+    logger.handlers = new_handlers
+    return logger
+
+import subprocess
+
+
+class ClipboardHelper:
+    """Cross-platform clipboard helper for terminal applications."""
+
+    @staticmethod
+    def copy(text: str) -> bool:
+        """Copy text to clipboard. Returns True on success."""
+        # Try xclip first (most common on Linux)
+        if shutil.which('xclip'):
+            try:
+                proc = subprocess.Popen(
+                    ['xclip', '-selection', 'clipboard'],
+                    stdin=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL
+                )
+                proc.communicate(text.encode('utf-8'))
+                return proc.returncode == 0
+            except Exception:
+                pass
+
+        # Try xsel as fallback
+        if shutil.which('xsel'):
+            try:
+                proc = subprocess.Popen(
+                    ['xsel', '--clipboard', '--input'],
+                    stdin=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL
+                )
+                proc.communicate(text.encode('utf-8'))
+                return proc.returncode == 0
+            except Exception:
+                pass
+
+        # Try wl-copy for Wayland
+        if shutil.which('wl-copy'):
+            try:
+                proc = subprocess.Popen(
+                    ['wl-copy'],
+                    stdin=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL
+                )
+                proc.communicate(text.encode('utf-8'))
+                return proc.returncode == 0
+            except Exception:
+                pass
+
+        return False
+
+    @staticmethod
+    def paste() -> Optional[str]:
+        """Paste text from clipboard. Returns None on failure."""
+        # Try xclip first
+        if shutil.which('xclip'):
+            try:
+                result = subprocess.run(
+                    ['xclip', '-selection', 'clipboard', '-o'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    return result.stdout
+            except Exception:
+                pass
+
+        # Try xsel as fallback
+        if shutil.which('xsel'):
+            try:
+                result = subprocess.run(
+                    ['xsel', '--clipboard', '--output'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    return result.stdout
+            except Exception:
+                pass
+
+        # Try wl-paste for Wayland
+        if shutil.which('wl-paste'):
+            try:
+                result = subprocess.run(
+                    ['wl-paste'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    return result.stdout
+            except Exception:
+                pass
+
+        return None
+
+

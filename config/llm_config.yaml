@@ -166,6 +166,8 @@ code_generation:
     # 2. Detailed: provider + model pair for specific model fallbacks
     order:
       - provider: ollama
+        model: glm-4.7:cloud
+      - provider: ollama
         model: deepseek-v3.2:cloud
       - provider: ollama
         model: mistral-large-3:675b-cloud
@@ -214,7 +216,7 @@ code_generation:
       retry_attempts: 3
       retry_delay: 2
     ollama:
-      model: deepseek-v3.2:cloud
+      model: glm-4.7:cloud
       base_url: http://127.0.0.1:11434
       timeout: 600
       temperature: 0.0

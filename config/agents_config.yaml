@@ -279,3 +279,44 @@ agents:
       testing:
         enabled: true
         generate_tests: true
+
+    # TUI Settings (Interactive Terminal Interface)
+    tui:
+      enabled: true
+      theme: "dark"
+      auto_scroll: true
+      show_timestamps: true
+
+    # Knowledge Integration (RAICA Server API)
+    knowledge:
+      enabled: true
+      raica_server_url: "http://localhost:5000"
+      web_search_timeout: 30
+      doc_search_timeout: 30
+      cache_results: true
+      cache_ttl_minutes: 30
+
+    # Hooks System (Automated actions per step)
+    hooks:
+      enabled: true
+      config_file: "agents/coding_agent/config/hooks_config.yaml"
+      builtin:
+        doc_update: true
+        run_tests: true
+        git_commit: true
+        lint: false
+
+    # Verification Settings (90% success gate)
+    verification:
+      enabled: true
+      model: "glm-4.7:cloud"
+      provider: "ollama"
+      success_threshold: 90
+      max_verification_iterations: 3
+
+    # State Persistence (Session resumption)
+    state:
+      enabled: true
+      auto_save: true
+      checkpoint_on_phase_complete: true
+      max_checkpoints: 10

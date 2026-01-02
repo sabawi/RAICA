@@ -1,0 +1,129 @@
+# =============================================================================
+# CLI Coding Agent - Hooks Configuration
+# =============================================================================
+#
+# Configuration for latent hooks that execute automatically during code
+# generation phases and steps.
+#
+# Hook Triggers:
+#   - PHASE_START: Before a development phase begins
+#   - PHASE_END: After a development phase completes
+#   - STEP_START: Before an individual step begins
+#   - STEP_END: After an individual step completes
+#   - FILE_GENERATED: After a file is generated
+#   - TEST_PASSED: After tests pass
+#   - TEST_FAILED: After tests fail
+#   - ERROR: When an error occurs
+#
+# =============================================================================
+
+# Global hook settings
+settings:
+  enabled: true
+  log_hook_execution: true
+  fail_on_hook_error: false    # Continue if a hook fails
+  hook_timeout_seconds: 30     # Default timeout per hook
+
+# Built-in hooks configuration
+hooks:
+  # ---------------------------------------------------------------------------
+  # doc_update: Generate/update project documentation
+  # ---------------------------------------------------------------------------
+  doc_update:
+    enabled: true
+    trigger: PHASE_END
+    phases:
+      - CODING
+      - DEBUGGING
+    priority: 50
+    description: "Generate or update project documentation (README.md)"
+    options:
+      generate_readme: true
+      update_existing: false
+      include_api_docs: false
+
+  # ---------------------------------------------------------------------------
+  # run_tests: Run tests after each step
+  # ---------------------------------------------------------------------------
+  run_tests:
+    enabled: true
+    trigger: STEP_END
+    priority: 100
+    description: "Run project tests after each implementation step"
+    options:
+      test_framework: "pytest"    # pytest, unittest, jest, mocha
+      verbose: true
+      timeout_seconds: 60
+      fail_fast: false            # Stop on first failure
+
+  # ---------------------------------------------------------------------------
+  # git_commit: Auto-commit changes after phase completion
+  # ---------------------------------------------------------------------------
+  git_commit:
+    enabled: true
+    trigger: PHASE_END
+    phases:
+      - CODING
+      - DEBUGGING
+      - TESTING
+    priority: 200               # Run after other hooks
+    description: "Automatically commit changes after phase completion"
+    options:
+      init_repo_if_missing: true
+      add_all_files: true
+      commit_message_template: "[{phase}] Auto-commit by CLI Coding Agent"
+      include_timestamp: true
+
+  # ---------------------------------------------------------------------------
+  # lint: Run code linting on generated files
+  # ---------------------------------------------------------------------------
+  lint:
+    enabled: false              # Disabled by default
+    trigger: FILE_GENERATED
+    priority: 75
+    description: "Run linting on generated code files"
+    options:
+      linter: "flake8"         # flake8, pylint, eslint
+      max_line_length: 120
+      ignore_errors: []
+
+  # ---------------------------------------------------------------------------
+  # backup: Create backup before major changes
+  # ---------------------------------------------------------------------------
+  backup:
+    enabled: false              # Disabled by default
+    trigger: PHASE_START
+    phases:
+      - DEBUGGING
+    priority: 10                # Run early
+    description: "Create backup before debugging phase"
+    options:
+      backup_directory: ".backups"
+      max_backups: 5
+
+# Custom hooks (user-defined)
+# These are loaded from external scripts in the hooks directory
+custom_hooks: []
+  # Example custom hook:
+  # - name: "notify_slack"
+  #   enabled: true
+  #   trigger: PHASE_END
+  #   phases:
+  #     - COMPLETE
+  #   script: "hooks/notify_slack.sh"
+  #   priority: 300
+  #   description: "Send Slack notification on completion"
+
+# Phase-specific hook overrides
+# Override hook settings for specific phases
+phase_overrides:
+  TESTING:
+    run_tests:
+      options:
+        verbose: true
+        fail_fast: true         # Be strict during testing phase
+
+  DEBUGGING:
+    git_commit:
+      options:
+        commit_message_template: "[DEBUG] Fix: {error_summary}"
