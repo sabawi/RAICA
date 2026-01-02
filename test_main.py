@@ -1,0 +1,1 @@
+pip install pytest pytest-mock pandas yfinance matplotlib
