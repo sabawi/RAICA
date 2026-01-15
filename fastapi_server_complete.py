@@ -1455,87 +1455,56 @@ class AsyncToolManager:
 
                 
                 
-                # Enhanced Google News function with FULL ARTICLE CONTENT and enhanced source blocks
-                def get_news_from_google(keyword, source_num_start=1, categories=None):
-                    res = ''
-                    articlesLimit = 8  # Reduced slightly to account for more content per article
-                    source_count = 0
-                    try:
-                        google_news = GNews(language='en', country='US', max_results=articlesLimit)
-
-                        # Enhance search terms based on detected categories
-                        enhanced_keyword = keyword
-                        if categories:
-                            if any(cat in ['finance', 'economy'] for cat in categories):
-                                enhanced_keyword = f"{keyword} stocks market finance economy"
-                            elif 'crypto' in categories:
-                                enhanced_keyword = f"{keyword} cryptocurrency bitcoin blockchain"
-                            elif 'technology' in categories:
-                                enhanced_keyword = f"{keyword} tech innovation AI software"
-
-                        logger.debug(f"🔍 Google News search: '{keyword}' -> '{enhanced_keyword}'")
-                        keyword_news = google_news.get_news(enhanced_keyword)
-                        
-                        for i in range(min(len(keyword_news), articlesLimit)):
-                            article = keyword_news[i]
-                            title = article.get('title', 'No title')
-                            description = article.get('description', 'No description')
-                            published_date = article.get('published date', 'N/A')
-                            article_url = article.get('url', '')
-                            
-                            # Try to get full article content
-                            full_content = ""
-                            try:
-                                # Check if newspaper3k is available
-                                import warnings
-                                # Suppress SyntaxWarnings from old newspaper3k package
-                                with warnings.catch_warnings():
-                                    warnings.filterwarnings("ignore", category=SyntaxWarning)
-                                    import newspaper
-                                # Get the full article from Google News
-                                full_article = google_news.get_full_article(article['url'])
-                                if full_article and hasattr(full_article, 'text'):
-                                    # Extract first 500 characters of actual article content
-                                    article_text = full_article.text.strip()
-                                    if len(article_text) > 100:  # Only use substantial content
-                                        full_content = article_text[:800] + "..." if len(article_text) > 800 else article_text
-                                    else:
-                                        # Fallback to description if full text is too short
-                                        full_content = description
-                                else:
-                                    full_content = description
-                            except ImportError:
-                                # newspaper3k not available, fall back to enhanced description
-                                print("newspaper3k not available, using enhanced description", flush=True)
-                                full_content = description
-                                # Try to get more content via URL extraction
-                                try:
-                                    if article_url:
-                                        enhanced_content = get_text_from_url(article_url)
-                                        if len(enhanced_content) > len(description):
-                                            full_content = enhanced_content[:800] + "..." if len(enhanced_content) > 800 else enhanced_content
-                                except Exception as url_error:
-                                    pass  # Keep original description
-                            except Exception as content_error:
-                                # Fallback to description if full content extraction fails
-                                full_content = description
-                            
-                            # Format using enhanced source block with safe URL cleaning
-                            cleaned_url = clean_news_url(article_url) if article_url else None
-                            safe_url = cleaned_url if cleaned_url else (article_url if article_url else f"https://news.google.com/search?q={keyword}")
-
-                            formatted_source = _format_source_block(
-                                source_url=safe_url,
-                                title=title,
-                                content=full_content,
-                                source_num=source_num_start + source_count
-                            )
-                            res += formatted_source
-                            source_count += 1
-                            
-                    except Exception as e:
-                        res += f"Error from Google news: {e}\n"
-                    return res, source_count
+                
+                # 🔄 REPLACEMENT: Google News RSS Feeds (instead of broken GNews library)
+                # Maps categories to Google News topic codes
+                GOOGLE_NEWS_TOPIC_MAP = {
+                    'world': 'WORLD',
+                    'national': 'NATION',
+                    'nation': 'NATION',
+                    'us': 'NATION',
+                    'business': 'BUSINESS',
+                    'finance': 'BUSINESS',
+                    'economy': 'BUSINESS',
+                    'technology': 'TECHNOLOGY',
+                    'tech': 'TECHNOLOGY',
+                    'science': 'SCIENCE',
+                    'sports': 'SPORTS',
+                    'health': 'HEALTH',
+                }
+                
+                def get_google_news_rss_urls(newsFilter, categories):
+                    """
+                    Generate Google News RSS URLs based on filter and categories.
+                    Returns list of RSS feed URLs to fetch.
+                    """
+                    urls = []
+                    
+                    # Add topic-based feeds for detected categories
+                    # Format: https://news.google.com/rss/headlines/section/topic/{TOPIC}
+                    # Limit to 1 category to leave room for other sources
+                    for category in categories[:1]:  # Only top category
+                        topic_code = GOOGLE_NEWS_TOPIC_MAP.get(category.lower())
+                        if topic_code:
+                            topic_url = f"https://news.google.com/rss/headlines/section/topic/{topic_code}"
+                            urls.append(topic_url)
+                            print(f"📰 Google News topic feed: {topic_code}", flush=True)
+                    
+                    # Add keyword search feed if filter is specific
+                    if newsFilter and len(newsFilter.strip()) > 2:
+                        # Clean the filter for URL
+                        import urllib.parse
+                        clean_filter = newsFilter.strip()
+                        search_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_filter)}"
+                        urls.append(search_url)
+                        print(f"🔍 Google News search feed: '{clean_filter}'", flush=True)
+                    
+                    # Fallback: general news feed if no specific URLs
+                    if not urls:
+                        urls.append("https://news.google.com/rss")
+                        print("📰 Google News general feed (fallback)", flush=True)
+                    
+                    return urls
                 
                 # Enhanced web content extraction with improved RSS/XML parsing
                 def get_text_from_url(url):
@@ -1629,38 +1598,83 @@ class AsyncToolManager:
                 # Step 3: UNION all sources from categories + keywords
                 urls = get_union_sources(ranked_categories, keyword_sources)
                 
-                # Initialize result string with timestamp and sorting instructions
-                res = f'''\nFROM EXTERNAL SOURCES as of [Current Date and Time: {todayStr}]. Here is the News Summary you requested, use the summary to compose your response to the user's prompt: ANALYZE ALL SOURCES and select the MOST IMPORTANT and RELEVANT news items based on the user's specific request. Sort them by RELEVANCE and IMPORTANCE to the user's query, NOT by the order they appear below. Focus on the most significant developments, breaking news, and impactful stories related to the topic requested. Prioritize recent news resources. If user requests expanded content, provide detailed content and analysis from the available context. Cite sources for each item. '''
+                # 📰 ADD GOOGLE NEWS RSS FEEDS (replaces broken GNews library)
+                google_news_urls = get_google_news_rss_urls(newsFilter, ranked_categories)
+                # Prepend Google News feeds to ensure they're fetched first
+                urls = google_news_urls + urls
                 
-                # Get Google News results with enhanced format and category awareness
-                google_results, google_source_count = get_news_from_google(newsFilter, source_num_start=1, categories=ranked_categories)
-                res += google_results
+                print(f"🔍 Starting news fetch: {len(ranked_categories)} categories, {len(google_news_urls)} Google News feeds, {len(urls)-len(google_news_urls)} other RSS sources", flush=True)
+                
+                # Initialize result string with timestamp and sorting instructions
+                res = f'''\\nFROM EXTERNAL SOURCES as of [Current Date and Time: {todayStr}]. Here is the News Summary you requested, use the summary to compose your response to the user's prompt: ANALYZE ALL SOURCES and select the MOST IMPORTANT and RELEVANT news items based on the user's specific request. Sort them by RELEVANCE and IMPORTANCE to the user's query, NOT by the order they appear below. Focus on the most significant developments, breaking news, and impactful stories related to the topic requested. Prioritize recent news resources. If user requests expanded content, provide detailed content and analysis from the available context. Cite sources for each item. '''
                 
                 # Fetch content from each URL with improved error handling and fallbacks
-                successful_sources = google_source_count  # Start counting after Google News sources
+                # 🔒 TIMEOUT PROTECTION: Use concurrent.futures with strict timeout
+                successful_sources = 0  # Count all successful sources (including Google News RSS)
                 attempted_sources = 0
-                max_sources = 6  # Try up to 6 sources for better coverage and diversity
+                max_sources = 6  # Try up to 6 sources (6 × 30s = 180s)
+                feed_timeout = 25  # 25 seconds per feed (6 feeds × 25s = 150s max)
                 
-                for newsURL in urls[:max_sources]:
-                    attempted_sources += 1
+                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+                import time
+                
+                def fetch_single_feed_with_timeout(newsURL, source_num):
+                    """Wrapper to fetch a single feed with timeout protection"""
                     try:
                         logger.debug(f"Attempting to fetch news from: {newsURL}")
-                        
-                        # Use new function that extracts article URLs from RSS feeds
-                        formatted_content, articles_added = _get_news_content_with_article_urls(newsURL, successful_sources + 1)
-                        
-                        # Only add if we got meaningful content
-                        if formatted_content and articles_added > 0:
-                            res += formatted_content
-                            successful_sources += articles_added
-                            logger.debug(f"Successfully fetched from: {newsURL} ({articles_added} articles)")
-                        else:
-                            logger.debug(f"No meaningful content from: {newsURL}")
-                            
+                        return _get_news_content_with_article_urls(newsURL, source_num)
                     except Exception as e:
                         print(f"Error fetching {newsURL}: {e}", flush=True)
-                        # Don't include error in response to keep it clean
-                        continue
+                        return ("", 0)
+                
+                import time as time_module
+                start_time = time_module.time()
+                print(f"🔍 Fetching from {min(len(urls), max_sources)} RSS feeds in PARALLEL...", flush=True)
+                # Use thread pool with PARALLEL fetching (max_workers=6 for concurrent requests)
+                # Don't use context manager to avoid waiting for all futures on exit
+                executor = ThreadPoolExecutor(max_workers=6)
+                try:
+                    # Submit all tasks at once for parallel execution
+                    future_to_url = {}
+                    for i, newsURL in enumerate(urls[:max_sources]):
+                        future = executor.submit(fetch_single_feed_with_timeout, newsURL, i + 1)
+                        future_to_url[future] = newsURL
+
+                    # Collect results as they complete with proper timeout handling
+                    from concurrent.futures import as_completed
+                    try:
+                        for future in as_completed(future_to_url, timeout=feed_timeout + 10):
+                            newsURL = future_to_url[future]
+                            attempted_sources += 1
+                            try:
+                                formatted_content, articles_added = future.result(timeout=5)
+
+                                # Only add if we got meaningful content
+                                if formatted_content and articles_added > 0:
+                                    res += formatted_content
+                                    successful_sources += articles_added
+                                    print(f"✅ Fetched {articles_added} articles from {newsURL[:50]}...", flush=True)
+                                else:
+                                    logger.debug(f"No meaningful content from: {newsURL}")
+
+                            except FuturesTimeoutError:
+                                print(f"⏱️ Timeout fetching {newsURL} (exceeded {feed_timeout}s), skipping...", flush=True)
+                                continue
+                            except Exception as e:
+                                print(f"Error fetching {newsURL}: {e}", flush=True)
+                                continue
+                    except TimeoutError:
+                        # as_completed timeout - some futures didn't complete in time
+                        elapsed = time_module.time() - start_time
+                        print(f"⏱️ Parallel fetch timeout after {elapsed:.1f}s, got {successful_sources} articles", flush=True)
+                    except Exception as e:
+                        print(f"Error in parallel fetch: {e}", flush=True)
+                finally:
+                    # Shutdown executor without waiting - don't block on slow futures
+                    executor.shutdown(wait=False, cancel_futures=True)
+
+                elapsed = time_module.time() - start_time
+                print(f"📰 Parallel fetch completed in {elapsed:.1f}s with {successful_sources} articles", flush=True)
                 
                 # Add fallback sources if we didn't get enough successful sources
                 if successful_sources < 2 and category in ["technology", "finance", "crypto"]:
@@ -1680,30 +1694,44 @@ class AsyncToolManager:
                         ]
                     }
                     
-                    for fallback_url in fallback_sources.get(category, [])[:2]:
-                        if successful_sources >= 3:  # Stop if we have enough
-                            break
-                        try:
-                            print(f"Trying fallback source: {fallback_url}", flush=True)
-                            
-                            # Use new function for fallback sources too
-                            formatted_content, articles_added = _get_news_content_with_article_urls(fallback_url, successful_sources + 1)
-                            
-                            if formatted_content and articles_added > 0:
-                                res += formatted_content
-                                successful_sources += articles_added
-                                print(f"Fallback source successful: {fallback_url} ({articles_added} articles)", flush=True)
-                        except Exception as e:
-                            print(f"Fallback source failed {fallback_url}: {e}", flush=True)
-                            continue
+                    # Use same timeout protection for fallback sources
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        for fallback_url in fallback_sources.get(category, [])[:2]:
+                            if successful_sources >= 3:  # Stop if we have enough
+                                break
+                            try:
+                                print(f"Trying fallback source: {fallback_url}", flush=True)
+                                
+                                # Submit task with timeout per feed
+                                future = executor.submit(fetch_single_feed_with_timeout, fallback_url, successful_sources + 1)
+                                formatted_content, articles_added = future.result(timeout=feed_timeout)
+                                
+                                if formatted_content and articles_added > 0:
+                                    res += formatted_content
+                                    successful_sources += articles_added
+                                    print(f"Fallback source successful: {fallback_url} ({articles_added} articles)", flush=True)
+                                    
+                            except FuturesTimeoutError:
+                                print(f"⏱️ Timeout fetching fallback {fallback_url} (exceeded {feed_timeout}s), skipping...", flush=True)
+                                continue
+                            except Exception as e:
+                                print(f"Fallback source failed {fallback_url}: {e}", flush=True)
+                                continue
                 
                 logger.debug(f"News fetch complete: {successful_sources}/{attempted_sources} primary sources successful")
                 
                 return res
             
-            return await asyncio.get_event_loop().run_in_executor(
-                thread_pool, sync_news_query
-            )
+            # 🔒 CRITICAL GLOBAL TIMEOUT: Wrap entire news query with 60-second timeout
+            # Parallel fetching should complete much faster now
+            try:
+                return await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(thread_pool, sync_news_query),
+                    timeout=60.0  # Maximum 60 seconds for entire news operation (parallel fetch)
+                )
+            except asyncio.TimeoutError:
+                print("⚠️ News query exceeded 60-second global timeout, returning partial results", flush=True)
+                return "⚠️ News retrieval timed out after 60 seconds. Please try again with a more specific query."
         except Exception as e:
             return f"News query error: {str(e)}"
     
@@ -2762,6 +2790,40 @@ def _extract_domain(url: str) -> str:
     except:
         return "Unknown Source"
 
+def _validate_article_url(url: str) -> bool:
+    """
+    Validate that a URL is a proper article URL (not a feed URL or invalid).
+
+    Args:
+        url: URL to validate
+
+    Returns:
+        True if URL appears to be a valid article URL, False otherwise
+    """
+    if not url or not isinstance(url, str):
+        return False
+
+    # Must start with http/https
+    if not url.startswith(('http://', 'https://')):
+        return False
+
+    # Reject feed/RSS URLs (these are not article URLs)
+    feed_indicators = ['/feed', '/rss', '.xml', '.rss', '/atom', 'feedburner']
+    url_lower = url.lower()
+    for indicator in feed_indicators:
+        if indicator in url_lower:
+            return False
+
+    # Reject URLs that are too short (likely invalid)
+    if len(url) < 25:
+        return False
+
+    # Reject URLs that are too long (likely corrupted)
+    if len(url) > 2000:
+        return False
+
+    return True
+
 def _parse_rss_articles(rss_content: str, feed_url: str, max_articles: int = 5) -> List[dict]:
     """
     Parse RSS feed content and extract individual article information including URLs.
@@ -2822,12 +2884,14 @@ def _parse_rss_articles(rss_content: str, feed_url: str, max_articles: int = 5) 
                     if id_text.startswith('http'):
                         url = id_text
             
-            if url:
+            # Validate the URL before using it
+            if url and _validate_article_url(url):
                 article['url'] = url
             else:
-                # Fallback to feed URL if no article URL found
-                article['url'] = feed_url
-                
+                # SKIP articles without valid URLs to prevent fake citations
+                # Do NOT use feed URL as fallback - this causes "page not found" issues
+                continue
+
             # Extract description with enhanced content extraction
             desc_text = ""
             
