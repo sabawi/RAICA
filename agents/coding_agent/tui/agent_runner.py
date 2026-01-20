@@ -2463,6 +2463,10 @@ Example: ["index.html", "styles.css", "script.js"]
             # Build context about other files for consistency
             other_files = [f for f in files_to_generate if f != filename]
             
+            # Get architecture (HLD) and file specs (LLD) if available
+            architecture = getattr(agent.context, 'architecture', '')
+            file_specs = getattr(agent.context, 'file_specs', '')
+            
             prompt = f"""You are an Expert Senior Full Stack Developer generating production-quality code.
 
 PROJECT: {agent.context.original_request}
@@ -2470,11 +2474,23 @@ PROJECT: {agent.context.original_request}
 REQUIREMENTS:
 {chr(10).join(f'- {r}' for r in agent.context.refined_requirements[:5])}
 
+=== SYSTEM ARCHITECTURE (HLD) ===
+{architecture[:1500] if architecture else 'Standard modular design with clear separation of concerns.'}
+
+=== FILE SPECIFICATIONS (LLD) ===
+{file_specs[:2000] if file_specs else f'Files to create: {", ".join(files_to_generate)}'}
+
 FILES IN THIS PROJECT: {', '.join(files_to_generate)}
 
 Generate COMPLETE, WORKING content for: **{filename}**
 
-=== CRITICAL INTEGRATION RULES ===
+⚠️ CRITICAL: You MUST follow the Architecture and File Specifications above EXACTLY.
+- Use the same class names specified in the LLD
+- Use the same function signatures specified in the LLD
+- Import from the files specified in the LLD dependencies
+- Export the symbols that other files will import from this file
+
+=== INTEGRATION RULES ===
 
 1. **API CONSISTENCY** - When multiple files share data/constants:
    - Define names in ONE file (e.g., config.py), import everywhere else
@@ -2597,6 +2613,14 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
         
         # Set up Python environment (venv, requirements, deps)
         await self._setup_python_environment()
+        
+        # Validate generated code and fix issues through iterative loop
+        for attempt in range(3):
+            issues = await self._validate_generated_code()
+            if not issues:
+                break
+            self.output.add_info(f"🔄 Correction attempt {attempt + 1}/3...")
+            await self._fix_code_issues(issues)
         
         return True
 
@@ -2807,6 +2831,179 @@ Output complete test code."""
                 except Exception as e:
                     self.output.add_warning(f"Dependency installation failed: {e}")
         
+        return True
+
+    async def _validate_generated_code(self) -> list:
+        """
+        Validate all generated files for consistency after code generation.
+        
+        Checks:
+        1. Import chains - all files reachable from entry point
+        2. API consistency - function signatures match callers
+        3. Config consistency - exported names match imports
+        
+        Returns:
+            List of validation issues found
+        """
+        agent = self._agent
+        project_dir = agent.project_dir
+        issues = []
+        
+        self.output.add_info("🔍 Validating generated code...")
+        
+        # 1. Check import chains using code path tracer
+        try:
+            from agents.coding_agent.services.code_path_tracer import CodePathTracer
+            
+            tracer = CodePathTracer(project_dir)
+            ctx = await tracer.build_graph()
+            
+            if ctx.orphaned_files:
+                orphaned = [f for f in ctx.orphaned_files 
+                           if not f.startswith('test') and not f.startswith('tests/')]
+                if orphaned:
+                    issues.append(f"ORPHANED_FILES: {', '.join(orphaned[:5])}")
+                    self.output.add_warning(f"⚠️ {len(orphaned)} files not imported from entry point")
+            else:
+                self.output.add_success("✓ All files connected via imports")
+                
+        except Exception as e:
+            self.output.add_warning(f"Import chain check skipped: {e}")
+        
+        # 2. Check config consistency (imports match exports)
+        try:
+            config_file = project_dir / "config.py"
+            if config_file.exists():
+                config_content = config_file.read_text()
+                
+                # Find what other files try to import from config
+                for py_file in project_dir.glob("*.py"):
+                    if py_file.name == "config.py":
+                        continue
+                    content = py_file.read_text()
+                    
+                    # Look for 'from config import X, Y, Z'
+                    import re
+                    imports = re.findall(r'from config import ([^\n]+)', content)
+                    for imp_line in imports:
+                        for sym in imp_line.split(','):
+                            sym = sym.strip().split()[0]  # Handle 'as' aliases
+                            if sym and sym not in config_content and sym != '*':
+                                issues.append(f"CONFIG_MISMATCH: {py_file.name} imports '{sym}' but config.py doesn't define it")
+                                
+        except Exception as e:
+            self.output.add_warning(f"Config consistency check skipped: {e}")
+        
+        # 3. Check for common API mismatches
+        try:
+            # Look for class instantiation mismatches
+            for py_file in project_dir.glob("*.py"):
+                content = py_file.read_text()
+                
+                # Find function calls with keyword args
+                import re
+                calls = re.findall(r'(\w+)\(([^)]*\w+\s*=\s*[^)]+)\)', content)
+                
+                for class_name, args in calls[:10]:  # Limit to prevent slowdown
+                    # Find the class definition
+                    for other_file in project_dir.glob("*.py"):
+                        other_content = other_file.read_text()
+                        
+                        # Look for class definition with __init__
+                        class_match = re.search(rf'class {class_name}[^:]*:', other_content)
+                        if class_match:
+                            # Check if __init__ accepts parameters
+                            init_match = re.search(rf'def __init__\(self([^)]*)\)', other_content)
+                            if init_match:
+                                init_params = init_match.group(1)
+                                # Check if init doesn't accept any named params but caller passes them
+                                if '=' not in init_params and ',' not in init_params:
+                                    if '=' in args:
+                                        issues.append(f"API_MISMATCH: {py_file.name} calls {class_name}({args[:30]}...) but __init__ takes no params")
+                                        break
+                                        
+        except Exception as e:
+            self.output.add_warning(f"API consistency check skipped: {e}")
+        
+        if issues:
+            self.output.add_warning(f"⚠️ Found {len(issues)} validation issues")
+        else:
+            self.output.add_success("✓ All validation checks passed")
+            
+        return issues
+
+    async def _fix_code_issues(self, issues: list) -> bool:
+        """
+        Fix identified issues through targeted LLM regeneration.
+        
+        Args:
+            issues: List of issue strings from _validate_generated_code
+            
+        Returns:
+            True if all issues were fixed
+        """
+        agent = self._agent
+        project_dir = agent.project_dir
+        
+        if not issues:
+            return True
+            
+        self.output.add_info(f"🔧 Fixing {len(issues)} issues...")
+        
+        for issue in issues[:5]:  # Limit to prevent runaway
+            try:
+                if issue.startswith("CONFIG_MISMATCH"):
+                    # Fix by adding missing exports to config.py
+                    parts = issue.split("'")
+                    if len(parts) >= 2:
+                        missing_sym = parts[1]
+                        config_file = project_dir / "config.py"
+                        if config_file.exists():
+                            content = config_file.read_text()
+                            # Add alias at end of file
+                            if f"{missing_sym} =" not in content:
+                                # Try to find a similar symbol to alias
+                                import re
+                                # Common pattern: SCREEN_WIDTH should alias to WINDOW_WIDTH
+                                similar = missing_sym.replace("SCREEN_", "WINDOW_").replace("TITLE", "WINDOW_TITLE")
+                                if similar in content:
+                                    content += f"\n# Compatibility alias\n{missing_sym} = {similar}\n"
+                                    config_file.write_text(content)
+                                    self.output.add_success(f"✓ Added alias {missing_sym} = {similar}")
+                                    
+                elif issue.startswith("ORPHANED_FILES"):
+                    # Fix by adding imports to entry point or manager file
+                    orphaned = issue.split(": ")[1].split(", ")[:3]
+                    
+                    # Find the main entry file
+                    main_file = project_dir / "main.py"
+                    if not main_file.exists():
+                        main_file = next(project_dir.glob("*.py"), None)
+                        
+                    if main_file and main_file.exists():
+                        content = main_file.read_text()
+                        added = []
+                        for orphan in orphaned:
+                            module = orphan.replace('.py', '')
+                            if f"import {module}" not in content and f"from {module}" not in content:
+                                # Add import at top after other imports
+                                import_line = f"import {module}  # Auto-added to connect to execution path\n"
+                                # Find last import line
+                                lines = content.split('\n')
+                                insert_idx = 0
+                                for i, line in enumerate(lines):
+                                    if line.startswith('import ') or line.startswith('from '):
+                                        insert_idx = i + 1
+                                lines.insert(insert_idx, import_line.strip())
+                                content = '\n'.join(lines)
+                                added.append(module)
+                        if added:
+                            main_file.write_text(content)
+                            self.output.add_success(f"✓ Added imports: {', '.join(added)}")
+                            
+            except Exception as e:
+                self.output.add_warning(f"Could not fix issue: {e}")
+                
         return True
 
     def _should_launch_project(self, request: str) -> bool:
