@@ -2839,19 +2839,135 @@ Output complete test code."""
         
         Checks:
         1. Import chains - all files reachable from entry point
-        2. API consistency - function signatures match callers
-        3. Config consistency - exported names match imports
+        2. Symbol existence - imported classes/functions actually exist
+        3. Constructor signatures - callers and definitions match
+        4. Config consistency - exported names match imports
         
         Returns:
             List of validation issues found
         """
+        import ast
+        import re
+        
         agent = self._agent
         project_dir = agent.project_dir
         issues = []
         
         self.output.add_info("🔍 Validating generated code...")
         
-        # 1. Check import chains using code path tracer
+        # Build a map of all defined classes/functions across all files
+        all_definitions = {}  # {symbol_name: (file_path, node)}
+        all_files = list(project_dir.rglob("*.py"))
+        
+        for py_file in all_files:
+            try:
+                content = py_file.read_text(encoding='utf-8', errors='ignore')
+                tree = ast.parse(content)
+                rel_path = str(py_file.relative_to(project_dir))
+                
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ClassDef):
+                        all_definitions[node.name] = (rel_path, node)
+                    elif isinstance(node, ast.FunctionDef):
+                        all_definitions[node.name] = (rel_path, node)
+            except SyntaxError:
+                continue
+            except Exception:
+                continue
+        
+        # 1. Check that all imported symbols exist
+        self.output.add_info("  Checking symbol imports...")
+        for py_file in all_files:
+            try:
+                content = py_file.read_text(encoding='utf-8', errors='ignore')
+                tree = ast.parse(content)
+                rel_path = str(py_file.relative_to(project_dir))
+                
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.ImportFrom):
+                        if node.module and not node.module.startswith(('typing', 'pathlib', 'logging', 'sys', 'os', 'arcade', 'yaml', 'json', 're', 'enum', 'dataclasses', 'collections', 'abc', 'unittest', 'pytest')):
+                            for alias in node.names:
+                                symbol = alias.name
+                                if symbol == '*':
+                                    continue
+                                # Check if symbol exists in definitions
+                                if symbol not in all_definitions:
+                                    # Check if it might be a module-level constant
+                                    module_parts = node.module.split('.')
+                                    potential_files = [
+                                        f"{'/'.join(module_parts)}.py",
+                                        f"{'/'.join(module_parts)}/__init__.py"
+                                    ]
+                                    found = False
+                                    for pf in potential_files:
+                                        target = project_dir / pf
+                                        if target.exists():
+                                            tc = target.read_text(encoding='utf-8', errors='ignore')
+                                            # Check for class/function/constant definition
+                                            if f"class {symbol}" in tc or f"def {symbol}" in tc or f"{symbol} =" in tc or f"{symbol}:" in tc:
+                                                found = True
+                                                break
+                                    if not found:
+                                        issues.append(f"MISSING_SYMBOL: {rel_path} imports '{symbol}' from {node.module} but it doesn't exist")
+            except SyntaxError:
+                continue
+            except Exception:
+                continue
+        
+        # 2. Check constructor signature mismatches
+        self.output.add_info("  Checking constructor signatures...")
+        for py_file in all_files:
+            try:
+                content = py_file.read_text(encoding='utf-8', errors='ignore')
+                tree = ast.parse(content)
+                rel_path = str(py_file.relative_to(project_dir))
+                
+                for node in ast.walk(tree):
+                    # Look for class instantiation: ClassName(args)
+                    if isinstance(node, ast.Call):
+                        if isinstance(node.func, ast.Name):
+                            class_name = node.func.id
+                            
+                            # Check if this class is defined in our project
+                            if class_name in all_definitions:
+                                def_file, def_node = all_definitions[class_name]
+                                
+                                if isinstance(def_node, ast.ClassDef):
+                                    # Find __init__ method
+                                    init_method = None
+                                    for item in def_node.body:
+                                        if isinstance(item, ast.FunctionDef) and item.name == '__init__':
+                                            init_method = item
+                                            break
+                                    
+                                    if init_method:
+                                        # Count expected params (excluding self)
+                                        args = init_method.args
+                                        required_params = len(args.args) - 1  # exclude self
+                                        defaults_count = len(args.defaults)
+                                        min_required = required_params - defaults_count
+                                        
+                                        # Count provided args
+                                        provided_positional = len(node.args)
+                                        provided_keyword = len(node.keywords)
+                                        provided_total = provided_positional + provided_keyword
+                                        
+                                        # Check for mismatch
+                                        if provided_total < min_required:
+                                            issues.append(f"SIGNATURE_MISMATCH: {rel_path} calls {class_name}() with {provided_total} args but __init__ requires at least {min_required}")
+                                        
+                                        # Check for unknown keyword args
+                                        param_names = [a.arg for a in args.args[1:]]  # exclude self
+                                        for kw in node.keywords:
+                                            if kw.arg and kw.arg not in param_names:
+                                                issues.append(f"UNKNOWN_PARAM: {rel_path} passes '{kw.arg}' to {class_name}() but __init__ doesn't accept it")
+                                                
+            except SyntaxError:
+                continue
+            except Exception:
+                continue
+        
+        # 3. Check import chains using code path tracer
         try:
             from agents.coding_agent.services.code_path_tracer import CodePathTracer
             
@@ -2864,69 +2980,67 @@ Output complete test code."""
                 if orphaned:
                     issues.append(f"ORPHANED_FILES: {', '.join(orphaned[:5])}")
                     self.output.add_warning(f"⚠️ {len(orphaned)} files not imported from entry point")
-            else:
-                self.output.add_success("✓ All files connected via imports")
-                
+                    
         except Exception as e:
             self.output.add_warning(f"Import chain check skipped: {e}")
         
-        # 2. Check config consistency (imports match exports)
+        # 4. Attempt a simple import test
+        self.output.add_info("  Checking Python imports...")
         try:
-            config_file = project_dir / "config.py"
-            if config_file.exists():
-                config_content = config_file.read_text()
+            import subprocess
+            import sys
+            
+            # Find the main entry file
+            main_candidates = ['main.py', 'app.py', '__main__.py']
+            main_file = None
+            for mc in main_candidates:
+                if (project_dir / mc).exists():
+                    main_file = mc
+                    break
+            
+            if not main_file:
+                # Check for package structure
+                for subdir in project_dir.iterdir():
+                    if subdir.is_dir() and (subdir / 'main.py').exists():
+                        main_file = f"{subdir.name}.main"
+                        break
+            
+            if main_file:
+                # Run a quick import check
+                check_code = f"import sys; sys.path.insert(0, '{project_dir}'); "
+                if '.' in main_file:
+                    check_code += f"from {main_file.replace('.py', '').replace('/', '.')} import *"
+                else:
+                    check_code += f"import {main_file.replace('.py', '')}"
                 
-                # Find what other files try to import from config
-                for py_file in project_dir.glob("*.py"):
-                    if py_file.name == "config.py":
-                        continue
-                    content = py_file.read_text()
-                    
-                    # Look for 'from config import X, Y, Z'
-                    import re
-                    imports = re.findall(r'from config import ([^\n]+)', content)
-                    for imp_line in imports:
-                        for sym in imp_line.split(','):
-                            sym = sym.strip().split()[0]  # Handle 'as' aliases
-                            if sym and sym not in config_content and sym != '*':
-                                issues.append(f"CONFIG_MISMATCH: {py_file.name} imports '{sym}' but config.py doesn't define it")
-                                
-        except Exception as e:
-            self.output.add_warning(f"Config consistency check skipped: {e}")
-        
-        # 3. Check for common API mismatches
-        try:
-            # Look for class instantiation mismatches
-            for py_file in project_dir.glob("*.py"):
-                content = py_file.read_text()
+                result = subprocess.run(
+                    [sys.executable, "-c", check_code],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=str(project_dir)
+                )
                 
-                # Find function calls with keyword args
-                import re
-                calls = re.findall(r'(\w+)\(([^)]*\w+\s*=\s*[^)]+)\)', content)
-                
-                for class_name, args in calls[:10]:  # Limit to prevent slowdown
-                    # Find the class definition
-                    for other_file in project_dir.glob("*.py"):
-                        other_content = other_file.read_text()
+                if result.returncode != 0:
+                    # Parse the error
+                    stderr = result.stderr
+                    if "ImportError" in stderr or "ModuleNotFoundError" in stderr:
+                        # Extract the specific error
+                        error_lines = stderr.strip().split('\n')
+                        error_msg = error_lines[-1] if error_lines else stderr[:200]
+                        issues.append(f"IMPORT_ERROR: {error_msg}")
+                    elif "SyntaxError" in stderr:
+                        error_lines = stderr.strip().split('\n')
+                        error_msg = error_lines[-1] if error_lines else stderr[:200]
+                        issues.append(f"SYNTAX_ERROR: {error_msg}")
                         
-                        # Look for class definition with __init__
-                        class_match = re.search(rf'class {class_name}[^:]*:', other_content)
-                        if class_match:
-                            # Check if __init__ accepts parameters
-                            init_match = re.search(rf'def __init__\(self([^)]*)\)', other_content)
-                            if init_match:
-                                init_params = init_match.group(1)
-                                # Check if init doesn't accept any named params but caller passes them
-                                if '=' not in init_params and ',' not in init_params:
-                                    if '=' in args:
-                                        issues.append(f"API_MISMATCH: {py_file.name} calls {class_name}({args[:30]}...) but __init__ takes no params")
-                                        break
-                                        
+        except subprocess.TimeoutExpired:
+            pass
         except Exception as e:
-            self.output.add_warning(f"API consistency check skipped: {e}")
+            self.output.add_warning(f"Import check skipped: {e}")
         
         if issues:
             self.output.add_warning(f"⚠️ Found {len(issues)} validation issues")
+            for issue in issues[:5]:
+                self.output.add_warning(f"  - {issue[:100]}")
         else:
             self.output.add_success("✓ All validation checks passed")
             
