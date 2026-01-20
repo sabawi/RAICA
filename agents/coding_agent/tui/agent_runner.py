@@ -18,6 +18,8 @@ import logging
 import signal
 import sys
 import os
+import time
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -25,26 +27,110 @@ from datetime import datetime
 # Add parent paths for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-# Install emergency exit handler BEFORE anything else
-def _emergency_exit(signum, frame):
-    """Emergency exit handler - always works even if app is frozen."""
-    print("\n\n🚨 EMERGENCY EXIT (Ctrl+C pressed twice or SIGINT)\n", file=sys.__stderr__)
+# ============================================================================
+# INTERRUPT HANDLING SYSTEM
+# Robust solution using watchdog thread that works even when TUI is frozen
+# ============================================================================
+_interrupt_requested = False
+_interrupt_time = 0
+_watchdog_thread = None
+
+def _request_interrupt():
+    """Request an interrupt - called from signal handler or keyboard monitor."""
+    global _interrupt_requested, _interrupt_time
+    _interrupt_requested = True
+    _interrupt_time = time.time()
+
+def _force_exit():
+    """Force exit the application."""
+    print("\n\n🚨 FORCE EXIT\n", file=sys.__stderr__)
     try:
-        # Attempt to save state if app instance exists
         if InteractiveAgentApp.instance:
-            print("Saving state before emergency exit...", file=sys.__stderr__)
             InteractiveAgentApp.instance.save_state()
-            
-        # Attempt to run atexit handlers explicitly since os._exit won't
-        import atexit
-        atexit._run_exitfuncs()
     except:
         pass
     os._exit(1)
 
-# Set up signal handler for hard kill
+def _watchdog_worker():
+    """
+    Watchdog thread that monitors for interrupt requests AND kill file.
+
+    Two ways to force exit:
+    1. Ctrl+C sets _interrupt_requested, watchdog force-exits after 5 sec
+    2. Create ~/.raica_kill file - watchdog detects and force-exits immediately
+
+    The kill file is a guaranteed escape hatch when signals don't work.
+    """
+    global _interrupt_requested, _interrupt_time
+
+    kill_file = Path.home() / ".raica_kill"
+    printed_kill_hint = False
+
+    while True:
+        time.sleep(0.5)  # Check every 500ms
+
+        # Check for kill file (guaranteed escape hatch)
+        if kill_file.exists():
+            try:
+                kill_file.unlink()  # Remove the file
+            except:
+                pass
+            print("\n\n🚨 KILL FILE DETECTED - forcing exit\n", file=sys.__stderr__)
+            _force_exit()
+
+        # Check for signal-based interrupt
+        if _interrupt_requested:
+            elapsed = time.time() - _interrupt_time
+            if elapsed > 5.0:
+                # 5 seconds since interrupt requested - force exit
+                print("\n\n🚨 WATCHDOG: No response for 5 seconds - forcing exit\n", file=sys.__stderr__)
+                _force_exit()
+            elif elapsed > 2.0 and not printed_kill_hint:
+                # After 2 seconds, print kill file hint
+                print(f"\n💡 TIP: If frozen, create file: touch ~/.raica_kill\n", file=sys.__stderr__)
+                printed_kill_hint = True
+
+def _start_watchdog():
+    """Start the watchdog thread if not already running."""
+    global _watchdog_thread
+    if _watchdog_thread is None or not _watchdog_thread.is_alive():
+        _watchdog_thread = threading.Thread(target=_watchdog_worker, daemon=True)
+        _watchdog_thread.start()
+
+def _emergency_exit(signum, frame):
+    """
+    Emergency exit handler with double-press detection.
+
+    - First Ctrl+C: Set interrupt flag, start watchdog timer
+    - Second Ctrl+C (within 3 sec): Force immediate exit
+    """
+    global _interrupt_requested, _interrupt_time
+
+    current_time = time.time()
+
+    if _interrupt_requested and (current_time - _interrupt_time) < 3.0:
+        # Second interrupt within 3 seconds - force exit immediately
+        _force_exit()
+    else:
+        # First interrupt - set flag and warn
+        _interrupt_requested = True
+        _interrupt_time = current_time
+        print("\n\n⚠️  Interrupt received. Press Ctrl+C again to force quit.", file=sys.__stderr__)
+        print("    (Will auto-exit in 5 seconds if frozen...)\n", file=sys.__stderr__)
+
+        # Try graceful cancellation
+        try:
+            if InteractiveAgentApp.instance and InteractiveAgentApp.instance._current_task:
+                InteractiveAgentApp.instance._current_task.cancel()
+        except:
+            pass
+
+# Set up signal handler
 signal.signal(signal.SIGINT, _emergency_exit)
 signal.signal(signal.SIGTERM, _emergency_exit)
+
+# Start watchdog thread immediately
+_start_watchdog()
 
 from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, Horizontal
@@ -64,6 +150,15 @@ from ..orchestrator import (
     OrchestratorCallbacks, CommandRisk
 )
 from agents.common.state_manager import StateManager
+from ..agent_config import AgentDefaults
+
+# Import Context Management System (v2.2)
+try:
+    from agents.common.context.manager import ContextManager
+    CONTEXT_SYSTEM_AVAILABLE = True
+except ImportError:
+    ContextManager = None
+    CONTEXT_SYSTEM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +273,24 @@ class InteractiveAgentApp(App):
         self._verbose = self._config.get('verbose', False)
         self._allow_sudo = self._config.get('allow_sudo', False)
 
+        # Track last request for continuation handling
+        self._last_request: Optional[str] = None
+        self._last_request_succeeded: bool = True
+        self._last_request_error: Optional[str] = None
+        self._last_request_context: Dict[str, Any] = {}
+
+        # Initialize Context Management System (v2.2)
+        self._context_manager = None
+        if CONTEXT_SYSTEM_AVAILABLE:
+            try:
+                self._context_manager = ContextManager(
+                    project_dir=self._project_dir,
+                    auto_initialize=True
+                )
+                logger.info("Context management system initialized for TUI")
+            except Exception as e:
+                logger.warning(f"Failed to initialize context manager: {e}")
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
@@ -206,13 +319,42 @@ class InteractiveAgentApp(App):
 
     def on_mount(self) -> None:
         """Show welcome message on startup."""
+        # Reinstall our signal handler in case Textual overrode it
+        signal.signal(signal.SIGINT, _emergency_exit)
+        signal.signal(signal.SIGTERM, _emergency_exit)
+
         self._show_welcome()
         self._load_prompt_history()  # Restore previous session's prompt history
-        
+
         # Restore full application state if available
         self._load_state()
-        
+
         self.prompt.input_widget.focus()
+
+        # Enable auto-save every 30 seconds
+        self.set_interval(30.0, self.save_state)
+
+        # Check for interrupt requests every 500ms (gives Textual a chance to handle gracefully)
+        self.set_interval(0.5, self._check_interrupt)
+
+    def _check_interrupt(self) -> None:
+        """Check for interrupt requests and handle gracefully within Textual."""
+        global _interrupt_requested, _interrupt_time
+
+        if _interrupt_requested:
+            # Clear the flag - we're handling it
+            _interrupt_requested = False
+
+            # Cancel any running task
+            if self._current_task and not self._current_task.done():
+                self._current_task.cancel()
+                self._is_processing = False
+                self.output.add_warning("⚠️ Operation interrupted by user")
+                self.prompt.clear_waiting()
+                self.prompt.set_prompt("Enter your coding request:")
+
+            # Save state
+            self.save_state()
 
     def _load_state(self) -> None:
         """Load application state from persistence."""
@@ -256,9 +398,10 @@ class InteractiveAgentApp(App):
                  self._llm_client = get_llm_client(self._model_override, self._verbose)
             
             self._orchestrator = Orchestrator(
-                llm_client=self._llm_client, 
+                llm_client=self._llm_client,
                 project_dir=self._project_dir,
-                allow_sudo=self._allow_sudo
+                allow_sudo=self._allow_sudo,
+                context_manager=self._context_manager
             )
 
     @on(PromptPanel.PromptSubmitted)
@@ -296,6 +439,21 @@ class InteractiveAgentApp(App):
             self._show_status()
             return
 
+        # Handle /model command
+        if value.lower() in ['/model', 'model']:
+            await self._show_model_info()
+            return
+
+        # Handle /cd command - change project directory
+        if value.lower().startswith('/cd ') or value.lower().startswith('cd '):
+            await self._handle_cd_command(value)
+            return
+
+        # Handle /pwd command - show current project directory
+        if value.lower() in ['/pwd', 'pwd']:
+            self.output.add_info(f"Current project directory: {self._project_dir}")
+            return
+
         # Check if we're waiting for a question response
         if self._pending_question and not self._pending_question.done():
             self._pending_question.set_result(value)
@@ -305,23 +463,127 @@ class InteractiveAgentApp(App):
         if not self._is_processing:
             # Log full prompt immediately (before any processing that could crash)
             logger.info(f"USER_PROMPT_RECEIVED: {value}")
-            self.output.add_info(f"Processing: {value[:60]}...")
+
+            # Check if this is a continuation of a failed request
+            effective_request = self._handle_continuation_request(value)
+
+            # Record user message in conversation context for continuity
+            if self._context_manager:
+                try:
+                    self._context_manager.add_conversation_message('user', value)
+                except Exception as e:
+                    logger.debug(f"Failed to record conversation: {e}")
+
+            self.output.add_info(f"Processing: {effective_request[:60]}...")
             # CRITICAL: Do NOT await here! Start as background task so event loop stays free
             # to process subsequent input events (for approval dialogs, questions, etc.)
-            self._current_task = asyncio.create_task(self._run_agent_with_error_handling(value))
+            self._current_task = asyncio.create_task(self._run_agent_with_error_handling(effective_request))
         else:
             self.output.add_warning("Agent is already running. Press Escape to interrupt.")
 
+    def _handle_continuation_request(self, request: str) -> str:
+        """
+        Detect and handle continuation requests like 'fix this', 'try again', 'continue'.
+
+        When a previous request failed and user says something like 'fix this problem',
+        we need to understand they mean the PREVIOUS request, not create a new project.
+
+        Args:
+            request: The user's current request
+
+        Returns:
+            Modified request with context, or original request if not a continuation
+        """
+        import re
+
+        # Continuation patterns that reference the previous request
+        continuation_patterns = [
+            r'^fix\s+(this|that|it|the\s+problem|the\s+error|the\s+issue)s?\.?$',
+            r'^try\s+again\.?$',
+            r'^retry\.?$',
+            r'^continue\.?$',
+            r'^do\s+it\s+again\.?$',
+            r'^run\s+it\s+again\.?$',
+            r'^(please\s+)?fix\s+(this|that|it)\.?$',
+            r'^what\s+went\s+wrong\??$',
+            r'^why\s+did\s+(it|that)\s+fail\??$',
+            r'^debug\s+(this|that|it)\.?$',
+            r'^solve\s+(this|that|it)\.?$',
+            r'^handle\s+(this|that|it)\.?$',
+        ]
+
+        request_lower = request.lower().strip()
+
+        # Check if this looks like a continuation
+        is_continuation = any(re.match(pattern, request_lower) for pattern in continuation_patterns)
+
+        if not is_continuation:
+            # Not a continuation - track this as the new "last request"
+            self._last_request = request
+            self._last_request_succeeded = True  # Assume success until proven otherwise
+            self._last_request_error = None
+            # Store project directory context for potential continuation
+            self._last_request_context = {
+                'project_dir': str(self._project_dir),
+                'timestamp': datetime.now().isoformat()
+            }
+            return request
+
+        # This IS a continuation - check if we have context from a previous request
+        if not self._last_request:
+            self.output.add_warning("No previous request to continue from. Please provide a full request.")
+            return request
+
+        if self._last_request_succeeded:
+            # Previous request succeeded - user might want something else
+            self.output.add_info(f"Previous request succeeded. Interpreting as: retry '{self._last_request[:50]}...'")
+
+        # Build a contextual request that includes the original intent
+        if self._last_request_error:
+            contextual_request = (
+                f"CONTINUATION: The previous request was: '{self._last_request}'. "
+                f"It failed with error: '{self._last_request_error}'. "
+                f"Please fix this and complete the original request."
+            )
+            self.output.add_info(f"Continuing from failed request: {self._last_request[:50]}...")
+        else:
+            contextual_request = (
+                f"CONTINUATION: The previous request was: '{self._last_request}'. "
+                f"Please retry or continue this request."
+            )
+            self.output.add_info(f"Retrying: {self._last_request[:50]}...")
+
+        # Keep the same last_request for potential further continuations
+        return contextual_request
+
+    def _record_request_failure(self, error: str) -> None:
+        """Record that the current request failed."""
+        self._last_request_succeeded = False
+        self._last_request_error = error
+        logger.info(f"Request failed, recorded for continuation: {error[:100]}")
+
+    def _record_request_success(self) -> None:
+        """Record that the current request succeeded."""
+        self._last_request_succeeded = True
+        self._last_request_error = None
+
     def _show_status(self) -> None:
         """Show current agent status."""
+        # Truncate path if too long
+        proj_dir_str = str(self._project_dir)
+        if len(proj_dir_str) > 60:
+            proj_dir_str = "..." + proj_dir_str[-57:]
+
         if self._agent:
+            project_name = self._agent.project_name[:60] if len(self._agent.project_name) > 60 else self._agent.project_name
             status_text = f"""
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                              AGENT STATUS                                      ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
+║  Working Dir: {proj_dir_str:<60} ║
 ║  Processing: {'Yes' if self._is_processing else 'No':<62} ║
 ║  Paused: {'Yes' if self._paused else 'No':<66} ║
-║  Project: {self._agent.project_name:<64} ║
+║  Project: {project_name:<64} ║
 ║  Phase: {self._agent.current_phase.name if hasattr(self._agent, 'current_phase') else 'N/A':<66} ║
 ║  Iteration: {self._agent.context.iteration if hasattr(self._agent, 'context') else 1:<63} ║
 ║  Files Generated: {self._files_generated:<56} ║
@@ -329,20 +591,126 @@ class InteractiveAgentApp(App):
 """
             self.output.write(Text(status_text, style="cyan"))
         else:
-            self.output.add_info("No agent currently running. Enter a coding request to start.")
+            self.output.add_info(f"Working directory: {proj_dir_str}")
+    async def _show_model_info(self) -> None:
+        """Show current LLM model configuration."""
+        if not self._llm_client:
+            await self._init_llm_client()
+
+        if not self._llm_client:
+            self.output.add_error("Failed to initialize LLM client")
+            return
+
+        info = self._llm_client.get_config_info()
+        provider = info.get('primary_provider', 'unknown')
+        model = info.get('primary_model', 'unknown')
+        config_path = info.get('config_path', 'default')
+
+        # Format nicer output
+        text = f"""
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                              LLM CONFIGURATION                                 ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║  Provider: {provider:<66} ║
+║  Model: {model:<69} ║
+║  Source: {str(config_path):<68} ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+"""
+        self.output.write(Text(text, style="green"))
+
+    async def _handle_cd_command(self, value: str) -> None:
+        """
+        Handle /cd command to change project directory.
+
+        Usage:
+            /cd /path/to/project
+            /cd ~/my_project
+            cd /path/to/project
+        """
+        # Extract path from command
+        parts = value.split(maxsplit=1)
+        if len(parts) < 2:
+            self.output.add_error("Usage: /cd <path>")
+            self.output.add_info(f"Current directory: {self._project_dir}")
+            return
+
+        path_str = parts[1].strip()
+
+        # Expand ~ to home directory
+        if path_str.startswith('~'):
+            path_str = str(Path.home() / path_str[2:]) if path_str.startswith('~/') else str(Path.home())
+
+        new_path = Path(path_str).resolve()
+
+        # Create directory if it doesn't exist
+        if not new_path.exists():
+            try:
+                new_path.mkdir(parents=True, exist_ok=True)
+                self.output.add_success(f"Created directory: {new_path}")
+            except PermissionError:
+                self.output.add_error(f"Permission denied: Cannot create {new_path}")
+                return
+            except Exception as e:
+                self.output.add_error(f"Failed to create directory: {e}")
+                return
+
+        # Switch project directory
+        old_dir = self._project_dir
+        self._project_dir = new_path
+
+        # Update context manager if available
+        if CONTEXT_SYSTEM_AVAILABLE and self._context_manager:
+            try:
+                self._context_manager.switch_project(new_path)
+            except Exception as e:
+                logger.warning(f"Failed to switch context manager: {e}")
+
+        # Clear any previous request context since we're in a new project
+        self._last_request_context = {}
+
+        self.output.add_success(f"Changed project directory:")
+        self.output.add_info(f"  From: {old_dir}")
+        self.output.add_info(f"  To:   {new_path}")
+
+        # Check what's in the new directory
+        if new_path.exists() and any(new_path.iterdir()):
+            files = list(new_path.iterdir())[:5]
+            self.output.add_info(f"  Contents: {len(list(new_path.iterdir()))} items")
+            for f in files:
+                self.output.add_info(f"    - {f.name}")
+            if len(list(new_path.iterdir())) > 5:
+                self.output.add_info(f"    ... and more")
+        else:
+            self.output.add_info("  (empty directory)")
 
     async def _run_agent_with_error_handling(self, value: str) -> None:
         """Wrapper to run agent with proper error handling for background task."""
         try:
             await self._start_agent(value)
+            # If we get here without exception, request succeeded
+            self._record_request_success()
         except asyncio.CancelledError:
-            self.output.add_warning("Agent task was cancelled")
+            # Task was cancelled (e.g., user quit during execution)
+            self._record_request_failure("Task was cancelled by user")
+            try:
+                self.output.add_warning("Agent task was cancelled")
+            except Exception:
+                # UI is no longer available (app is shutting down)
+                logger.warning("Agent task was cancelled (UI unavailable)")
         except Exception as e:
-            self.output.add_error(f"Failed to start agent: {e}")
-            import traceback
-            logger.exception("Agent failed")
-            # Log to output for visibility
-            self.output.add_error(traceback.format_exc()[:500])
+            # Record the failure for continuation handling
+            self._record_request_failure(str(e))
+            # Try to show error in UI, but handle gracefully if UI is gone
+            try:
+                self.output.add_error(f"Failed to start agent: {e}")
+                import traceback
+                logger.exception("Agent failed")
+                # Log to output for visibility
+                self.output.add_error(traceback.format_exc()[:500])
+            except Exception:
+                # UI is no longer available
+                import traceback
+                logger.exception(f"Agent failed (UI unavailable): {e}")
         finally:
             self._current_task = None
 
@@ -350,14 +718,15 @@ class InteractiveAgentApp(App):
         """Display welcome message and instructions."""
         welcome = """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║                    RAICA Interactive Agent v2.2                                ║
+║                    RAICA Interactive Agent v2.3                                ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
 ║                                                                               ║
-║  I handle CODING, SYSTEM QUERIES, and SYSTEM TASKS intelligently.             ║
+║  I handle CODING, DEBUGGING, SYSTEM QUERIES, and TASKS intelligently.         ║
 ║  I automatically detect your intent and route appropriately.                  ║
 ║                                                                               ║
 ║  CAPABILITIES:                                                                ║
 ║    CODE GEN    → "Create a Flask API with SQLite"                            ║
+║    CODE DEBUG  → "Fix the login bug" / "Debug the API error" (IN-PLACE!)     ║
 ║    SYS QUERY   → "Is nginx installed?" / "Check Python version"              ║
 ║    SYS TASK    → "Install docker" / "Configure apache"                       ║
 ║    HYBRID      → "Install LAMP stack and create a PHP form"                  ║
@@ -365,6 +734,8 @@ class InteractiveAgentApp(App):
 ║  KEYBOARD SHORTCUTS:                                                          ║
 ║    Ctrl+C  - Interrupt     Ctrl+Q  - Force Quit     PageUp/Dn - Scroll       ║
 ║    Ctrl+S  - Save State    Ctrl+L  - Clear Output   F1        - Help         ║
+║                                                                               ║
+║  EMERGENCY EXIT: If frozen, run in another terminal: touch ~/.raica_kill     ║
 ║                                                                               ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 """
@@ -406,16 +777,73 @@ class InteractiveAgentApp(App):
         # Log full request for auditing/debugging
         logger.info(f"FULL_USER_REQUEST: {request}")
 
+        # ════════════════════════════════════════════════════════════════
+        # CONTINUATION HANDLING: Extract original request and switch context
+        # ════════════════════════════════════════════════════════════════
+        original_request = request
+        continuation_error = None
+        is_continuation = False
+
+        if request.startswith("CONTINUATION:"):
+            is_continuation = True
+            self.output.add_info("🔄 Detected continuation of previous request")
+            logger.info("[CONTINUATION] Processing continuation request")
+
+            # Extract original request from: "CONTINUATION: The previous request was: 'ORIGINAL'. ..."
+            import re
+            original_match = re.search(r"previous request was: ['\"](.+?)['\"]", request)
+            if original_match:
+                original_request = original_match.group(1)
+                logger.info(f"[CONTINUATION] Extracted original request: {original_request[:100]}")
+                self.output.add_info(f"Original request: {original_request[:60]}...")
+
+            # Extract error if present
+            error_match = re.search(r"failed with error: ['\"](.+?)['\"]", request)
+            if error_match:
+                continuation_error = error_match.group(1)
+                logger.info(f"[CONTINUATION] Previous error: {continuation_error[:100]}")
+
+            # Extract target path from the ORIGINAL request
+            from agents.common.agent_utils import extract_target_path
+            target_path = extract_target_path(original_request)
+
+            if target_path:
+                self.output.add_info(f"🎯 Switching context to: {target_path}")
+                logger.info(f"[CONTINUATION] Switching to target directory: {target_path}")
+
+                # Create directory if needed
+                target_path.mkdir(parents=True, exist_ok=True)
+
+                # Switch project directory
+                self._project_dir = target_path
+
+                # Also switch context manager if available
+                if CONTEXT_SYSTEM_AVAILABLE and self._context_manager:
+                    try:
+                        self._context_manager.switch_project(target_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to switch context manager: {e}")
+            else:
+                # No explicit path - check if we have stored context
+                if self._last_request_context.get('project_dir'):
+                    stored_path = Path(self._last_request_context['project_dir'])
+                    if stored_path.exists():
+                        self._project_dir = stored_path
+                        self.output.add_info(f"📁 Using stored project directory: {stored_path}")
+                        logger.info(f"[CONTINUATION] Using stored project dir: {stored_path}")
+
         try:
             # Step 1: Initialize LLM client if needed
             if not self._llm_client:
                 await self._init_llm_client()
 
             # Step 2: Classify the request using the orchestrator
+            # IMPORTANT: For continuations, classify the ORIGINAL request, not the wrapper
+            request_to_classify = original_request if is_continuation else request
             self.output.add_info("Classifying request type...")
             classifier = RequestClassifier(self._llm_client)
             # Run classification in thread to avoid blocking (LLM call)
-            classification = await asyncio.to_thread(classifier.classify, request)
+            classification = await asyncio.to_thread(classifier.classify, request_to_classify)
 
             self.output.add_info(
                 f"Request type: {classification.primary_type.name} "
@@ -425,30 +853,114 @@ class InteractiveAgentApp(App):
             if classification.requires_sudo:
                 self.output.add_warning("This request may require sudo privileges")
 
-            # Step 3: ALL requests go through intelligent orchestration first
-            # The orchestrator will use LLM to create an appropriate plan
-            self.output.add_info("Creating intelligent execution plan...")
-            logger.info(f"[PATH] Starting intelligent request handling for: {request[:50]}...")
+            # Step 2.5: Extract path from request if user provided one
+            # e.g., "fix this snake game /home/user/project/snake_game" → extract path
+            extracted_path = self._extract_path_from_request(request)
+            if extracted_path and extracted_path.exists():
+                self.output.add_info(f"📁 Using path from request: {extracted_path}")
+                logger.info(f"[PATH] Extracted project path from request: {extracted_path}")
+                self._project_dir = extracted_path
 
-            result = await self._handle_intelligent_request(request, classification)
+            # Step 3: Determine if this is a NEW PROJECT request or IN-PLACE modification
+            # Key insight: "create a snake game" = NEW PROJECT, "fix the bug" = IN-PLACE
+            logger.info(f"[PATH] Checking for existing project in: {self._project_dir}")
+            has_existing_project = self._detect_existing_project()
+            is_new_project_request = self._is_new_project_request(request)
+            proceed_to_code_gen = False  # Flag to skip CREATE NEW and go directly to code gen
 
-            # Log what we got back
-            logger.info(f"[PATH] Intelligent request result: success={result.success if result else 'None'}, "
-                       f"generated_files={result.generated_files if result else 'None'}")
+            # Decision logic:
+            # - NEW PROJECT REQUEST → always create new subdirectory (regardless of existing code)
+            # - CODE_DEBUG → always IN-PLACE (fixing existing code)
+            # - CODE_GENERATION + existing project + NOT new project request → IN-PLACE enhancement
 
-            # Check if orchestrator determined code generation is needed
-            if result and result.generated_files and any(f.startswith("__CODE_GEN__") or f == "__USE_CODE_GEN_PIPELINE__" for f in result.generated_files):
-                self.output.add_info("Plan requires code generation pipeline...")
-                logger.info("[PATH] Proceeding to CODE GENERATION PIPELINE (orchestrator indicated code gen needed)")
-            else:
-                # Orchestrator handled the request completely
-                logger.info("[PATH] Request completed by orchestrator - NOT using code gen pipeline")
-                self.output.add_info("Request handled by intelligent orchestrator")
-                return
+            if is_new_project_request:
+                # User wants to CREATE something new - don't touch existing projects
+                logger.info(f"[PATH] New project request detected - will CREATE NEW")
+                has_existing_project = False  # Override - treat as no project
+
+            if has_existing_project:
+                # ════════════════════════════════════════════════════════════════
+                # IN-PLACE MODE: Existing project AND user wants to modify it
+                # All changes (bug fix, enhance, add feature) work on existing code
+                # ════════════════════════════════════════════════════════════════
+                self.output.add_info("📁 Existing project detected - using IN-PLACE mode")
+                logger.info(f"[PATH] Existing project in {self._project_dir} - IN-PLACE mode")
+
+                # Check if this might require a full rewrite
+                is_code_change = classification.primary_type in [
+                    RequestType.CODE_DEBUG, RequestType.CODE_GENERATION
+                ]
+
+                if is_code_change:
+                    # Use unified in-place handler for ALL code changes
+                    self.output.add_info("🔧 Modifying existing project (DO NO HARM mode)")
+                    result = await self._handle_inplace_code_change(request, classification)
+
+                    if result:
+                        if result.success:
+                            self.output.add_success("Changes applied successfully!")
+                            if hasattr(result, 'generated_files') and result.generated_files:
+                                modified = [f for f in result.generated_files if not f.startswith("__")]
+                                if modified:
+                                    self.output.add_info(f"Modified files: {', '.join(modified[:5])}")
+                        else:
+                            error_msg = result.error or 'Unknown error'
+                            self.output.add_error(f"Changes failed: {error_msg}")
+                            self._record_request_failure(error_msg)  # Record for continuation
+                            if hasattr(result, 'rollback_performed') and result.rollback_performed:
+                                self.output.add_warning("Changes have been rolled back")
+                    return
+                else:
+                    # System query/task - use orchestrator
+                    self.output.add_info("Processing system request...")
+                    result = await self._handle_intelligent_request(request, classification)
+
+                    # Check if the plan included code generation steps
+                    if result and result.generated_files and any(
+                        f.startswith("__CODE_GEN__") or f == "__USE_CODE_GEN_PIPELINE__"
+                        for f in result.generated_files
+                    ):
+                        self.output.add_info("Plan requires code generation - proceeding with code gen pipeline...")
+                        logger.info("[PATH] System request included CODE_GEN steps - proceeding to code generation")
+                        proceed_to_code_gen = True  # Skip CREATE NEW, go directly to code gen
+                    else:
+                        if result and result.success:
+                            self.output.add_success("Request completed")
+                        elif result and not result.success:
+                            error_msg = result.error or 'Request failed'
+                            self._record_request_failure(error_msg)  # Record for continuation
+                        return
+
+            if not proceed_to_code_gen:
+                # ════════════════════════════════════════════════════════════════
+                # CREATE NEW MODE: No existing project
+                # ════════════════════════════════════════════════════════════════
+                self.output.add_info("📂 No existing project - CREATE NEW mode")
+                logger.info(f"[PATH] No project in {self._project_dir} - CREATE NEW mode")
+
+                # For other request types, use intelligent orchestration
+                self.output.add_info("Creating intelligent execution plan...")
+                logger.info(f"[PATH] Starting intelligent request handling for: {request[:50]}...")
+
+                result = await self._handle_intelligent_request(request, classification)
+
+                # Log what we got back
+                logger.info(f"[PATH] Intelligent request result: success={result.success if result else 'None'}, "
+                           f"generated_files={result.generated_files if result else 'None'}")
+
+                # Check if orchestrator determined code generation is needed
+                if result and result.generated_files and any(f.startswith("__CODE_GEN__") or f == "__USE_CODE_GEN_PIPELINE__" for f in result.generated_files):
+                    self.output.add_info("Plan requires code generation pipeline...")
+                    logger.info("[PATH] Proceeding to CODE GENERATION PIPELINE (orchestrator indicated code gen needed)")
+                else:
+                    # Orchestrator handled the request completely
+                    logger.info("[PATH] Request completed by orchestrator - NOT using code gen pipeline")
+                    self.output.add_info("Request handled by intelligent orchestrator")
+                    return
 
             # Fall through to code generation only if orchestrator says it's needed
             self.output.add_info("Proceeding with code generation pipeline...")
-            logger.info("[PATH] === ENTERING OLD CODE GENERATION PIPELINE ===")
+            logger.info("[PATH] === ENTERING CODE GENERATION PIPELINE ===")
             self.output.add_separator()
 
             # Import and initialize the agent
@@ -530,14 +1042,20 @@ class InteractiveAgentApp(App):
             await self._run_agent_phases(request)
 
         except Exception as e:
-            self.output.add_error(f"Agent error: {e}")
-            import traceback
-            self.output.add_error(traceback.format_exc())
+            try:
+                self.output.add_error(f"Agent error: {e}")
+                import traceback
+                self.output.add_error(traceback.format_exc())
+            except Exception:
+                pass  # UI may be unavailable
             logger.exception("Agent failed")
         finally:
             self._is_processing = False
-            self.prompt.clear_waiting()
-            self.prompt.set_prompt("Enter another request or Ctrl+C to quit:")
+            try:
+                self.prompt.clear_waiting()
+                self.prompt.set_prompt("Enter another request or Ctrl+C to quit:")
+            except Exception:
+                pass  # UI may be unavailable (app shutting down)
 
     async def _init_llm_client(self) -> None:
         """Initialize the LLM client for orchestrator use."""
@@ -579,7 +1097,8 @@ class InteractiveAgentApp(App):
             llm_client=self._llm_client,
             project_dir=self._project_dir,
             callbacks=callbacks,
-            allow_sudo=self._allow_sudo
+            allow_sudo=self._allow_sudo,
+            context_manager=self._context_manager
         )
 
         # Execute with intelligent planning
@@ -594,12 +1113,587 @@ class InteractiveAgentApp(App):
         else:
             if result.error:
                 self.output.add_error(f"Request issue: {result.error}")
+                self._record_request_failure(result.error)  # Record for continuation
             if result.steps_failed > 0:
                 self.output.add_info(f"Steps completed: {result.steps_completed}, failed: {result.steps_failed}")
+                if not result.error:
+                    self._record_request_failure(f"{result.steps_failed} steps failed")
 
         self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
 
         return result
+
+    def _detect_existing_project(self) -> bool:
+        """
+        Detect if the working directory contains an existing project.
+
+        Checks for common project indicators:
+        - Source code files (.py, .js, .ts, .java, .go, etc.)
+        - Package files (package.json, requirements.txt, Cargo.toml, etc.)
+        - Project structure (src/, lib/, app/ directories)
+
+        Returns:
+            True if existing project detected, False otherwise
+        """
+        if not self._project_dir.exists():
+            return False
+
+        # Check for source code files
+        code_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs', '.cpp', '.c', '.rb', '.php'}
+        for item in self._project_dir.iterdir():
+            if item.is_file() and item.suffix in code_extensions:
+                logger.info(f"[DETECT] Found source file: {item.name}")
+                return True
+
+        # Check for package/config files
+        package_files = {
+            'package.json', 'requirements.txt', 'Cargo.toml', 'go.mod',
+            'pom.xml', 'build.gradle', 'Gemfile', 'composer.json',
+            'setup.py', 'pyproject.toml', 'Makefile', 'CMakeLists.txt'
+        }
+        for pf in package_files:
+            if (self._project_dir / pf).exists():
+                logger.info(f"[DETECT] Found package file: {pf}")
+                return True
+
+        # Check for common project directories
+        project_dirs = {'src', 'lib', 'app', 'api', 'components', 'services', 'models'}
+        for pd in project_dirs:
+            dir_path = self._project_dir / pd
+            if dir_path.is_dir():
+                # Check if directory has code files
+                try:
+                    has_code = any(f.suffix in code_extensions for f in dir_path.rglob('*') if f.is_file())
+                    if has_code:
+                        logger.info(f"[DETECT] Found project directory: {pd}/")
+                        return True
+                except Exception:
+                    pass
+
+        # Check for HTML files (web projects)
+        html_files = list(self._project_dir.glob('*.html'))
+        if html_files:
+            logger.info(f"[DETECT] Found HTML files: {len(html_files)}")
+            return True
+
+        logger.info("[DETECT] No existing project detected")
+        return False
+
+    def _is_new_project_request(self, request: str) -> bool:
+        """
+        Detect if the request is asking to CREATE a new software project/application.
+
+        Uses LLM for semantic understanding rather than keyword matching.
+        Falls back to simple heuristics only if LLM is unavailable.
+
+        Returns:
+            True if this is a request to create a new software project, False otherwise
+        """
+        # Use LLM for semantic understanding (NO HARDCODED KEYWORDS)
+        # The LLM understands context, intent, and nuance better than keyword matching
+        if self._llm_client:
+            try:
+                prompt = f"""Analyze this request and determine if it's asking to CREATE A BRAND NEW SOFTWARE PROJECT FROM SCRATCH.
+
+REQUEST: {request}
+
+Answer with JSON:
+{{
+    "is_new_software_project": true/false,
+    "reasoning": "brief explanation"
+}}
+
+CRITICAL GUIDELINES - READ CAREFULLY:
+
+RETURN FALSE (NOT a new project) if ANY of these apply:
+- References "current", "existing", "this", "the" project/app/code
+- Uses words like "review", "redesign", "improve", "enhance", "modify", "update", "fix"
+- Asks to change look/feel, UI, design, features of something that EXISTS
+- Working on code in the current directory
+- Adding features to or improving existing software
+
+RETURN TRUE (IS a new project) ONLY if ALL of these are true:
+- Explicitly asks to CREATE something FROM SCRATCH
+- Does NOT reference any existing project
+- Uses clear creation language: "create a new", "build me a", "write a new", "make a new"
+- Examples: "create a snake game", "build me a todo app", "write a new Python script"
+
+IMPORTANT: When in doubt, return FALSE. Enhancement requests on existing projects
+should NEVER create a new subdirectory - they should modify the existing code.
+
+Example that should return FALSE:
+"review the current notepad project and redesign the UI" → FALSE (working on existing)
+"improve the look and feel of this app" → FALSE (improving existing)
+"add dark mode to the application" → FALSE (adding to existing)
+
+Example that should return TRUE:
+"create a new snake game using pygame" → TRUE (creating from scratch)
+"build me a web calculator" → TRUE (creating from scratch)
+"""
+                response = self._llm_client.generate(prompt, max_tokens=200)
+                content = response.content if hasattr(response, 'content') else str(response)
+
+                import json, re
+                json_match = re.search(r'\{[\s\S]*\}', content)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    result = data.get('is_new_software_project', False)
+                    reasoning = data.get('reasoning', '')
+                    logger.info(f"[DETECT] LLM new project detection: {result} - {reasoning}")
+                    return result
+            except Exception as e:
+                logger.warning(f"[DETECT] LLM detection failed, using fallback: {e}")
+
+        # Fallback: simple heuristic (only used if LLM unavailable)
+        request_lower = request.lower()
+        software_words = ['app', 'application', 'game', 'website', 'script', 'api', 'tool', 'program']
+        create_words = ['create', 'build', 'write', 'develop', 'make']
+
+        has_create = any(w in request_lower for w in create_words)
+        has_software = any(w in request_lower for w in software_words)
+
+        result = has_create and has_software
+        logger.info(f"[DETECT] Fallback new project detection: {result}")
+        return result
+
+    def _extract_path_from_request(self, request: str) -> Optional[Path]:
+        """
+        Extract a file system path from the user's request.
+
+        Looks for:
+        - Absolute paths: /home/user/project/...
+        - Home paths: ~/project/...
+
+        Returns:
+            Path object if found and exists, None otherwise
+        """
+        import re
+
+        # Pattern for absolute Unix paths
+        # Match paths like /home/user/project or /var/www/app
+        abs_path_pattern = r'(/(?:home|var|usr|opt|tmp|root|mnt|srv|etc)[/\w\-_.]+)'
+
+        # Pattern for home directory paths
+        home_path_pattern = r'(~/[\w\-_./]+)'
+
+        # Try absolute paths first
+        matches = re.findall(abs_path_pattern, request)
+        for match in matches:
+            path = Path(match.rstrip('.,;:!?'))  # Strip trailing punctuation
+            if path.exists():
+                # If it's a file, use its parent directory
+                if path.is_file():
+                    path = path.parent
+                logger.info(f"[PATH] Found absolute path in request: {path}")
+                return path
+
+        # Try home directory paths
+        matches = re.findall(home_path_pattern, request)
+        for match in matches:
+            expanded = Path(match).expanduser()
+            path = expanded.resolve()
+            if path.exists():
+                if path.is_file():
+                    path = path.parent
+                logger.info(f"[PATH] Found home path in request: {path}")
+                return path
+
+        return None
+
+    async def _handle_inplace_code_change(self, request: str, classification):
+        """
+        Handle ALL code changes to existing projects IN-PLACE.
+
+        This unified handler works for:
+        - Bug fixes
+        - Feature enhancements
+        - Code improvements
+        - Refactoring
+
+        Uses the CodeDebugAgent with DO NO HARM mode:
+        - Captures baseline before changes
+        - Rolls back if regressions detected
+        - Updates README.md
+        - Provides user instructions
+
+        Returns:
+            OrchestratorResult or DebugResult with execution details
+        """
+        self.output.add_phase_header("IN-PLACE CODE CHANGE", 1)
+        self.output.add_warning("DO NO HARM: Changes will be rolled back if issues detected")
+
+        # Verify we have a project
+        if not self._project_dir.exists():
+            self.output.add_error(f"Project directory does not exist: {self._project_dir}")
+            return None
+
+        self.output.add_info(f"Working directory: {self._project_dir}")
+
+        # Check for full rewrite scenario
+        rewrite_keywords = ['rewrite', 'rebuild from scratch', 'start over', 'complete redesign', 'replace entirely']
+        needs_rewrite = any(kw in request.lower() for kw in rewrite_keywords)
+
+        if needs_rewrite:
+            # Ask user for approval on rewrite
+            choice = await self._ask_approval(
+                "Full Rewrite Detected",
+                "This request may require a complete rewrite. How would you like to proceed?",
+                ["Modify existing code (recommended)", "Replace existing code", "Create new project", "Cancel"]
+            )
+
+            if choice == "Cancel":
+                self.output.add_warning("Operation cancelled by user")
+                return None
+            elif choice == "Create new project":
+                self.output.add_info("Switching to CREATE NEW mode...")
+                # Fall through to code generation pipeline (handled by caller)
+                from .request_classifier import ClassificationResult
+                return type('Result', (), {
+                    'success': True,
+                    'generated_files': ['__USE_CODE_GEN_PIPELINE__'],
+                    'error': None
+                })()
+            elif choice == "Replace existing code":
+                self.output.add_warning("Will replace existing code after backup")
+                # Continue with in-place but allow more aggressive changes
+                pass
+
+        # Extract error trace from request if present
+        error_trace = self._extract_error_trace(request)
+        if error_trace:
+            self.output.add_info("Error trace detected - will use for analysis")
+
+        try:
+            # Dispatch based on classification
+            if classification.primary_type == RequestType.CODE_GENERATION:
+                # ENHANCEMENT / FEATURE MODE
+                from agents.coding_agent.autonomous.enhancement_controller import AutonomousEnhancementController
+                
+                self.output.add_info("Using autonomous ENHANCEMENT loop (TDD mode)")
+                logger.info("Dispatching to AutonomousEnhancementController")
+
+                controller = AutonomousEnhancementController(
+                    llm_client=self._llm_client,
+                    project_dir=self._project_dir,
+                    output_callback=lambda msg: self.output.add_info(msg),
+                    max_iterations=AgentDefaults.MAX_ITERATIONS
+                )
+
+                result = await controller.run_enhancement(
+                    request=request,
+                    resume=True
+                )
+                
+                # Show results
+                self.output.add_separator()
+                if result.success:
+                    self.output.add_success(f"ENHANCEMENT COMPLETE in {result.iterations} iteration(s)!")
+                    if result.files_modified:
+                        self.output.add_info(f"Files modified: {', '.join(result.files_modified)}")
+                    if result.summary:
+                        self.output.add_info(result.summary)
+                else:
+                    self.output.add_error(f"Enhancement failed: {result.error}")
+                    self._record_request_failure(result.error or 'Enhancement failed')
+
+                self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
+                
+                # Wrapper for compatibility
+                class ResultWrapper:
+                    def __init__(self, res):
+                        self.success = res.success
+                        self.error = res.error
+                        self.generated_files = res.files_modified or []
+                        self.steps_completed = res.iterations
+                        self.steps_failed = 0 if res.success else 1
+                        self.duration_seconds = res.duration_seconds
+                        self.rollback_performed = False # Enhancement controller handles this internally
+                        
+                return ResultWrapper(result)
+
+            else:
+                # DEBUG MODE (Default for CODE_DEBUG)
+                from agents.coding_agent.autonomous import AutonomousDebugController, DebugOutcome
+    
+                self.output.add_info("Using autonomous DEBUG loop - no approvals until complete")
+                logger.info("Dispatching to AutonomousDebugController")
+    
+                controller = AutonomousDebugController(
+                    llm_client=self._llm_client,
+                    project_dir=self._project_dir,
+                    output_callback=lambda msg: self.output.add_info(msg),
+                    max_iterations=AgentDefaults.MAX_ITERATIONS
+                )
+    
+                # Run autonomous debug loop - NO APPROVALS
+                result = await controller.debug_until_fixed(
+                    bug_description=request,
+                    error_trace=error_trace,
+                    resume=True  # Resume existing session if any
+                )
+    
+                # Show results
+                self.output.add_separator()
+                if result.success:
+                    self.output.add_success(f"BUG FIXED in {result.iterations} iteration(s)!")
+                    self.output.add_info(f"Root cause: {result.root_cause}")
+                    if result.files_modified:
+                        self.output.add_info(f"Files modified: {', '.join(result.files_modified)}")
+                    if result.fix_summary:
+                        self.output.add_info(result.fix_summary)
+                else:
+                    if result.outcome == DebugOutcome.BLOCKED:
+                        self.output.add_warning(f"Debug blocked: {result.blocked_reason}")
+                        self.output.add_info("Please provide more information or try a different approach.")
+                    elif result.outcome == DebugOutcome.MAX_ITERATIONS:
+                        self.output.add_warning(f"Could not fix bug in {result.iterations} iterations")
+                        self.output.add_info("The bug may require manual investigation.")
+                    else:
+                        self.output.add_error(f"Debug failed: {result.blocked_reason}")
+    
+                    self._record_request_failure(result.blocked_reason or 'Debug failed')
+    
+                self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
+    
+                # Return a result-compatible object (simple class to avoid OrchestratorResult signature issues)
+                class DebugResultWrapper:
+                    def __init__(self, res):
+                        self.success = res.success
+                        self.error = res.blocked_reason if not res.success else None
+                        self.generated_files = res.files_modified or []
+                        self.steps_completed = res.iterations
+                        self.steps_failed = 0 if res.success else 1
+                        self.duration_seconds = res.duration_seconds
+                        self.rollback_performed = hasattr(res, 'rollback_performed') and res.rollback_performed
+    
+                return DebugResultWrapper(result)
+
+        except ImportError as e:
+            logger.warning(f"Autonomous controller not available: {e}, falling back to orchestrator")
+            return await self._handle_inplace_orchestrator_fallback(request)
+        except Exception as e:
+            logger.exception("Autonomous loop failed")
+            self.output.add_error(f"Execution error: {e}")
+            self._record_request_failure(str(e))
+            return None
+
+    async def _handle_inplace_orchestrator_fallback(self, request: str):
+        """Fallback to orchestrator-based in-place handling when autonomous debug unavailable."""
+        self.output.add_info("Using orchestrator fallback...")
+
+        callbacks = OrchestratorCallbacks(
+            on_output=self._orchestrator_output,
+            on_approval_needed=self._orchestrator_approval,
+            on_user_input=self._orchestrator_input,
+            on_plan_ready=self._orchestrator_plan_approval,
+            on_step_start=self._orchestrator_step_start,
+            on_step_complete=self._orchestrator_step_complete,
+        )
+
+        orchestrator = Orchestrator(
+            llm_client=self._llm_client,
+            project_dir=self._project_dir,
+            callbacks=callbacks,
+            allow_sudo=self._allow_sudo,
+            context_manager=self._context_manager
+        )
+
+        result = await orchestrator.handle_request(request, force_inplace=True)
+
+        self.output.add_separator()
+        if result.success:
+            self.output.add_success("In-place changes complete")
+            if result.generated_files:
+                modified = [f for f in result.generated_files if not f.startswith("__")]
+                if modified:
+                    self.output.add_info(f"Modified: {', '.join(modified[:5])}")
+        else:
+            error_msg = result.error or 'Unknown error'
+            self.output.add_error(f"Changes failed: {error_msg}")
+            self._record_request_failure(error_msg)
+
+        self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
+        return result
+
+    async def _handle_code_debug_request(self, request: str, classification):
+        """
+        Handle CODE_DEBUG requests using AUTONOMOUS DEBUG LOOP.
+
+        No approvals needed - iterates until bug is fixed or genuinely blocked.
+        All context saved to {project}/.raica/ for continuity.
+
+        Returns:
+            OrchestratorResult with execution details
+        """
+        self.output.add_phase_header("AUTONOMOUS DEBUG MODE", 1)
+        self.output.add_info("Running autonomous debug loop - no approvals until complete or blocked")
+
+        # Verify we have a project to debug
+        if not self._project_dir.exists():
+            error_msg = f"Project directory does not exist: {self._project_dir}"
+            self.output.add_error(error_msg)
+            self._record_request_failure(error_msg)
+            return None
+
+        # Check if directory has content
+        has_files = any(self._project_dir.iterdir())
+        if not has_files:
+            error_msg = "Cannot debug empty directory. Use code generation for new projects."
+            self.output.add_error(error_msg)
+            self._record_request_failure(error_msg)
+            return None
+
+        self.output.add_info(f"Target directory: {self._project_dir}")
+
+        # Extract error trace from request if present
+        error_trace = self._extract_error_trace(request)
+        if error_trace:
+            self.output.add_info("Error trace detected - will use for analysis")
+
+        # Use autonomous debug controller
+        try:
+            from agents.coding_agent.autonomous import AutonomousDebugController, DebugOutcome
+
+            controller = AutonomousDebugController(
+                llm_client=self._llm_client,
+                project_dir=self._project_dir,
+                output_callback=lambda msg: self.output.add_info(msg),
+                max_iterations=AgentDefaults.MAX_ITERATIONS
+            )
+
+            # Run autonomous debug loop - NO APPROVALS
+            result = await controller.debug_until_fixed(
+                bug_description=request,
+                error_trace=error_trace,
+                resume=True  # Resume existing session if any
+            )
+
+            # Show results
+            self.output.add_separator()
+            if result.success:
+                self.output.add_success(f"BUG FIXED in {result.iterations} iteration(s)!")
+                self.output.add_info(f"Root cause: {result.root_cause}")
+                if result.files_modified:
+                    self.output.add_info(f"Files modified: {', '.join(result.files_modified)}")
+                if result.fix_summary:
+                    self.output.add_info(result.fix_summary)
+            else:
+                if result.outcome == DebugOutcome.BLOCKED:
+                    self.output.add_warning(f"Debug blocked: {result.blocked_reason}")
+                    self.output.add_info("Please provide more information or try a different approach.")
+                elif result.outcome == DebugOutcome.MAX_ITERATIONS:
+                    self.output.add_warning(f"Could not fix bug in {result.iterations} iterations")
+                    self.output.add_info("The bug may require manual investigation.")
+                else:
+                    self.output.add_error(f"Debug failed: {result.blocked_reason}")
+
+                self._record_request_failure(result.blocked_reason or 'Debug failed')
+
+            self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
+
+            # Return a result-compatible object (simple class to avoid OrchestratorResult signature issues)
+            class DebugResultWrapper:
+                def __init__(self, res):
+                    self.success = res.success
+                    self.error = res.blocked_reason if not res.success else None
+                    self.generated_files = res.files_modified or []
+                    self.steps_completed = res.iterations
+                    self.steps_failed = 0 if res.success else 1
+                    self.duration_seconds = res.duration_seconds
+
+            return DebugResultWrapper(result)
+
+        except ImportError as e:
+            logger.warning(f"Autonomous debug not available: {e}, falling back to orchestrator")
+            return await self._handle_code_debug_orchestrator(request, classification)
+        except Exception as e:
+            logger.exception("Autonomous debug failed")
+            self.output.add_error(f"Autonomous debug error: {e}")
+            self._record_request_failure(str(e))
+            return None
+
+    async def _handle_code_debug_orchestrator(self, request: str, classification):
+        """
+        Fallback: Handle CODE_DEBUG using the orchestrator (old method).
+
+        Used when autonomous debug controller is not available.
+        """
+        self.output.add_info("Using orchestrator-based debug (fallback)")
+
+        callbacks = OrchestratorCallbacks(
+            on_output=self._orchestrator_output,
+            on_approval_needed=self._orchestrator_approval,
+            on_user_input=self._orchestrator_input,
+            on_plan_ready=self._orchestrator_plan_approval,
+            on_step_start=self._orchestrator_step_start,
+            on_step_complete=self._orchestrator_step_complete,
+        )
+
+        orchestrator = Orchestrator(
+            llm_client=self._llm_client,
+            project_dir=self._project_dir,
+            callbacks=callbacks,
+            allow_sudo=self._allow_sudo,
+            context_manager=self._context_manager
+        )
+
+        result = await orchestrator.handle_request(request)
+
+        self.output.add_separator()
+        if result.success:
+            self.output.add_success("Debug complete - fix applied successfully")
+            if result.steps_completed > 0:
+                self.output.add_info(f"Steps completed: {result.steps_completed}")
+            if result.generated_files:
+                self.output.add_info(f"Modified files: {len(result.generated_files)}")
+        else:
+            error_msg = result.error or 'Unknown error'
+            self.output.add_error(f"Debug failed: {error_msg}")
+            self._record_request_failure(error_msg)
+
+        self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
+        return result
+
+    def _extract_error_trace(self, request: str) -> Optional[str]:
+        """
+        Extract error trace/stack trace from the request if present.
+
+        Looks for common patterns like:
+        - Traceback (most recent call last):
+        - File "...", line ...
+        - Error: ...
+        - Exception: ...
+        """
+        import re
+
+        # Look for Python traceback
+        traceback_match = re.search(
+            r'(Traceback \(most recent call last\):.*?(?:\w+Error|\w+Exception):.*?)(?:\n\n|\Z)',
+            request,
+            re.DOTALL
+        )
+        if traceback_match:
+            return traceback_match.group(1).strip()
+
+        # Look for file/line references with errors
+        error_match = re.search(
+            r'(File ".*?", line \d+.*?(?:\w+Error|\w+Exception):.*?)(?:\n\n|\Z)',
+            request,
+            re.DOTALL
+        )
+        if error_match:
+            return error_match.group(1).strip()
+
+        # Look for just error messages
+        simple_error = re.search(
+            r'((?:\w+Error|\w+Exception):\s*.+?)(?:\n\n|\Z)',
+            request,
+            re.DOTALL
+        )
+        if simple_error:
+            return simple_error.group(1).strip()
+
+        return None
 
     async def _handle_system_request(self, request: str, classification) -> None:
         """Handle system query or system task requests using the orchestrator."""
@@ -619,7 +1713,8 @@ class InteractiveAgentApp(App):
             llm_client=self._llm_client,
             project_dir=self._project_dir,
             callbacks=callbacks,
-            allow_sudo=self._allow_sudo
+            allow_sudo=self._allow_sudo,
+            context_manager=self._context_manager
         )
 
         # Execute the request
@@ -631,7 +1726,9 @@ class InteractiveAgentApp(App):
             self.output.add_success(f"Request completed successfully")
             self.output.add_info(f"Steps completed: {result.steps_completed}")
         else:
-            self.output.add_error(f"Request failed: {result.error or 'Unknown error'}")
+            error_msg = result.error or 'Unknown error'
+            self.output.add_error(f"Request failed: {error_msg}")
+            self._record_request_failure(error_msg)  # Record for continuation
             self.output.add_info(f"Steps completed: {result.steps_completed}, failed: {result.steps_failed}")
 
         self.output.add_info(f"Duration: {result.duration_seconds:.1f}s")
@@ -655,14 +1752,17 @@ class InteractiveAgentApp(App):
             llm_client=self._llm_client,
             project_dir=self._project_dir,
             callbacks=callbacks,
-            allow_sudo=self._allow_sudo
+            allow_sudo=self._allow_sudo,
+            context_manager=self._context_manager
         )
 
         # Execute system steps first
         result = await orchestrator.handle_request(request)
 
         if not result.success:
-            self.output.add_error(f"System operations failed: {result.error}")
+            error_msg = result.error or 'System operations failed'
+            self.output.add_error(f"System operations failed: {error_msg}")
+            self._record_request_failure(error_msg)  # Record for continuation
             # Ask if user wants to continue with code generation anyway
             continue_anyway = await self._ask_approval(
                 "Continue?",
@@ -724,14 +1824,45 @@ class InteractiveAgentApp(App):
                     return
 
         if not use_existing_project:
-            from agents.common.agent_utils import generate_semantic_name
-            project_name = generate_semantic_name(request)
+            from agents.common.agent_utils import generate_semantic_name, extract_target_path
+
+            # Check if user specified a target path in their request
+            user_specified_path = extract_target_path(request)
+
+            if user_specified_path:
+                # User specified a path - FULLY SWITCH CONTEXT to that directory
+                self.output.add_info(f"Switching to user-specified directory: {user_specified_path}")
+
+                # Create the directory if it doesn't exist
+                user_specified_path.mkdir(parents=True, exist_ok=True)
+
+                # Update the project directory to the new location
+                self._project_dir = user_specified_path
+                output_dir = user_specified_path.parent
+                project_name = user_specified_path.name
+
+                # Reinitialize context manager for the new directory
+                if CONTEXT_SYSTEM_AVAILABLE and self._context_manager:
+                    try:
+                        self._context_manager.switch_project(user_specified_path)
+                        self.output.add_info(f"Context switched to: {user_specified_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to switch context manager: {e}")
+
+                self.output.add_success(f"Working directory: {user_specified_path}")
+            else:
+                # No user-specified path - generate semantic name
+                project_name = generate_semantic_name(request)
+                output_dir = self._project_dir
+
             self.output.add_info(f"Creating project: {project_name}")
+        else:
+            output_dir = self._project_dir
 
         self._agent = await asyncio.to_thread(
             CLICodingAgent,
             project_name=project_name,
-            output_dir=str(self._project_dir),
+            output_dir=str(output_dir),
             verbose=True,
             use_existing_project=use_existing_project
         )
@@ -973,7 +2104,9 @@ class InteractiveAgentApp(App):
                 # self.status.complete_task(task_id, success=False)
                 # self.status.remove_task(task_id)
 
-                self.output.add_error(f"Phase {phase_name} failed: {e}")
+                error_msg = f"Phase {phase_name} failed: {e}"
+                self.output.add_error(error_msg)
+                self._record_request_failure(error_msg)  # Record for continuation
                 logger.exception(f"Phase {phase.name} failed")
 
                 # Ask if user wants to continue
@@ -1265,23 +2398,58 @@ Example: ["index.html", "styles.css", "script.js"]
             import json
             import re
             
+            # Valid file extensions to look for
+            valid_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.json',
+                               '.yaml', '.yml', '.md', '.txt', '.sh', '.go', '.rs', '.java',
+                               '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.sql', '.vue', '.svelte'}
+
+            def is_valid_filename(s: str) -> bool:
+                """Check if string looks like a valid filename."""
+                s = s.strip().strip('- *`"\'')
+                if not s or len(s) > 100:
+                    return False
+                # Must have a valid extension
+                ext = '.' + s.split('.')[-1].lower() if '.' in s else ''
+                if ext not in valid_extensions:
+                    return False
+                # Should not contain markdown/reasoning patterns
+                bad_patterns = ['**', '```', ':', '(', ')', '[', ']', '`', '*', '→', '->', '<', '>']
+                if any(p in s for p in bad_patterns):
+                    return False
+                return True
+
+            def extract_filename(s: str) -> str:
+                """Extract clean filename from string."""
+                s = s.strip().strip('- *`"\'')
+                # Remove common prefixes like "1. " or "- "
+                s = re.sub(r'^[\d]+\.\s*', '', s)
+                s = re.sub(r'^-\s*', '', s)
+                return s.strip()
+
             # Find JSON array in output
-            match = re.search(r'\[.*\]', content, re.DOTALL)
+            match = re.search(r'\[.*?\]', content, re.DOTALL)
             if match:
                 try:
-                    files_to_generate = json.loads(match.group(0))
+                    parsed = json.loads(match.group(0))
+                    # Validate each item is a valid filename
+                    files_to_generate = [f for f in parsed if isinstance(f, str) and is_valid_filename(f)]
                 except json.JSONDecodeError:
-                    # Fallback if specific parse fails, try to just split lines or use defaults
-                    self.output.add_warning("Failed to parse file list JSON, checking for line-based list...")
-                    files_to_generate = [line.strip().strip('- *') for line in content.splitlines() if '.' in line]
-            else:
-                self.output.add_warning("No JSON list found, using heuristic parsing...")
-                files_to_generate = [line.strip().strip('- *') for line in content.splitlines() if '.' in line and not line.endswith(':')]
+                    files_to_generate = []
+
+            # Fallback: look for valid filenames in the content
+            if not files_to_generate:
+                self.output.add_warning("JSON parse failed, extracting filenames from content...")
+                for line in content.splitlines():
+                    cleaned = extract_filename(line)
+                    if is_valid_filename(cleaned):
+                        files_to_generate.append(cleaned)
+                        if len(files_to_generate) >= 10:  # Limit to prevent runaway
+                            break
 
             # Sanity check
             if not files_to_generate:
                 self.output.add_warning("Could not determine files, falling back to basic structure.")
-                files_to_generate = ["main.py", "requirements.txt"]
+                files_to_generate = ["index.html"] if "html" in agent.context.original_request.lower() else ["main.py"]
             
             self.output.add_info(f"Files to generate: {', '.join(files_to_generate)}")
 
@@ -1310,7 +2478,33 @@ CRITICAL REQUIREMENTS:
 3.  **BEST PRACTICES**: Use modern patterns (e.g., semantic HTML5, ES6+ JavaScript, Type-Hinted Python).
 4.  **ROBUSTNESS**: Include error handling and edge case management.
 5.  **DOCUMENTATION**: Add helpful comments and docstrings.
+"""
+            
+            # Special handling for requirements.txt
+            if filename == 'requirements.txt':
+                prompt += """
 
+CRITICAL FOR requirements.txt:
+This file MUST be a valid pip requirements file, NOT a document!
+- One package per line
+- Use format: package_name>=version (e.g., arcade>=2.6.17)
+- Comments allowed with # prefix
+- NO prose, NO markdown headers, NO bullet points, NO descriptions
+- NO project requirements document - ONLY pip packages
+
+Example of CORRECT format:
+```
+# Core dependencies
+arcade>=2.6.17
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Development tools  
+pytest>=7.4.0
+```
+"""
+            
+            prompt += """
 Output ONLY the code/content wrapped in a code block, no explanations."""
 
             try:
@@ -1320,8 +2514,9 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
 
                 content = response.content if hasattr(response, 'content') else str(response)
 
-                # Extract code from response
-                code = self._extract_code(content)
+                # Extract code from response with expected file type
+                file_ext = filename.split('.')[-1].lower() if '.' in filename else None
+                code = self._extract_code(content, expected_type=file_ext)
 
                 if code:
                     # Save file
@@ -1347,6 +2542,10 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
 
         self.output.add_success("Coding complete")
         self._logger.info("Coding phase complete. Generated %d files.", self._files_generated)
+        
+        # Set up Python environment (venv, requirements, deps)
+        await self._setup_python_environment()
+        
         return True
 
     async def _phase_debugging(self) -> bool:
@@ -1455,7 +2654,7 @@ Output complete test code."""
                 )
 
                 content = response.content if hasattr(response, 'content') else str(response)
-                test_code = self._extract_code(content)
+                test_code = self._extract_code(content, expected_type='py')
 
                 if test_code:
                     test_path = agent.project_dir / "test_main.py"
@@ -1471,6 +2670,91 @@ Output complete test code."""
 
         # Fallback for other project types
         self.output.add_info("Project type not recognized - skipping automated test generation")
+        return True
+
+    async def _setup_python_environment(self) -> bool:
+        """
+        Set up Python environment after code generation.
+        Creates venv, validates requirements.txt, and installs dependencies.
+        """
+        import sys
+        import subprocess
+        
+        agent = self._agent
+        project_dir = agent.project_dir
+        
+        # Check if this is a Python project
+        py_files = list(project_dir.glob("*.py"))
+        if not py_files:
+            return True  # Not a Python project, skip
+        
+        self.output.add_info("🐍 Setting up Python environment...")
+        
+        # 1. Create virtual environment
+        venv_path = project_dir / "venv"
+        if not venv_path.exists():
+            self.output.add_info("Creating virtual environment...")
+            try:
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    [sys.executable, "-m", "venv", str(venv_path)],
+                    capture_output=True, text=True, timeout=60
+                )
+                if result.returncode == 0:
+                    self.output.add_success("✓ Virtual environment created")
+                else:
+                    self.output.add_error(f"Failed to create venv: {result.stderr[:200]}")
+                    return False
+            except subprocess.TimeoutExpired:
+                self.output.add_error("Venv creation timed out")
+                return False
+            except Exception as e:
+                self.output.add_error(f"Venv creation failed: {e}")
+                return False
+        
+        # 2. Validate and fix requirements.txt
+        req_file = project_dir / "requirements.txt"
+        if req_file.exists():
+            try:
+                from agents.coding_agent.services.requirements_validator import validate_requirements
+                
+                content = req_file.read_text()
+                is_valid, fixed_content = validate_requirements(content)
+                
+                if not is_valid and not fixed_content.startswith("# Error"):
+                    # Write the fixed content
+                    req_file.write_text(fixed_content)
+                    self.output.add_success("✓ Fixed requirements.txt format")
+                elif not is_valid:
+                    self.output.add_warning(f"Could not fix requirements.txt: {fixed_content}")
+            except Exception as e:
+                self.output.add_warning(f"Requirements validation skipped: {e}")
+        
+        # 3. Install dependencies
+        if req_file.exists():
+            self.output.add_info("Installing dependencies...")
+            pip_path = venv_path / "bin" / "pip"
+            if not pip_path.exists():
+                pip_path = venv_path / "Scripts" / "pip.exe"  # Windows
+            
+            if pip_path.exists():
+                try:
+                    result = await asyncio.to_thread(
+                        subprocess.run,
+                        [str(pip_path), "install", "-r", str(req_file)],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    if result.returncode == 0:
+                        self.output.add_success("✓ Dependencies installed")
+                    else:
+                        # Show abbreviated error
+                        stderr = result.stderr[:300] if result.stderr else "Unknown error"
+                        self.output.add_warning(f"Some dependencies may have failed:\n{stderr}")
+                except subprocess.TimeoutExpired:
+                    self.output.add_warning("Dependency installation timed out (>5min)")
+                except Exception as e:
+                    self.output.add_warning(f"Dependency installation failed: {e}")
+        
         return True
 
     def _should_launch_project(self, request: str) -> bool:
@@ -1561,6 +2845,30 @@ Output complete test code."""
             if not main_py:
                 main_py = py_files[0]
 
+            # Check for requirements.txt and install dependencies
+            requirements_file = project_dir / 'requirements.txt'
+            if requirements_file.exists():
+                self.output.add_info("Found requirements.txt - installing dependencies...")
+                try:
+                    install_result = await asyncio.to_thread(
+                        subprocess.run,
+                        ['pip', 'install', '-r', 'requirements.txt'],
+                        cwd=str(project_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=120  # 2 minutes for pip install
+                    )
+                    if install_result.returncode == 0:
+                        self.output.add_success("✓ Dependencies installed successfully")
+                    else:
+                        self.output.add_warning(f"Some dependencies may have failed:")
+                        if install_result.stderr:
+                            self.output.add_code(install_result.stderr[:500], language="text")
+                except subprocess.TimeoutExpired:
+                    self.output.add_warning("Dependency installation timed out (>120s)")
+                except Exception as e:
+                    self.output.add_warning(f"Failed to install dependencies: {e}")
+
             self.output.add_info(f"To run the Python project:")
             self.output.add_info(f"  cd {project_dir}")
             self.output.add_info(f"  python {main_py.name}")
@@ -1625,21 +2933,30 @@ Output complete test code."""
 """
         self.output.write(Text(summary, style="green"))
 
-    def _extract_code(self, content: str) -> str:
-        """Extract code from LLM response."""
-        import re
+    def _extract_code(self, content: str, expected_type: str = None) -> str:
+        """
+        Extract code from LLM response using iron-clad extraction.
 
-        # Try to find code block with ANY language identifier
-        # Matches ```python, ```html, ```css, ```javascript, or just ```
-        match = re.search(r'```[\w\-\.\+]*\n(.*?)```', content, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        This handles:
+        - Thinking/reasoning tags from various models
+        - Multiple code blocks (picks the best/largest)
+        - Quality scoring (completeness, bracket balance)
+        - Unfenced code detection
 
-        # If no code block, return content if it looks like code
-        if content.strip().startswith(('import ', 'from ', 'def ', 'class ', '#', '<html', '<!DOCTYPE', 'body {', 'function ')):
-            return content.strip()
+        Args:
+            content: Raw LLM response
+            expected_type: Expected file type (html, py, js, etc.) for validation
 
-        return content.strip()
+        Returns:
+            The best extracted code
+        """
+        from ..llm_client import extract_best_code_block, strip_thinking_content
+
+        # First strip any thinking content
+        content = strip_thinking_content(content)
+
+        # Use iron-clad extraction with quality scoring
+        return extract_best_code_block(content, expected_type)
 
     async def _ask_question(self, question: str) -> str:
         """Ask user a question and wait for response."""
@@ -1753,7 +3070,7 @@ Output complete test code."""
                 state['orchestrator'] = self._orchestrator.get_state()
                 
             StateManager.save_state(self._project_dir, state)
-            self.output.add_success("Application state saved")
+            # Removed success message to reduce periodic clutter (per user request)
             
         except Exception as e:
             # Don't let save failure crash the exit process
@@ -1919,6 +3236,14 @@ Output complete test code."""
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║                                    HELP                                        ║
 ╠═══════════════════════════════════════════════════════════════════════════════╣
+║  COMMANDS:                                                                     ║
+║    /cd <path>  Change project directory (creates if needed)                   ║
+║    /pwd        Show current project directory                                 ║
+║    /status     Show agent status                                              ║
+║    /model      Show LLM model configuration                                   ║
+║    /help       Show this help                                                 ║
+║    /exit       Exit RAICA                                                     ║
+║                                                                               ║
 ║  KEYBOARD SHORTCUTS:                                                           ║
 ║    Ctrl+C     Interrupt current operation                                     ║
 ║    Ctrl+Q     Force quit application                                          ║
