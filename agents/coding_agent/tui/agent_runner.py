@@ -2460,48 +2460,100 @@ Example: ["index.html", "styles.css", "script.js"]
         for i, filename in enumerate(files_to_generate):
             self.output.add_info(f"Generating {filename}...")
 
-            prompt = f"""You are an Expert Senior Full Stack Developer.
+            # Build context about other files for consistency
+            other_files = [f for f in files_to_generate if f != filename]
+            
+            prompt = f"""You are an Expert Senior Full Stack Developer generating production-quality code.
 
 PROJECT: {agent.context.original_request}
 
 REQUIREMENTS:
 {chr(10).join(f'- {r}' for r in agent.context.refined_requirements[:5])}
 
-CONTEXT:
-This file is part of a larger project. Ensure it integrates well with other files like {', '.join([f for f in files_to_generate if f != filename])}.
+FILES IN THIS PROJECT: {', '.join(files_to_generate)}
 
-Generate COMPLETE, WORKING content for {filename}.
+Generate COMPLETE, WORKING content for: **{filename}**
 
-CRITICAL REQUIREMENTS:
-1.  **NO TRUNCATION**: Do not use placeholders like `... rest of code ...`. Write every single line.
-2.  **SYNTAX SAFETY**: Ensure all brackets {{}}, parentheses (), and tags <></> are properly closed.
-3.  **BEST PRACTICES**: Use modern patterns (e.g., semantic HTML5, ES6+ JavaScript, Type-Hinted Python).
-4.  **ROBUSTNESS**: Include error handling and edge case management.
-5.  **DOCUMENTATION**: Add helpful comments and docstrings.
+=== CRITICAL INTEGRATION RULES ===
+
+1. **API CONSISTENCY** - When multiple files share data/constants:
+   - Define names in ONE file (e.g., config.py), import everywhere else
+   - If config.py defines `WINDOW_WIDTH`, other files must `from config import WINDOW_WIDTH`
+   - NEVER define the same constant with different names (e.g., SCREEN_WIDTH vs WINDOW_WIDTH)
+   - Export aliases if needed: `SCREEN_WIDTH = WINDOW_WIDTH`
+
+2. **IMPORT CHAINS** - All files must be connected:
+   - Entry point (main.py) must import files that import other files
+   - A manager (scene_manager.py) MUST actually import the scenes it manages
+   - DO NOT create files that are never imported by anything
+   - Use ABSOLUTE imports (from module import X), not relative (from .module)
+
+3. **FUNCTION SIGNATURES** - Must match across files:
+   - If main.py calls `GameWindow(width=800)`, then GameWindow.__init__ MUST accept `width` parameter
+   - Check what parameters callers will pass before defining the function
+
+4. **PATH RESOLUTION** - For Python projects:
+   - Use `Path(__file__).resolve().parent` to get current file's directory
+   - NEVER use `.parent.parent` unless you truly need grandparent directory
+   - Create paths relative to the file's own location
+
+5. **FILE DEPENDENCIES** - For {filename}:
+   - This file may need to import from: {', '.join(other_files[:5])}
+   - Other files may need to import from this file
+   - Ensure consistent naming of classes, functions, and constants
+
+=== CODE QUALITY REQUIREMENTS ===
+
+1. **NO TRUNCATION**: Write every single line - no `... rest of code ...` placeholders
+2. **SYNTAX SAFETY**: Ensure all brackets, parentheses, and tags are properly closed  
+3. **TYPE HINTS**: Use type annotations for all function parameters and returns
+4. **ERROR HANDLING**: Include try/except for I/O operations and external calls
+5. **DOCUMENTATION**: Add docstrings for all classes and public functions
 """
             
             # Special handling for requirements.txt
             if filename == 'requirements.txt':
                 prompt += """
-
-CRITICAL FOR requirements.txt:
+=== REQUIREMENTS.TXT SPECIFIC ===
 This file MUST be a valid pip requirements file, NOT a document!
 - One package per line
 - Use format: package_name>=version (e.g., arcade>=2.6.17)
 - Comments allowed with # prefix
-- NO prose, NO markdown headers, NO bullet points, NO descriptions
+- NO prose, NO markdown headers, NO bullet points
 - NO project requirements document - ONLY pip packages
 
-Example of CORRECT format:
+Example:
 ```
 # Core dependencies
 arcade>=2.6.17
 numpy>=1.24.0
-Pillow>=10.0.0
-
-# Development tools  
-pytest>=7.4.0
 ```
+"""
+            
+            # Special handling for config files
+            if filename in ['config.py', 'settings.py', 'constants.py']:
+                prompt += """
+=== CONFIG FILE SPECIFIC ===
+- Define ALL constants that other files will need
+- Provide BOTH your preferred naming AND aliases for common patterns:
+  - WINDOW_WIDTH and SCREEN_WIDTH = WINDOW_WIDTH  
+  - WINDOW_TITLE and TITLE = WINDOW_TITLE
+- Export everything via __all__ list
+- Use `Path(__file__).resolve().parent` for paths (NOT .parent.parent)
+"""
+            
+            # Special handling for main entry points
+            if filename in ['main.py', 'app.py', 'index.py']:
+                prompt += """
+=== ENTRY POINT SPECIFIC ===
+- Import from config using the SAME names the config exports
+- When calling classes, match the parameter names exactly
+- Include proper error handling for import failures
+- Create assets directories if they don't exist:
+  ```python
+  assets_dir = Path(__file__).parent / "assets"
+  assets_dir.mkdir(exist_ok=True)
+  ```
 """
             
             prompt += """
