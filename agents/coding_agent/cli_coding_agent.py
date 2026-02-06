@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import sys
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,6 +47,17 @@ from common.agent_utils import (
     setup_agent_logging,
     create_output_directory
 )
+from .config_accessor import get_max_iterations
+
+# Import Context Management and Awareness System (v2.2)
+try:
+    from common.context.manager import ContextManager
+    from common.awareness.system import AwarenessSystem
+    CONTEXT_SYSTEM_AVAILABLE = True
+except ImportError:
+    ContextManager = None
+    AwarenessSystem = None
+    CONTEXT_SYSTEM_AVAILABLE = False
 
 # Import the code generation LLM client
 # Handle both direct execution and module import
@@ -70,6 +82,7 @@ try:
         ExportedSymbol,
         ConsistencyError
     )
+    from .services.dependency_resolver import DependencyResolver
 except ImportError:
     from llm_client import CodeGenLLMClient, LLMResponse
     from validation import (
@@ -91,10 +104,14 @@ except ImportError:
         ExportedSymbol,
         ConsistencyError
     )
+    from .services.dependency_resolver import DependencyResolver
 
 # Agent name for configuration
 AGENT_NAME = "coding_agent"
-VERSION = "2.1.0"
+VERSION = "2.2.0"  # Added Context Management and Awareness System
+
+# Global logger for module-level usage (fallback)
+logger = logging.getLogger(__name__)
 
 # Import new enhancement modules (v2.1)
 # These provide TUI, hooks, knowledge, planning, verification, and state features
@@ -134,6 +151,8 @@ except ImportError:
 class DevelopmentPhase(Enum):
     """Development lifecycle phases."""
     REQUIREMENTS = auto()
+    COMPLEXITY_ASSESSMENT = auto()  # NEW: Assess if SIMPLE/MEDIUM/COMPLEX
+    SIMPLE_GENERATION = auto()      # NEW: Direct single-file generation for SIMPLE
     PLANNING = auto()
     ARCHITECTURE = auto()
     DESIGN = auto()
@@ -142,6 +161,13 @@ class DevelopmentPhase(Enum):
     DEBUGGING = auto()
     TESTING = auto()
     COMPLETE = auto()
+
+
+class ProjectComplexity(Enum):
+    """Project complexity levels determined by LLM."""
+    SIMPLE = "simple"      # Single script, no architecture needed (e.g., "plot sigmoid")
+    MEDIUM = "medium"      # Few files, minimal architecture
+    COMPLEX = "complex"    # Full project with architecture/design phases
 
 
 @dataclass
@@ -156,6 +182,9 @@ class ProjectContext:
     original_request: str = ""
     refined_requirements: List[str] = field(default_factory=list)
 
+    # Complexity assessment (SIMPLE, MEDIUM, COMPLEX)
+    complexity: str = "complex"  # Default to complex for safety
+
     # Planning outputs
     implementation_plan: List[str] = field(default_factory=list)
 
@@ -165,6 +194,7 @@ class ProjectContext:
 
     # Design outputs
     file_specifications: List[Dict[str, Any]] = field(default_factory=list)
+    external_dependencies: List[str] = field(default_factory=list)
 
     # Coding outputs
     generated_files: Dict[str, str] = field(default_factory=dict)
@@ -180,7 +210,7 @@ class ProjectContext:
 
     # Iteration tracking
     iteration: int = 1
-    max_iterations: int = 10
+    max_iterations: Optional[int] = None
 
     def get_summary(self) -> str:
         """Get a concise summary of current project state for context efficiency."""
@@ -230,7 +260,7 @@ class CLICodingAgent:
         output_dir: str = "generated_projects",
         project_name: Optional[str] = None,
         verbose: bool = False,
-        max_iterations: int = 10,
+        max_iterations: Optional[int] = None,
         provider: Optional[str] = None,
         model: Optional[str] = None,
         use_existing_project: bool = False
@@ -272,7 +302,7 @@ class CLICodingAgent:
             self._max_iterations = max_iterations
 
         # Override max_iterations if explicitly provided
-        if max_iterations != 10:
+        if max_iterations != 2:
             self._max_iterations = max_iterations
 
         # Initialize the code generation LLM client
@@ -309,6 +339,8 @@ class CLICodingAgent:
         # Phase transition rules
         self._phase_order = [
             DevelopmentPhase.REQUIREMENTS,
+            DevelopmentPhase.COMPLEXITY_ASSESSMENT,  # NEW: Assess complexity
+            DevelopmentPhase.SIMPLE_GENERATION,      # NEW: For SIMPLE requests only
             DevelopmentPhase.PLANNING,
             DevelopmentPhase.ARCHITECTURE,
             DevelopmentPhase.DESIGN,
@@ -322,10 +354,13 @@ class CLICodingAgent:
         # Initialize validators (will be fully set up after project language is detected)
         self.generation_validator = GenerationValidator()
         self.code_validator = None  # Initialized after first file is generated
-        self._project_language = 'python'  # Default, updated during coding phase
+        self._project_language = 'auto'  # Detected from user request, NOT defaulted to Python
 
         # Initialize v2.1 enhancement modules
         self._init_enhancement_modules()
+
+        # Initialize Context Management and Awareness System (v2.2)
+        self._init_context_system()
 
         self.logger.info(f"CLI Coding Agent v{VERSION} initialized")
         self.logger.info(f"Project: {self.project_name}")
@@ -412,6 +447,10 @@ class CLICodingAgent:
         else:
             self.refinement_loop = None
 
+        # Dependency Resolver (v2.2)
+        self.dependency_resolver = DependencyResolver(self.llm_client)
+        self.logger.debug("Dependency resolver initialized")
+
         # Success Verifier
         if SuccessVerifier is not None:
             try:
@@ -441,6 +480,57 @@ class CLICodingAgent:
         enabled_count = sum(modules_status.values())
         self.logger.info(f"Enhancement modules: {enabled_count}/6 enabled")
 
+    def _init_context_system(self) -> None:
+        """
+        Initialize Context Management and Awareness System (v2.2).
+
+        This provides:
+        - System awareness (OS, tools, package managers) - detected at startup
+        - User preferences and patterns
+        - Directory, project, task, and conversation context
+        - Debugging discipline enforcement
+        """
+        if not CONTEXT_SYSTEM_AVAILABLE:
+            self.logger.warning("Context system not available (import failed)")
+            self.context_manager = None
+            return
+
+        try:
+            self.context_manager = ContextManager(
+                project_dir=self.project_dir,
+                user_home=Path.home(),
+                auto_initialize=True
+            )
+
+            # Log awareness summary
+            if self.context_manager.awareness.is_initialized:
+                sys_profile = self.context_manager.awareness.system_profile
+                self.logger.info(
+                    f"System awareness: {sys_profile.os_name} "
+                    f"{sys_profile.distro or ''} "
+                    f"({sys_profile.architecture})"
+                )
+
+                # Log available key tools
+                key_tools = ['git', 'docker', 'python3', 'node', 'npm']
+                available = [t for t in key_tools if sys_profile.is_tool_available(t)]
+                if available:
+                    self.logger.debug(f"Available tools: {', '.join(available)}")
+
+                # Log user profile
+                user_profile = self.context_manager.awareness.user_profile
+                if user_profile.total_sessions > 0:
+                    self.logger.debug(
+                        f"User: {user_profile.total_sessions} sessions, "
+                        f"{user_profile.total_tasks_completed} tasks completed"
+                    )
+
+            self.logger.info("Context management system initialized")
+
+        except Exception as e:
+            self.logger.warning(f"Context system initialization failed: {e}")
+            self.context_manager = None
+
     def _print_header(self, text: str, char: str = "=") -> None:
         """Print a formatted header."""
         width = 80
@@ -452,6 +542,8 @@ class CLICodingAgent:
         """Print current phase indicator."""
         phase_icons = {
             DevelopmentPhase.REQUIREMENTS: "📋",
+            DevelopmentPhase.COMPLEXITY_ASSESSMENT: "🎯",
+            DevelopmentPhase.SIMPLE_GENERATION: "⚡",
             DevelopmentPhase.PLANNING: "📝",
             DevelopmentPhase.ARCHITECTURE: "🏗️",
             DevelopmentPhase.DESIGN: "✏️",
@@ -524,20 +616,185 @@ class CLICodingAgent:
 
         return None
 
+    def _llm_classify_entry_file(self, user_request: str) -> str:
+        """
+        Ask LLM to determine the appropriate entry file for a project request.
+
+        This follows CLAUDE.md: LLM interprets text, RAICA executes.
+        NO hardcoded keyword matching.
+
+        Args:
+            user_request: The user's original project request
+
+        Returns:
+            Entry filename (e.g., "main.py", "index.html", "index.js")
+        """
+        prompt = f"""You are a software architect determining the appropriate entry file for a new project.
+
+USER REQUEST: {user_request[:500]}
+
+Based on the request, determine the single most appropriate entry file.
+Consider:
+- Web applications (HTML/CSS/JS) → index.html
+- Node.js/JavaScript projects → index.js
+- TypeScript projects → index.ts
+- Python applications → main.py
+- Go applications → main.go
+- Rust applications → main.rs
+- GDScript/Godot → main.gd
+- Other languages → appropriate main/index file
+
+Respond with ONLY a JSON object:
+{{"entry_file": "filename.ext", "language": "language_name"}}
+
+Examples:
+- "create a calculator webapp" → {{"entry_file": "index.html", "language": "html"}}
+- "build a CLI tool in Python" → {{"entry_file": "main.py", "language": "python"}}
+- "express REST API" → {{"entry_file": "index.js", "language": "javascript"}}
+"""
+        response = self._call_llm(prompt)  # Use config max_tokens
+        if response:
+            data = self._extract_json(response)
+            if data and 'entry_file' in data:
+                self.logger.info(f"LLM classified entry file: {data['entry_file']}")
+                return data['entry_file']
+
+        # Fallback only if LLM completely fails (not based on keywords!)
+        self.logger.warning("LLM classification failed, defaulting to main.py")
+        return "main.py"
+
+    def _llm_classify_language(self, user_request: str, filename: str) -> Tuple[str, str]:
+        """
+        Ask LLM to determine language and run instruction when file extension is ambiguous.
+
+        This follows CLAUDE.md: LLM interprets text, RAICA executes.
+
+        Args:
+            user_request: The user's original project request
+            filename: The target filename
+
+        Returns:
+            Tuple of (language, run_instruction)
+        """
+        prompt = f"""You are determining the programming language for a project.
+
+USER REQUEST: {user_request[:500]}
+FILENAME: {filename}
+
+Determine the programming language and how to run this file.
+
+Respond with ONLY a JSON object:
+{{"language": "language_name", "run_instruction": "command to run the file"}}
+
+Examples:
+- Python script → {{"language": "python", "run_instruction": "python {filename}"}}
+- HTML page → {{"language": "html", "run_instruction": "open {filename} in browser"}}
+- Node.js → {{"language": "javascript", "run_instruction": "node {filename}"}}
+"""
+        response = self._call_llm(prompt)  # Use config max_tokens
+        if response:
+            data = self._extract_json(response)
+            if data and 'language' in data:
+                lang = data.get('language', 'python')
+                run_cmd = data.get('run_instruction', f'python {filename}')
+                self.logger.info(f"LLM classified language: {lang}")
+                return (lang, run_cmd)
+
+        # Fallback only if LLM completely fails
+        self.logger.warning("LLM language classification failed, defaulting to python")
+        return ("python", f"python {filename}")
+
     def _extract_code_blocks(self, content: str) -> List[Tuple[str, str]]:
         """
         Extract code blocks from LLM response.
 
+        ARCHITECTURE: If standard markdown extraction fails, asks LLM to extract.
+        NO hardcoded language patterns - LLM decides what is code.
+
         Returns:
             List of (language, code) tuples
         """
+        from .llm_client import strip_thinking_content
+
+        # First strip any thinking/reasoning content from the response
+        content = strip_thinking_content(content)
+
+        # Try standard markdown code blocks first
         pattern = r'```(\w+)?\s*\n([\s\S]*?)```'
         matches = re.findall(pattern, content)
-        return [(lang or "text", code.strip()) for lang, code in matches]
+
+        if matches:
+            return [(lang or "text", code.strip()) for lang, code in matches]
+
+        # Try code blocks without newline after language
+        pattern2 = r'```(\w+)?([\s\S]*?)```'
+        matches = re.findall(pattern2, content)
+
+        if matches:
+            return [(lang or "text", code.strip()) for lang, code in matches]
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # LLM-DRIVEN CODE EXTRACTION
+        # No hardcoded patterns - ask LLM to extract the code
+        # ═══════════════════════════════════════════════════════════════════════
+        self.logger.info("No markdown code blocks found, asking LLM to extract code...")
+
+        extracted = self._llm_extract_code(content)
+        if extracted:
+            return extracted
+
+        self.logger.warning(f"Could not extract any code blocks from response ({len(content)} chars)")
+        return []
+
+    def _llm_extract_code(self, content: str) -> List[Tuple[str, str]]:
+        """
+        Use LLM to extract code from a response that doesn't have proper markdown formatting.
+
+        ARCHITECTURE: LLM decides what is code, RAICA executes blindly.
+        """
+        if len(content) < 50:
+            return []
+
+        prompt = f"""The following text contains code but is not properly formatted with markdown code blocks.
+Extract ONLY the actual code (no explanations, no markdown, no commentary).
+
+TEXT TO EXTRACT CODE FROM:
+{content[:8000]}
+
+Return your response as JSON:
+{{
+    "language": "html",  // or "python", "javascript", "css", etc.
+    "code": "... the extracted code here ..."
+}}
+
+RULES:
+1. Extract ONLY the executable code
+2. Do NOT include any explanations or commentary
+3. Detect the language from the code itself
+4. If there are multiple code sections, extract the main/complete one
+5. Return ONLY the JSON, no other text"""
+
+        try:
+            response = self._call_llm(prompt)  # Use config max_tokens
+            if response:
+                from .utils.json_utils import extract_json_from_llm_response
+                data = extract_json_from_llm_response(response)
+                if data and 'code' in data:
+                    code = data['code']
+                    language = data.get('language', 'text')
+                    if code and len(code) > 50:
+                        self.logger.info(f"LLM extracted {language} code ({len(code)} chars)")
+                        return [(language, code)]
+        except Exception as e:
+            self.logger.warning(f"LLM code extraction failed: {e}")
+
+        return []
 
     def _detect_target_environment(self, language: str, file_path: str) -> str:
         """
-        Detect the target runtime environment based on language and context.
+        Detect the target runtime environment using LLM analysis.
+
+        ARCHITECTURE: LLM decides environment, no hardcoded keyword matching.
 
         Args:
             language: Programming language
@@ -546,78 +803,84 @@ class CLICodingAgent:
         Returns:
             Environment string: 'browser', 'node', 'python-cli', 'python-web', etc.
         """
-        # Check for explicit hints in the original request
-        request_lower = self.context.original_request.lower()
+        # Use LLM to determine environment
+        prompt = f"""Determine the target runtime environment for this code project.
 
+USER REQUEST: {self.context.original_request}
+LANGUAGE: {language}
+FILE PATH: {file_path}
+
+Return ONLY a JSON response with the environment:
+{{"environment": "browser"}} - for web pages, HTML/CSS/JS in browser, games, UI
+{{"environment": "node"}} - for Node.js server, Express, CLI tools in JS
+{{"environment": "python-cli"}} - for Python scripts, CLI tools, utilities
+{{"environment": "python-web"}} - for Flask, FastAPI, Django web servers
+{{"environment": "auto"}} - if unclear
+"""
+        try:
+            response = self._call_llm(prompt)  # Use config max_tokens
+            if response:
+                from .utils.json_utils import extract_json_from_llm_response
+                data = extract_json_from_llm_response(response)
+                if data:
+                    env = data.get('environment', 'auto')
+                    if env in ('browser', 'node', 'python-cli', 'python-web', 'auto'):
+                        return env
+                # Fallback: look for keywords in response
+                response_lower = response.lower()
+                if 'browser' in response_lower:
+                    return 'browser'
+                elif 'node' in response_lower:
+                    return 'node'
+                elif 'python-web' in response_lower:
+                    return 'python-web'
+                elif 'python-cli' in response_lower or 'python' in response_lower:
+                    return 'python-cli'
+        except Exception as e:
+            self.logger.warning(f"Environment detection failed: {e}")
+
+        # Sensible defaults based on language if LLM fails
         if language in ('javascript', 'typescript'):
-            # Check for Node.js indicators in request
-            node_keywords = ['node', 'npm', 'server', 'express', 'api server', 'backend', 'cli tool']
-            if any(kw in request_lower for kw in node_keywords):
-                return 'node'
-
-            # Check for browser indicators
-            browser_keywords = ['browser', 'web page', 'html', 'dom', 'canvas', 'animation', 'game', 'frontend', 'ui']
-            if any(kw in request_lower for kw in browser_keywords):
-                return 'browser'
-
-            # Default based on file
-            if file_path.endswith('.html') or 'index' in file_path.lower():
-                return 'browser'
-
-            # Default to browser for vanilla JS (safer default)
-            return 'browser'
-
+            return 'browser' if file_path.endswith('.html') else 'browser'
         elif language == 'python':
-            # Check for web server indicators
-            web_keywords = ['flask', 'fastapi', 'django', 'web server', 'api server', 'rest api']
-            if any(kw in request_lower for kw in web_keywords):
-                return 'python-web'
-
-            # Check for CLI indicators
-            cli_keywords = ['cli', 'command line', 'terminal', 'script', 'tool', 'utility']
-            if any(kw in request_lower for kw in cli_keywords):
-                return 'python-cli'
-
-            # Default to CLI for Python
             return 'python-cli'
-
         elif language == 'html':
             return 'browser'
-
         return 'auto'
 
     def _extract_requested_frameworks(self) -> List[str]:
         """
-        Extract frameworks explicitly mentioned in the user's request.
+        Extract frameworks mentioned in the user's request using LLM.
+
+        ARCHITECTURE: LLM identifies frameworks, no hardcoded lists.
 
         Returns:
             List of framework names mentioned in the request
         """
-        request_lower = self.context.original_request.lower()
+        prompt = f"""Identify any frameworks or libraries explicitly mentioned in this request.
 
-        # Known frameworks to check for
-        frameworks = [
-            # JavaScript
-            'react', 'vue', 'angular', 'svelte', 'jquery', 'express',
-            'next.js', 'nextjs', 'nuxt', 'gatsby',
-            # Game engines
-            'phaser', 'three.js', 'threejs', 'pixi', 'babylon', 'melonjs', 'p5.js', 'p5js',
-            # Python
-            'flask', 'django', 'fastapi', 'tornado', 'bottle',
-            'pygame', 'pyglet', 'arcade',
-            'pandas', 'numpy', 'tensorflow', 'pytorch', 'keras',
-            'tkinter', 'pyqt', 'kivy', 'wxpython',
-            # CSS
-            'bootstrap', 'tailwind', 'bulma', 'materialize',
-        ]
+USER REQUEST: {self.context.original_request}
 
-        requested = []
-        for fw in frameworks:
-            # Check for exact word match (avoid partial matches)
-            if re.search(rf'\b{re.escape(fw)}\b', request_lower):
-                requested.append(fw)
+Return a JSON array of framework/library names that are EXPLICITLY mentioned.
+Only include frameworks that the user specifically asked for.
+Do NOT guess or add frameworks that weren't mentioned.
 
-        return requested
+Return ONLY valid JSON: {{"frameworks": ["framework1", "framework2"]}}
+If no frameworks mentioned, return: {{"frameworks": []}}
+"""
+        try:
+            response = self._call_llm(prompt)  # Use config max_tokens
+            if response:
+                from .utils.json_utils import extract_json_from_llm_response
+                data = extract_json_from_llm_response(response)
+                if data:
+                    frameworks = data.get('frameworks', [])
+                    if isinstance(frameworks, list):
+                        return [fw.lower() for fw in frameworks if isinstance(fw, str)]
+        except Exception as e:
+            self.logger.warning(f"Framework extraction failed: {e}")
+
+        return []
 
     # =========================================================================
     # PHASE IMPLEMENTATIONS
@@ -631,7 +894,14 @@ class CLICodingAgent:
             True if successful, False otherwise
         """
         self._print_phase(DevelopmentPhase.REQUIREMENTS)
+
+        # DEBUG: Log what user_request we received
+        self.logger.info(f"REQUIREMENTS - Received user_request: {repr(user_request[:200])}")
+
         self.context.original_request = user_request
+
+        # DEBUG: Log what we stored
+        self.logger.info(f"REQUIREMENTS - Stored in context.original_request: {repr(self.context.original_request[:200])}")
 
         prompt = f"""You are a senior software architect analyzing user requirements.
 
@@ -680,6 +950,344 @@ Be concise and specific. Focus on actionable requirements."""
             self.context.refined_requirements = [user_request]
             print("\n⚠️ Could not parse requirements JSON, using raw request")
             return True
+
+    def _phase_complexity_assessment(self) -> bool:
+        """
+        Phase 1.5: Assess request complexity to determine generation path.
+
+        SIMPLE: Single script, direct generation (e.g., "plot sigmoid")
+        MEDIUM: Few files, minimal architecture needed
+        COMPLEX: Full project with architecture/design phases
+
+        Returns:
+            True if successful, False otherwise
+        """
+        self._print_phase(DevelopmentPhase.COMPLEXITY_ASSESSMENT)
+
+        requirements_text = "\n".join(f"- {r}" for r in self.context.refined_requirements)
+
+        # DEBUG: Log the actual request we're parsing
+        self.logger.info(f"COMPLEXITY_ASSESSMENT - Parsing request: {repr(self.context.original_request[:200])}")
+
+        prompt = f"""You are assessing the complexity of a coding request AND extracting file organization details.
+
+USER REQUEST:
+{self.context.original_request}
+
+REQUIREMENTS:
+{requirements_text}
+
+PROJECT DIRECTORY:
+{self.output_dir}
+
+🚨 CRITICAL - YOUR TASKS:
+
+1. **TECHNOLOGY DETECTION** - Identify the target technology from the user's request:
+   - "webapp", "web app", "HTML", "browser", "index.html" → Web frontend (HTML/CSS/JS)
+   - "Python", "script", "pip" → Python
+   - "Node", "npm", "JavaScript", "TypeScript" → Node.js
+   - "CLI", "command line" → Infer from context
+   DO NOT default to Python unless explicitly requested!
+
+2. **COMPLEXITY ASSESSMENT** - Determine the appropriate complexity level:
+   - SIMPLE: Single file (10-100 lines), single purpose, immediately executable
+     Examples: "plot sigmoid", "animated button", "hello world"
+   - MEDIUM: 2-5 files, some organization needed
+     Examples: "todo app", "calculator with GUI", "file converter"
+   - COMPLEX: Full project architecture, multiple modules
+     Examples: "e-commerce platform", "REST API with auth", "multi-user chat"
+
+3. **FILE ORGANIZATION EXTRACTION** - Extract ALL file organization details from the request:
+   - Does user want a subdirectory created? What is its EXACT NAME?
+   - What is the EXACT FILENAME (including extension)?
+   - What is the FULL PATH (directory + filename)?
+
+   Examples:
+   - "create subdirectory named 'mydir'" → directory_to_create: "mydir"
+   - "save as file.py" → filename: "file.py"
+   - "save as mydir/file.py" → directory_to_create: "mydir", filename: "file.py", full_path: "mydir/file.py"
+   - "subdirectory and name it 'test'" → directory_to_create: "test"
+   - "in the subdirectory with the name 'scripts'" → directory_to_create: "scripts"
+
+   ⚠️ CRITICAL: If user specifies ANY directory or filename details, extract them EXACTLY as stated!
+
+OUTPUT FORMAT (JSON only):
+```json
+{{
+    "detected_technology": "web-frontend | python | node | auto",
+    "complexity": "simple|medium|complex",
+    "reasoning": "Brief explanation of why this complexity level",
+    "estimated_files": 1,
+    "can_be_single_script": true,
+    "directory_to_create": "exact_directory_name or null if not specified",
+    "filename": "exact_filename.ext",
+    "main_filename": "directory_name/filename.ext or just filename.ext (the complete relative path)"
+}}
+```
+
+PRINCIPLES:
+- Be pragmatic - if it CAN be done in one file, it SHOULD be done in one file
+- Don't over-engineer simple requests
+- Extract file organization details EXACTLY as user specified (no interpretation!)
+- Use user's EXACT names for directories and files"""
+
+        response = self._call_llm(prompt)
+        if not response:
+            # Default to complex if assessment fails
+            self.context.complexity = ProjectComplexity.COMPLEX.value
+            print("\n⚠️ Could not assess complexity, defaulting to COMPLEX")
+            return True
+
+        # DEBUG: Log LLM response
+        self.logger.info(f"COMPLEXITY_ASSESSMENT - LLM response (first 500 chars): {response[:500]}")
+
+        data = self._extract_json(response)
+        if data and "complexity" in data:
+            # DEBUG: Log parsed data
+            self.logger.info(f"COMPLEXITY_ASSESSMENT - Parsed JSON: {data}")
+            complexity = data["complexity"].lower()
+            if complexity in ["simple", "medium", "complex"]:
+                self.context.complexity = complexity
+                print(f"\n✅ Complexity assessed: {complexity.upper()}")
+                print(f"   Reasoning: {data.get('reasoning', 'N/A')[:100]}")
+
+                # Extract file organization details from LLM (NO regex parsing!)
+                directory_to_create = data.get('directory_to_create')
+                filename = data.get('filename')
+                main_filename = data.get('main_filename')
+
+                # Store directory for later use
+                if directory_to_create and directory_to_create != 'null':
+                    self._directory_to_create = directory_to_create
+                    self.logger.info(f"COMPLEXITY_ASSESSMENT - LLM extracted directory: {directory_to_create}")
+                else:
+                    self._directory_to_create = None
+
+                if complexity == "simple":
+                    # Use LLM-provided filename (with full path if directory specified)
+                    # LLM should return main_filename with proper path like "mydir/file.py"
+                    detected_tech = data.get('detected_technology', 'auto')
+
+                    # Fallback only if LLM didn't provide a filename
+                    default_file = 'main.py'
+                    if detected_tech == 'web-frontend':
+                        default_file = 'index.html'
+                    elif detected_tech == 'node':
+                        default_file = 'index.js'
+
+                    # Use main_filename (full path) if provided, otherwise use filename, otherwise default
+                    final_filename = main_filename or filename or default_file
+                    print(f"   → Will generate single script: {final_filename}")
+
+                    # DEBUG: Log what we're storing
+                    self.logger.info(f"COMPLEXITY_ASSESSMENT - LLM extracted filename: {filename}")
+                    self.logger.info(f"COMPLEXITY_ASSESSMENT - LLM extracted main_filename: {main_filename}")
+                    self.logger.info(f"COMPLEXITY_ASSESSMENT - Storing _simple_filename: {final_filename}")
+
+                    # Store filename for simple generation
+                    self._simple_filename = final_filename
+                return True
+
+        # Default to complex if parsing fails
+        self.context.complexity = ProjectComplexity.COMPLEX.value
+        print("\n⚠️ Could not parse complexity, defaulting to COMPLEX")
+        return True
+
+    def _phase_simple_generation(self) -> bool:
+        """
+        Phase 2 (SIMPLE path): Generate a single runnable script directly.
+
+        This skips all architecture/design phases and creates one complete,
+        immediately executable file.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        self._print_phase(DevelopmentPhase.SIMPLE_GENERATION)
+
+        filename = getattr(self, '_simple_filename', 'main.py')
+        requirements_text = "\n".join(f"- {r}" for r in self.context.refined_requirements)
+
+        # Detect language from filename
+        if filename.endswith('.py'):
+            language = 'python'
+            run_instruction = f"python {filename}"
+        elif filename.endswith('.js'):
+            language = 'javascript'
+            run_instruction = f"node {filename}"
+        elif filename.endswith('.html') or filename.endswith('.htm'):
+            language = 'html'
+            run_instruction = f"open {filename} in browser (or: python -m http.server 8080)"
+        elif filename.endswith('.css'):
+            language = 'css'
+            run_instruction = f"open associated HTML file in browser"
+        else:
+            # LLM classifies language - NO hardcoded keyword matching (CLAUDE.md compliance)
+            language, run_instruction = self._llm_classify_language(
+                self.context.original_request, filename
+            )
+
+        self._project_language = language
+
+        # Build language-specific instructions
+        if language == 'html':
+            lang_specific = """
+CRITICAL REQUIREMENTS FOR HTML/WEB:
+1. The file must be a COMPLETE, self-contained HTML document
+2. Include <!DOCTYPE html>, <html>, <head>, and <body> tags
+3. For JavaScript: use <script type="module"> for ES6 imports
+4. For external libraries (Three.js, etc.): use importmap for bare module specifiers:
+   <script type="importmap">
+   { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+   </script>
+5. Include all CSS in a <style> tag or inline
+6. The page must work when opened directly in a browser or via local server
+7. NO server-side code, NO backend dependencies, NO requirements.txt needed"""
+        elif language == 'javascript':
+            lang_specific = """
+CRITICAL REQUIREMENTS FOR JAVASCRIPT:
+1. The script must be COMPLETE - no placeholders, no TODOs
+2. Include all necessary imports at the top (ES6 or CommonJS as appropriate)
+3. The script must be IMMEDIATELY RUNNABLE with: node {filename}
+4. Keep it SIMPLE - no over-engineering"""
+        else:  # python
+            lang_specific = """
+CRITICAL REQUIREMENTS FOR PYTHON:
+1. The script must be COMPLETE - no placeholders, no TODOs, no "implement this"
+2. The script must be IMMEDIATELY RUNNABLE with: python {filename}
+3. Include all necessary imports at the top
+4. Include a main block: if __name__ == "__main__":
+5. Keep it SIMPLE - no over-engineering, no unnecessary classes
+6. For plots: use plt.show() to display, don't just save to file
+
+SECURITY (if applicable):
+- Use environment variables for any secrets/API keys (os.environ.get())
+- Sanitize file paths and user inputs
+- Use parameterized queries for databases"""
+
+        # Add directory context if specified
+        directory_context = ""
+        if hasattr(self, '_directory_to_create') and self._directory_to_create:
+            directory_context = f"""
+NOTE: The file will be saved to: {filename}
+Directory creation is handled automatically - focus on writing the file content."""
+
+        prompt = f"""You are a senior developer writing a complete, runnable {language} file.
+
+USER REQUEST:
+{self.context.original_request}
+
+REQUIREMENTS:
+{requirements_text}
+{directory_context}
+
+TASK:
+Write a COMPLETE, IMMEDIATELY USABLE {language} file that fulfills the request.
+{lang_specific}
+
+OUTPUT FORMAT:
+Return ONLY the code in a code block:
+```{language}
+<!-- or # Your complete code here -->
+```
+
+Do NOT include explanations before or after the code block."""
+
+        response = self._call_llm(prompt)  # Use config max_tokens
+        if not response:
+            print("\n❌ Failed to generate script")
+            return False
+
+        code_blocks = self._extract_code_blocks(response)
+        if not code_blocks:
+            print("\n❌ No code block found in response")
+            return False
+
+        _, code = code_blocks[0]
+
+        # Validate basic structure based on language
+        if language == 'python':
+            if 'import' not in code and 'def ' not in code and 'print' not in code:
+                print("\n⚠️ Generated code seems incomplete")
+        elif language == 'html':
+            if '<!DOCTYPE' not in code and '<html' not in code.lower():
+                print("\n⚠️ Generated HTML seems incomplete (missing DOCTYPE or html tag)")
+            if '<script' not in code.lower() and '<style' not in code.lower():
+                print("\n⚠️ Generated HTML has no script or style tags")
+
+        # Save the file
+        file_path = self.project_dir / filename
+
+        # NEW: Create parent directories if they don't exist
+        if file_path.parent != self.project_dir:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"   ✅ Created directory: {file_path.parent.relative_to(self.project_dir)}")
+
+        file_path.write_text(code)
+
+        # Track in context
+        self.context.generated_files[filename] = code
+        self.context.file_specifications = [{"path": filename, "purpose": self.context.original_request}]
+
+        print(f"\n✅ Generated: {filename} ({len(code)} chars)")
+        print(f"   Full path: {file_path}")
+        print(f"   Run with: cd {self.project_dir} && {run_instruction}")
+
+        # Also generate requirements.txt if needed
+        if language == 'python':
+            imports = self._extract_imports(code)
+            external_packages = self._filter_external_packages(imports)
+            if external_packages:
+                req_content = '\n'.join(external_packages)
+                req_path = self.project_dir / 'requirements.txt'
+                req_path.write_text(req_content)
+                self.context.generated_files['requirements.txt'] = req_content
+                print(f"   ✅ Generated: requirements.txt ({', '.join(external_packages)})")
+                print(f"   Install deps: pip install -r requirements.txt")
+
+        return True
+
+    def _extract_imports(self, code: str) -> List[str]:
+        """Extract import statements from Python code."""
+        imports = []
+        for line in code.split('\n'):
+            line = line.strip()
+            if line.startswith('import '):
+                # import foo, bar
+                parts = line[7:].split(',')
+                for part in parts:
+                    module = part.strip().split()[0].split('.')[0]
+                    imports.append(module)
+            elif line.startswith('from '):
+                # from foo import bar
+                match = line.split()[1].split('.')[0]
+                imports.append(match)
+        return list(set(imports))
+
+    def _filter_external_packages(self, imports: List[str]) -> List[str]:
+        """Filter imports to only external packages (not stdlib) using runtime detection.
+
+        ARCHITECTURE: Uses DependencyResolver for LLM-driven package mapping.
+        """
+        try:
+            if not imports:
+                return []
+                
+            # Filter stdlib
+            external_imports = self.dependency_resolver.filter_stdlib(set(imports))
+            
+            if not external_imports:
+                return []
+                
+            # Resolve to pip names
+            package_map = self.dependency_resolver.resolve_packages(list(external_imports))
+            return list(set(package_map.values()))
+        except Exception as e:
+            self.logger.warning(f"Package mapping failed: {e}")
+            return []
+
+        # Fallback: return imports as-is (user may need to fix names manually)
+        return list(set(external_imports))
 
     def _phase_planning(self) -> bool:
         """
@@ -828,9 +1436,23 @@ COMPONENTS:
 TASK:
 Design the file structure and define what each file should contain.
 
+⚠️ CRITICAL - USER'S REQUEST IS THE SOLE SOURCE OF TRUTH:
+1. The USER'S ORIGINAL REQUEST determines the technology, language, and architecture
+2. If the user says "webapp", "index.html", "HTML/JS" → create a pure web app (NO Python backend)
+3. If the user says "Python script" → create Python files
+4. If the user says "Node.js" → create JavaScript/TypeScript files
+5. NEVER assume Python unless the user explicitly requests it
+6. Read the user request CAREFULLY for technology hints: "webapp", "browser", "HTML", "JavaScript", etc.
+
+LANGUAGE-SPECIFIC REQUIREMENTS:
+- For Python: Include requirements.txt with ALL pip dependencies
+- For JavaScript/Node: Include package.json with dependencies
+- For pure web apps (HTML/CSS/JS): NO backend files, NO requirements.txt, NO package.json unless needed for build tools
+
 OUTPUT FORMAT (JSON):
 ```json
 {{
+    "detected_technology": "web-frontend | python | node | java | etc.",
     "files": [
         {{
             "path": "relative/path/filename.ext",
@@ -839,11 +1461,13 @@ OUTPUT FORMAT (JSON):
             "dependencies": ["other files it imports"]
         }}
     ],
-    "directory_structure": "Brief description of folder organization"
+    "directory_structure": "Brief description of folder organization",
+    "external_dependencies": ["list of external packages/libraries needed (if any)"]
 }}
 ```
 
-Be specific about what code goes where. Include all necessary files."""
+Be specific about what code goes where. Include all necessary files.
+VERIFY your file structure matches what the USER REQUESTED, not a default assumption."""
 
         response = self._call_llm(prompt)
         if not response:
@@ -852,7 +1476,10 @@ Be specific about what code goes where. Include all necessary files."""
         data = self._extract_json(response)
         if data and "files" in data:
             self.context.file_specifications = data["files"]
+            self.context.external_dependencies = data.get("external_dependencies", [])
             print(f"\n✅ Designed {len(self.context.file_specifications)} files:")
+            if self.context.external_dependencies:
+                print(f"   📦 External dependencies detected: {', '.join(self.context.external_dependencies)}")
             for spec in self.context.file_specifications[:8]:
                 print(f"   • {spec.get('path', '?')}")
             if len(self.context.file_specifications) > 8:
@@ -907,20 +1534,26 @@ OUTPUT:
 Return ONLY the code block.
 """
             # Call LLM
-            response = self._call_llm(prompt, max_tokens=2048)
+            response = self._call_llm(prompt)  # Use config max_tokens
             if not response:
+                self.logger.warning(f"INTERFACE_GENERATION: LLM call failed for {file_path}")
+                print(f"   ⚠️ LLM call failed for {file_path}")
                 continue
-                
+
             code_blocks = self._extract_code_blocks(response)
             if code_blocks:
                 _, code = code_blocks[0]
-                
+
                 # Extract symbols
                 try:
                     interface = extractor.extract(code, file_path)
                     self.context.interfaces[file_path] = interface
+                    self.logger.info(f"INTERFACE_GENERATION: Successfully extracted interface for {file_path}")
                 except Exception as e:
                     self.logger.warning(f"Failed to extract interface from {file_path}: {e}")
+            else:
+                self.logger.warning(f"INTERFACE_GENERATION: No code blocks found in LLM response for {file_path}")
+                print(f"   ⚠️ No code blocks in response for {file_path}")
 
         print(f"✅ Generated {len(self.context.interfaces)} file interfaces")
         return True
@@ -936,8 +1569,12 @@ Return ONLY the code block.
 
         if not self.context.file_specifications:
             print("\n⚠️ No file specifications, generating from context...")
+            # LLM classifies entry file - NO hardcoded keyword matching (CLAUDE.md compliance)
+            entry_file = self._llm_classify_entry_file(self.context.original_request)
+            self.logger.info(f"LLM determined entry file: {entry_file}")
+
             self.context.file_specifications = [{
-                "path": "main.py",
+                "path": entry_file,
                 "purpose": self.context.original_request[:200],
                 "contents_outline": "Main implementation"
             }]
@@ -991,6 +1628,14 @@ Write complete, working code for this file. Include:
 3. Docstrings and comments
 4. Error handling where appropriate
 
+SECURITY REQUIREMENTS (MANDATORY):
+- NEVER hardcode passwords, API keys, or secrets - use environment variables
+- NEVER use string concatenation for SQL queries - use parameterized queries
+- ALWAYS sanitize user input before using in file paths, URLs, or commands
+- ALWAYS use HTTPS for external API calls when possible
+- NEVER use eval() or exec() with user-provided input
+- For web apps: escape HTML output to prevent XSS
+
 CRITICAL - SYNTAX REQUIREMENTS:
 - Every opening bracket {{ must have a matching closing bracket }}
 - Every opening parenthesis ( must have a matching closing parenthesis )
@@ -1021,8 +1666,10 @@ Write clean, maintainable, production-ready code with balanced brackets."""
                     current_prompt += f"\n{env_constraints}"
 
                 # Call LLM with higher token limit for complex code files
-                response = self._call_llm(current_prompt, max_tokens=8192)
+                response = self._call_llm(current_prompt)  # Use config max_tokens
                 if not response:
+                    self.logger.warning(f"CODING: LLM call failed for {file_path} (attempt {attempt + 1}/{max_retries})")
+                    print(f"   ⚠️ LLM call failed (attempt {attempt + 1}/{max_retries})")
                     continue
 
                 code_blocks = self._extract_code_blocks(response)
@@ -1067,7 +1714,7 @@ Write clean, maintainable, production-ready code with balanced brackets."""
                             export_names = [e.name for e in interface.exports[:3]]
                             print(f"   📋 Interface: exports {', '.join(export_names)}{'...' if len(interface.exports) > 3 else ''}")
                     except Exception as e:
-                        logger.warning(f"Failed to extract interface for {file_path}: {e}")
+                        self.logger.warning(f"Failed to extract interface for {file_path}: {e}")
 
                     # Show any warnings
                     for warning in validation.warnings:
@@ -1121,6 +1768,17 @@ Return the COMPLETE, SYNTACTICALLY CORRECT code in a code block:
                         full_path.write_text(code)
                         files_generated += 1
 
+        # DIAGNOSTIC: Summary of code generation
+        total_specs = len(self.context.file_specifications) if self.context.file_specifications else 0
+        self.logger.info(f"CODING PHASE SUMMARY: Generated {files_generated}/{total_specs} files")
+        print(f"\n📊 CODING: Generated {files_generated}/{total_specs} files")
+        if files_generated == 0:
+            self.logger.error("CODING PHASE FAILED: No files were generated!")
+            print("   ❌ WARNING: No files were generated - check logs for LLM call failures")
+        elif files_generated < total_specs:
+            self.logger.warning(f"CODING: Only generated {files_generated} of {total_specs} files")
+            print(f"   ⚠️ Some files failed to generate - check logs for details")
+
         # LAYER 4: Validate imports across all files
         if self.context.generated_files:
             print(f"\n🔍 Validating imports across {len(self.context.generated_files)} files...")
@@ -1152,6 +1810,64 @@ Return the COMPLETE, SYNTACTICALLY CORRECT code in a code block:
             consistency_result = self._verify_consistency_and_repair()
             if not consistency_result:
                 print("   ⚠️ Some consistency issues could not be repaired")
+
+            # LAYER 4.7: Reconcile requirements.txt (v2.2)
+            self._generate_or_reconcile_requirements()
+
+        self.logger.info(f"PHASE COMPLETE: {DevelopmentPhase.CODING.name}")
+        return True
+
+    def _generate_or_reconcile_requirements(self) -> bool:
+        """
+        Scan all generated files for dependencies and generate/update the appropriate file.
+        """
+        print(f"\n📦 Reconciling dependencies...")
+
+        try:
+            # 1. Detect language and get content
+            dep_info = self.dependency_resolver.generate_dependency_file_content(self.project_dir)
+            if not dep_info:
+                print("   ✅ No external dependencies detected")
+                return True
+                
+            filename = dep_info["filename"]
+            actual_content = dep_info["content"]
+            lang = self.dependency_resolver.detect_language(self.project_dir)
+            
+            # 2. Add dependencies identified in design phase (re-resolved for PyPI/NPM names)
+            design_raw_deps = self.context.external_dependencies
+            design_deps = set()
+            if design_raw_deps:
+                resolved_design = self.dependency_resolver.resolve_packages(design_raw_deps, language=lang)
+                design_deps = set(resolved_design.values())
+
+            # 3. Combine them
+            code_deps = set(actual_content.strip().split('\n')) if actual_content.strip() else set()
+            combined_deps = design_deps.union(code_deps)
+            combined_deps = {dep for dep in combined_deps if dep.strip()}
+
+            if not combined_deps:
+                return True
+
+            # Final sorted list
+            final_deps = sorted(list(combined_deps))
+            final_content = "\n".join(final_deps) + "\n"
+
+            # 4. Save to file
+            target_path = self.project_dir / filename
+            target_path.write_text(final_content)
+            self.context.generated_files[filename] = final_content
+
+            print(f"   ✅ Updated: {filename} with {len(final_deps)} packages")
+            for dep in final_deps:
+                print(f"      - {dep}")
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Dependency reconciliation failed: {e}")
+            return False
+            self.logger.error(f"Failed to reconcile requirements: {e}")
+            return False
 
         print(f"\n✅ Generated {files_generated}/{len(self.context.file_specifications)} files")
         return files_generated > 0
@@ -1257,7 +1973,7 @@ Return the COMPLETE, SYNTACTICALLY CORRECT code in a code block:
                 break
 
         if not spec:
-            logger.warning(f"No spec found for {file_path}, cannot repair")
+            self.logger.warning(f"No spec found for {file_path}, cannot repair")
             return False
 
         # Build comprehensive interface context
@@ -1298,7 +2014,7 @@ Return the code in a code block:
 // your code here
 ```"""
 
-            response = self._call_llm(prompt, max_tokens=4096)
+            response = self._call_llm(prompt)  # Use config max_tokens
             if not response:
                 continue
 
@@ -1311,7 +2027,7 @@ Return the code in a code block:
             # Validate syntax
             validation = self.generation_validator.validate(code, lang, spec)
             if not validation.valid:
-                logger.warning(f"Repair attempt {attempt + 1} failed validation: {validation.errors}")
+                self.logger.warning(f"Repair attempt {attempt + 1} failed validation: {validation.errors}")
                 continue
 
             # Temporarily update the file and check consistency
@@ -1340,7 +2056,7 @@ Return the code in a code block:
                     interface = extractor.extract(code, file_path)
                     self.context.interfaces[file_path] = interface
                 except Exception as e:
-                    logger.warning(f"Failed to update interface for {file_path}: {e}")
+                    self.logger.warning(f"Failed to update interface for {file_path}: {e}")
 
                 if len(remaining_errors) == 0:
                     return True
@@ -1403,7 +2119,7 @@ OUTPUT FORMAT (JSON):
 
 Be thorough but practical."""
 
-            response = self._call_llm(prompt, max_tokens=2048)
+            response = self._call_llm(prompt)  # Use config max_tokens
             if response:
                 data = self._extract_json(response)
                 if data and "issues" in data:
@@ -1475,7 +2191,7 @@ Return the complete fixed code in a code block.
         # Retry loop for validation
         max_retries = 3
         for attempt in range(max_retries):
-            response = self._call_llm(prompt, max_tokens=4096)
+            response = self._call_llm(prompt)  # Use config max_tokens
             if not response:
                 continue
 
@@ -1506,9 +2222,11 @@ Please regenerate the COMPLETE, VALID code for {file_path} fixed."""
         print(f"      ❌ Failed to generate valid fix after {max_retries} attempts")
         return False
 
-    def _phase_testing(self) -> bool:
+    async def _phase_testing(self) -> bool:
         """
         Phase 7: Generate and run tests with Docker sandbox execution.
+
+        Includes DECIDE-ACT-VERIFY loop for test failures (max 3 retries).
 
         Returns:
             True if successful, False otherwise
@@ -1541,20 +2259,80 @@ Please regenerate the COMPLETE, VALID code for {file_path} fixed."""
             print("   ⚠️ Docker not available, using subprocess fallback")
 
         # Validate imports by actually running them
+        # ONLY validate files we generated (skip unrelated files in project dir)
         print("\n   🧪 Validating imports...")
-        exec_result = self.code_validator.validate_execution()
+        files_to_validate = list(self.context.generated_files.keys())
+        exec_result = self.code_validator.validate_execution(files_to_validate=files_to_validate)
 
         if exec_result.success:
             print(f"   ✅ Import validation passed ({exec_result.sandbox_type})")
         else:
             print(f"   ❌ Import validation failed:")
-            for error in exec_result.errors[:3]:
-                error_msg = error.get('message', str(error))[:200]
-                print(f"      - {error_msg}")
+            # Show parsed errors if available
+            if exec_result.errors:
+                for error in exec_result.errors[:3]:
+                    error_msg = error.get('message', str(error))[:200]
+                    print(f"      - {error_msg}")
+                    # Determine severity: only 'error' if it's likely a local file issue
+                    # If it's a missing third-party module (like 'gi'), downgrade to 'warning'
+                    # so we don't loop forever in the limited sandbox environment
+                    severity = "error"
+                    missing_module = error.get('missing_module')
+                    if missing_module:
+                        # Check if it's one of our generated files
+                        is_local = False
+                        for gen_path in self.context.generated_files:
+                            # Convert path to module name format
+                            gen_module = gen_path.replace('/', '.').replace('.py', '')
+                            if gen_module == missing_module or gen_module.endswith('.' + missing_module):
+                                is_local = True
+                                break
+                        
+                        if not is_local:
+                            severity = "warning"
+                            print(f"      ℹ️  Note: '{missing_module}' is an external dependency (not a local file)")
+
+                    self.context.issues_found.append({
+                        "file": "execution",
+                        "severity": severity,
+                        "description": error_msg,
+                        "fix": "Fix import or dependency issue"
+                    })
+            # Also check stdout for FAIL messages (validation script prints there)
+            if exec_result.stdout and 'FAIL:' in exec_result.stdout:
+                for line in exec_result.stdout.split('\n'):
+                    if 'FAIL:' in line:
+                        error_msg = line.strip()[:200]
+                        print(f"      - {error_msg}")
+                        
+                        severity = "error"
+                        if "ModuleNotFoundError" in line or "No module named" in line:
+                            # Try to extract module name
+                            match = re.search(r"No module named '([^']+)'", line)
+                            missing_module = match.group(1) if match else None
+                            if missing_module:
+                                is_local = False
+                                for gen_path in self.context.generated_files:
+                                    gen_module = gen_path.replace('/', '.').replace('.py', '')
+                                    if gen_module == missing_module or gen_module.endswith('.' + missing_module):
+                                        is_local = True
+                                        break
+                                if not is_local:
+                                    severity = "warning"
+                        
+                        self.context.issues_found.append({
+                            "file": "execution",
+                            "severity": severity,
+                            "description": error_msg,
+                            "fix": "Fix import or dependency issue"
+                        })
+            # Show stderr if no other errors found
+            elif exec_result.stderr and not exec_result.errors:
+                print(f"      - {exec_result.stderr[:300]}")
                 self.context.issues_found.append({
                     "file": "execution",
                     "severity": "error",
-                    "description": error_msg,
+                    "description": exec_result.stderr[:200],
                     "fix": "Fix import or dependency issue"
                 })
 
@@ -1568,35 +2346,85 @@ Please regenerate the COMPLETE, VALID code for {file_path} fixed."""
 
         # Generate tests for main file
         main_file = main_files[0]
-        main_code = self.context.generated_files[main_file][:2500]
+        # Don't truncate - LLM needs full context to analyze
+        main_code = self.context.generated_files[main_file]
+        file_path = str(self.project_dir / main_file)
 
         print(f"\n   Generating tests for: {main_file}...")
 
-        prompt = f"""You are writing unit tests for code.
+        # ARCHITECTURE: LLM-driven test generation - NO hardcoded scenarios
+        # LLM analyzes code → determines what to test → generates tests
+        prompt = f"""You are writing unit tests for the following code.
 
 FILE: {main_file}
-CODE:
-```
+LOCATION: {file_path}
+
+CODE TO TEST:
+```python
 {main_code}
 ```
 
-TASK:
-Write comprehensive unit tests using pytest.
-- Test main functionality
-- Test edge cases
-- Test error handling
-- Make tests self-contained (don't require external resources)
+STEP 1: ANALYZE THE CODE
+Before writing any tests, analyze the code to understand:
+1. What functions/classes/methods are defined? (list their exact names and signatures)
+2. What do they DO? (return values vs print output vs side effects vs file operations)
+3. How is the code USED? (imported as library, run as CLI tool, server, etc.)
+4. What are the inputs and expected outputs?
+5. What edge cases exist in the logic? (boundary conditions, special values, branches)
+6. What error cases should be handled? (invalid inputs, exceptions)
 
-OUTPUT:
-Return complete test code in a code block.
+STEP 2: GENERATE STANDALONE TESTS
+Based on your analysis, write comprehensive tests that:
+
+CRITICAL REQUIREMENTS:
+- Call ONLY functions that actually exist in the code above (don't invent function names!)
+- Match the actual signatures (if function takes 3 args, pass 3 args)
+- Handle the code's actual behavior:
+  * If it RETURNS values → test the return values
+  * If it PRINTS output → capture stdout with io.StringIO and contextlib.redirect_stdout
+  * If it uses sys.argv → manipulate sys.argv in test setup/teardown
+  * If it reads files → create temporary test files
+- Test the scenarios you identified in your analysis (normal cases, edge cases, errors)
+- Use ONLY Python standard library (no pytest, no unittest, no external packages)
+
+OUTPUT FORMAT (standalone Python script):
 ```python
-import pytest
-# Import the module being tested
+#!/usr/bin/env python3
+import sys
+import os
+# Add any other standard library imports needed based on your analysis
 
-# Test code here
-```"""
+def test_scenario_1():
+    # Based on your analysis of the code
+    assert condition, "error message"
 
-        response = self._call_llm(prompt, max_tokens=3000)
+def test_scenario_2():
+    # More tests based on your analysis
+    pass
+
+if __name__ == "__main__":
+    tests = [test_scenario_1, test_scenario_2, ...]
+    failures = []
+    for test in tests:
+        try:
+            test()
+        except Exception as e:
+            failures.append((test.__name__, str(e)))
+
+    if failures:
+        print(f"{{len(failures)}} test(s) failed:")
+        for name, err in failures:
+            print(f"FAIL: {{name}}: {{err}}")
+        sys.exit(1)
+    else:
+        print(f"All {{len(tests)}} tests passed.")
+```
+
+Remember: Analyze the code FIRST, then write tests for what actually exists!
+"""
+
+        # Use config max_tokens (no hardcoded override)
+        response = self._call_llm(prompt)
         if response:
             code_blocks = self._extract_code_blocks(response)
             if code_blocks:
@@ -1609,44 +2437,328 @@ import pytest
                 full_path.write_text(test_code)
                 print(f"   ✅ Generated: {test_file}")
 
-                # LAYER 7: Run tests in Docker sandbox
+                # LAYER 7: Run tests in Docker sandbox with retry loop
                 print(f"\n   🧪 Running tests in sandbox...")
-                test_result = self.code_validator.run_tests()
 
-                if test_result.ran:
-                    if test_result.passed:
-                        for t in test_result.passed[:5]:
-                            print(f"   ✅ PASSED: {t}")
-                            self.context.tests_passed.append(t)
-                    if test_result.failed:
-                        for t in test_result.failed[:5]:
-                            print(f"   ❌ FAILED: {t}")
-                            self.context.tests_failed.append(t)
-                            self.context.issues_found.append({
-                                "file": test_file,
-                                "severity": "error",
-                                "description": f"Test failed: {t}",
-                                "fix": "Fix the failing test or the code it tests"
-                            })
-                    if test_result.errors:
-                        for e in test_result.errors[:3]:
-                            print(f"   ❌ ERROR: {e}")
+                max_test_retries = 3
+                test_iteration = 0
+                test_success = False
 
-                    # Summary
-                    total = len(test_result.passed) + len(test_result.failed)
-                    if total > 0:
-                        print(f"\n   📊 Test Results: {len(test_result.passed)}/{total} passed")
-                else:
-                    if test_result.error_message:
-                        print(f"   ⚠️ Could not run tests: {test_result.error_message}")
+                # Allow one extra test run after the last fix attempt
+                while test_iteration <= max_test_retries and not test_success:
+                    test_iteration += 1
+                    # ONLY run the test file we just generated (not all test_*.py files!)
+                    test_result = self.code_validator.run_tests(test_pattern=test_file)
+
+                    if test_result.ran:
+                        if test_result.passed:
+                            for t in test_result.passed[:5]:
+                                print(f"   ✅ PASSED: {t}")
+                                self.context.tests_passed.append(t)
+
+                        if test_result.failed:
+                            for t in test_result.failed[:5]:
+                                print(f"   ❌ FAILED: {t}")
+
+                            # If tests failed and we have retries left, trigger investigation
+                            if test_iteration <= max_test_retries:
+                                print(f"\n   🔍 Investigating test failures (attempt {test_iteration}/{max_test_retries})...")
+
+                                # DECIDE-ACT-VERIFY: Ask LLM to investigate and fix
+                                fix_applied = await self._investigate_and_fix_test_failure(
+                                    test_file=test_file,
+                                    main_file=main_file,
+                                    test_result=test_result
+                                )
+
+                                if fix_applied:
+                                    print(f"   ✅ Fix applied, retrying tests...")
+                                    continue  # Retry tests
+                                else:
+                                    print(f"   ⚠️ Could not determine fix, skipping retry")
+                                    break
+                            else:
+                                # No more retries, record failures
+                                for t in test_result.failed[:5]:
+                                    self.context.tests_failed.append(t)
+                                    self.context.issues_found.append({
+                                        "file": test_file,
+                                        "severity": "error",
+                                        "description": f"Test failed: {t}",
+                                        "fix": "Fix the failing test or the code it tests"
+                                    })
+
+                        if test_result.errors:
+                            for e in test_result.errors[:3]:
+                                print(f"   ❌ ERROR: {e}")
+
+                            # If there are errors and we have retries left, trigger investigation
+                            if test_iteration <= max_test_retries:
+                                print(f"\n   🔍 Investigating test errors (attempt {test_iteration}/{max_test_retries})...")
+
+                                # DECIDE-ACT-VERIFY: Ask LLM to investigate and fix
+                                fix_applied = await self._investigate_and_fix_test_failure(
+                                    test_file=test_file,
+                                    main_file=main_file,
+                                    test_result=test_result
+                                )
+
+                                if fix_applied:
+                                    print(f"   ✅ Fix applied, retrying tests...")
+                                    continue  # Retry tests
+                                else:
+                                    print(f"   ⚠️ Could not determine fix, skipping retry")
+                                    break
+
+                        # Check if tests passed
+                        total = len(test_result.passed) + len(test_result.failed)
+                        if total > 0:
+                            if len(test_result.failed) == 0:
+                                test_success = True
+                                print(f"\n   📊 Test Results: {len(test_result.passed)}/{total} passed ✅")
+                            else:
+                                print(f"\n   📊 Test Results: {len(test_result.passed)}/{total} passed")
+                        else:
+                            # No tests ran (total = 0) - this is a problem if we've already handled errors above
+                            # If we reach here, it means test_result.ran=True but no tests executed and no errors
+                            # This shouldn't normally happen, but break the loop to avoid infinite retries
+                            if test_iteration >= max_test_retries or not test_result.errors:
+                                print(f"   ⚠️ No tests executed")
+                                break
                     else:
-                        print("   ⚠️ Tests did not run")
+                        # Tests didn't run at all
+                        if test_result.error_message:
+                            print(f"   ❌ ERROR: Test execution failed: {test_result.error_message}")
+                        else:
+                            print("   ❌ ERROR: Tests did not run")
 
-        print(f"\n✅ Testing phase complete")
+                        # If tests didn't run and we have retries left, investigate
+                        if test_iteration <= max_test_retries:
+                            print(f"\n   🔍 Investigating test execution failure (attempt {test_iteration}/{max_test_retries})...")
+                            fix_applied = await self._investigate_and_fix_test_failure(
+                                test_file=test_file,
+                                main_file=main_file,
+                                test_result=test_result
+                            )
+
+                            if fix_applied:
+                                print(f"   ✅ Fix applied, retrying tests...")
+                                continue
+                            else:
+                                print(f"   ⚠️ Could not determine fix, skipping retry")
+                                break
+                        break
+
+        # Report results
+        total_passed = len(self.context.tests_passed)
+        total_failed = len(self.context.tests_failed)
+
+        if total_passed > 0 or total_failed > 0:
+            print(f"\n✅ Testing phase complete")
+        elif not test_success:
+            print(f"\n⚠️ Testing phase complete with issues")
+            print(f"   ℹ️ Tests could not be executed successfully after {max_test_retries} retry attempts")
+        else:
+            print(f"\n✅ Testing phase complete")
+
         print(f"   Tests generated: {len([f for f in self.context.generated_files if f.startswith('test_')])}")
-        print(f"   Tests passed: {len(self.context.tests_passed)}")
-        print(f"   Tests failed: {len(self.context.tests_failed)}")
+        print(f"   Tests passed: {total_passed}")
+        print(f"   Tests failed: {total_failed}")
         return True
+
+    async def _investigate_and_fix_test_failure(
+        self,
+        test_file: str,
+        main_file: str,
+        test_result
+    ) -> bool:
+        """
+        DECIDE-ACT-VERIFY loop for test failures.
+
+        When tests fail, LLM investigates the failure and proposes a fix.
+
+        Args:
+            test_file: Path to test file
+            main_file: Path to main file being tested
+            test_result: TestResult object with failure details
+
+        Returns:
+            True if fix was applied, False otherwise
+        """
+        try:
+            # Read current files
+            test_path = self.project_dir / test_file
+            main_path = self.project_dir / main_file
+
+            test_code = test_path.read_text() if test_path.exists() else ""
+            main_code = main_path.read_text() if main_path.exists() else ""
+
+            # Build failure context
+            failure_context = {
+                "test_file": test_file,
+                "main_file": main_file,
+                "test_code": test_code,
+                "main_code": main_code,
+                "test_output": test_result.output if hasattr(test_result, 'output') else "",
+                "test_stderr": test_result.stderr if hasattr(test_result, 'stderr') else "",
+                "failed_tests": test_result.failed if hasattr(test_result, 'failed') else [],
+                "error_message": test_result.error_message if hasattr(test_result, 'error_message') else ""
+            }
+
+            # DECIDE: Ask LLM to analyze failure and propose fix
+            # ARCHITECTURE: LLM analyzes both files and determines root cause
+            prompt = f"""You are debugging a test failure.
+
+TEST FILE: {test_file}
+```python
+{test_code}
+```
+
+MAIN CODE BEING TESTED: {main_file}
+```python
+{main_code}
+```
+
+TEST EXECUTION FAILURE:
+Output: {failure_context['test_output']}
+Stderr: {failure_context['test_stderr']}
+Failed tests: {failure_context['failed_tests']}
+Error: {failure_context['error_message']}
+
+CRITICAL CONTEXT:
+- Main code was generated in CODE GENERATION phase (should be working)
+- Test was generated in TEST GENERATION phase (might have wrong expectations)
+- Tests run in minimal sandbox (Python standard library only, no pytest/unittest)
+
+STEP 1: ANALYZE THE FAILURE
+Determine the ROOT CAUSE:
+
+1. API MISMATCH? (test calls functions that don't exist in main)
+   - Error: "AttributeError: no attribute 'function_name'"
+   - Cause: Test expects different API than main provides
+   - Fix: TEST needs rewriting to call actual functions
+
+2. WRONG EXPECTATIONS? (test has incorrect assertions)
+   - Error: AssertionError with wrong expected values
+   - Cause: Test expects different behavior than main implements
+   - Fix: TEST needs updated assertions
+
+3. MISSING DEPENDENCIES? (test imports external packages)
+   - Error: "ModuleNotFoundError: No module named 'pytest'"
+   - Cause: Test uses packages not available in sandbox
+   - Fix: TEST needs rewriting without external packages
+
+4. MAIN CODE BUG? (actual logic error in implementation)
+   - Error: Correct API calls but wrong results
+   - Cause: Bug in main code's logic
+   - Fix: MAIN needs bug fix
+
+STEP 2: DETERMINE FIX TARGET
+Based on your analysis:
+- If API mismatch (1) → fix_target: test
+- If wrong expectations (2) → fix_target: test
+- If missing dependencies (3) → fix_target: test
+- If actual bug in main (4) → fix_target: main
+
+DEFAULT: Assume test is wrong (it was just generated and might not match main's actual API)
+
+STEP 3: PROVIDE FIX
+Write your analysis, then provide the complete fixed code.
+
+RESPONSE FORMAT:
+Analysis: [Your analysis of what's wrong and why]
+
+fix_target: test
+(or "fix_target: main" if main code has actual bug)
+
+```python
+# Complete fixed code for the target file
+```
+
+If fixing test for API mismatch: Read the main code's actual functions and call those (don't invent functions)!
+"""
+
+            response = self.llm_client.generate(prompt)
+            response_text = response.content if hasattr(response, 'content') else str(response)
+
+            # Extract fix target from LLM response
+            # ARCHITECTURE: DEFAULT to 'test' (safer - don't destroy working main code)
+            # LLM must explicitly say "fix_target: main" to fix main code
+            fix_target = 'test'  # SAFE DEFAULT
+            if 'fix_target: main' in response_text.lower() or 'fix_target:main' in response_text.lower():
+                fix_target = 'main'
+
+            self.logger.debug(f"Investigation determined fix_target: {fix_target}")
+
+            # Use established code extraction method (same as CODE_GENERATION)
+            code_blocks = self._extract_code_blocks(response_text)
+            if not code_blocks:
+                self.logger.warning(f"No code blocks found in fix response ({len(response_text)} chars)")
+                self.logger.debug(f"Response preview: {response_text[:500]}")
+                return False
+
+            # Get the LAST code block (LLM often includes error examples first, then the fix)
+            # Also filter out blocks that look like error messages
+            valid_blocks = []
+            for lang, code in code_blocks:
+                # Skip blocks that look like error messages
+                if any(err in code for err in ['Error:', 'Traceback', 'ModuleNotFoundError', 'ImportError',
+                                                'SyntaxError', '/usr/bin/python:', '/usr/local/bin/python:']):
+                    self.logger.debug(f"Skipping error message block: {code[:100]}")
+                    continue
+                if len(code) > 50:  # Must be substantial
+                    valid_blocks.append((lang, code))
+
+            if not valid_blocks:
+                self.logger.warning(f"No valid code blocks found (total blocks: {len(code_blocks)})")
+                return False
+
+            # Use the last valid block (most likely to be the actual fix)
+            _, fixed_code = valid_blocks[-1]
+
+            if not fixed_code or len(fixed_code) < 50:
+                self.logger.warning(f"Extracted code is too short: {len(fixed_code)} chars")
+                return False
+
+            # Extract analysis from response (DON'T truncate - show full reasoning)
+            analysis_match = response_text.split('```')[0].strip()
+            # Show first 300 chars (or full if shorter)
+            analysis_display = analysis_match if len(analysis_match) <= 300 else analysis_match[:300] + '...'
+
+            # Validate fix before applying (prevent disasters like pytest stub overwriting solver code)
+            if fix_target == 'main':
+                # CRITICAL: Validate that fixed main code makes sense
+                # Check for obvious red flags that indicate LLM returned wrong code
+                if 'def ' not in fixed_code and 'class ' not in fixed_code:
+                    self.logger.warning("Fixed main code has no functions/classes - rejecting!")
+                    print(f"   ⚠️ Warning: Fixed code has no definitions - likely wrong, skipping fix")
+                    return False
+
+                # Log what we're about to do (for debugging disasters)
+                self.logger.warning(f"About to OVERWRITE main file {main_file} - this is risky!")
+                self.logger.debug(f"New code preview (first 300 chars):\n{fixed_code[:300]}")
+
+            print(f"   📝 Analysis: {analysis_display}")
+            print(f"   🔧 Fixing: {fix_target} file")
+
+            # Debug logging
+            self.logger.debug(f"Applying fix to {fix_target} file: {test_file if fix_target == 'test' else main_file}")
+            self.logger.debug(f"Code length: {len(fixed_code)} chars")
+
+            if fix_target == 'test':
+                # Fix test file (safer - test was just generated, likely has wrong expectations)
+                test_path.write_text(fixed_code)
+                self.context.generated_files[test_file] = fixed_code
+            else:
+                # Fix main file (risky - main was already generated and supposedly works)
+                main_path.write_text(fixed_code)
+                self.context.generated_files[main_file] = fixed_code
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error in test failure investigation: {e}")
+            return False
 
     # =========================================================================
     # DOCUMENTATION GENERATION
@@ -1742,7 +2854,7 @@ Generate a complete README.md with these sections:
 Use proper markdown formatting. Be concise but informative.
 Return ONLY the README content, no code blocks."""
 
-        response = self._call_llm(prompt, max_tokens=2000)
+        response = self._call_llm(prompt)  # Use config max_tokens
         if not response:
             self.logger.warning("Failed to generate README.md")
             return False
@@ -1753,12 +2865,190 @@ Return ONLY the README content, no code blocks."""
             lines = content.split('\n')
             content = '\n'.join(lines[1:-1] if lines[-1].startswith('```') else lines[1:])
 
+        # Strip LLM thinking tags (<thinking>, <details>, etc.)
+        from .llm_client import strip_thinking_content
+        content = strip_thinking_content(content)
+
         # Write README
         readme_path.write_text(content)
         self.context.generated_files["README.md"] = content
         print(f"   ✅ {'Updated' if existing_readme else 'Generated'}: README.md ({len(content)} bytes)")
 
         return True
+
+    def _setup_python_environment(self) -> bool:
+        """
+        Setup Python virtual environment and install dependencies.
+
+        MANDATORY for all Python projects:
+        1. Create virtual environment (venv) if not exists
+        2. Install dependencies from requirements.txt
+
+        Returns:
+            True if setup successful or not a Python project, False on error
+        """
+        # Check if this is a Python project
+        files = list(self.context.generated_files.keys())
+        is_python_project = any(f.endswith('.py') for f in files)
+
+        if not is_python_project:
+            return True  # Not a Python project, nothing to do
+
+        # Check if requirements.txt exists
+        requirements_path = self.project_dir / 'requirements.txt'
+        if not requirements_path.exists():
+            self.logger.info("No requirements.txt found, skipping venv setup")
+            return True
+
+        # Read requirements to check if there are any dependencies
+        requirements_content = requirements_path.read_text().strip()
+        if not requirements_content or all(line.strip().startswith('#') or not line.strip() for line in requirements_content.split('\n')):
+            self.logger.info("requirements.txt is empty or contains only comments, skipping venv setup")
+            return True
+
+        print(f"\n   📦 Setting up Python environment...")
+
+        # Create venv if it doesn't exist
+        venv_path = self.project_dir / 'venv'
+        if not venv_path.exists():
+            print(f"   🔧 Creating virtual environment...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, '-m', 'venv', str(venv_path)],
+                    capture_output=True,
+                    text=True,
+                    cwd=str(self.project_dir)
+                )
+                if result.returncode != 0:
+                    self.logger.error(f"Failed to create venv: {result.stderr}")
+                    print(f"   ❌ Failed to create venv: {result.stderr[:100]}")
+                    return False
+                print(f"   ✅ Created virtual environment: venv/")
+            except Exception as e:
+                self.logger.error(f"Exception creating venv: {e}")
+                print(f"   ❌ Exception creating venv: {e}")
+                return False
+        else:
+            print(f"   ℹ️  Virtual environment already exists: venv/")
+
+        # Determine pip path based on OS
+        if sys.platform == 'win32':
+            pip_path = venv_path / 'Scripts' / 'pip'
+        else:
+            pip_path = venv_path / 'bin' / 'pip'
+
+        # Install dependencies
+        print(f"   📥 Installing dependencies from requirements.txt...")
+        try:
+            result = subprocess.run(
+                [str(pip_path), 'install', '-r', 'requirements.txt'],
+                capture_output=True,
+                text=True,
+                cwd=str(self.project_dir),
+                timeout=300  # 5 minute timeout for large installs
+            )
+            if result.returncode != 0:
+                self.logger.error(f"pip install failed: {result.stderr}")
+                print(f"   ❌ pip install failed:")
+                # Show first few lines of error
+                for line in result.stderr.split('\n')[:5]:
+                    if line.strip():
+                        print(f"      {line}")
+                return False
+
+            # Count installed packages
+            installed_count = len([line for line in result.stdout.split('\n')
+                                   if 'Successfully installed' in line or 'Requirement already satisfied' in line])
+            print(f"   ✅ Dependencies installed successfully")
+
+            # Show activation instructions
+            if sys.platform == 'win32':
+                activate_cmd = f"venv\\Scripts\\activate"
+            else:
+                activate_cmd = f"source venv/bin/activate"
+            print(f"   💡 Activate environment: cd {self.project_dir.name} && {activate_cmd}")
+
+        except subprocess.TimeoutExpired:
+            self.logger.error("pip install timed out after 5 minutes")
+            print(f"   ❌ pip install timed out (dependencies may be too large)")
+            return False
+        except Exception as e:
+            self.logger.error(f"Exception during pip install: {e}")
+            print(f"   ❌ Exception during pip install: {e}")
+            return False
+
+        return True
+
+    async def _trigger_doc_hooks(self, phase: str) -> None:
+        """
+        Trigger documentation hooks after phase completion.
+
+        Passes full phase context to the hooks for comprehensive documentation
+        generation. This enables DocumentationGenerator to create structured
+        docs in docs/PLANNING.md, docs/ARCHITECTURE.md, docs/DESIGN.md.
+
+        Args:
+            phase: Current phase name (PLANNING, ARCHITECTURE, DESIGN, CODING, COMPLETE)
+        """
+        if self.hook_manager is None:
+            return
+
+        # Build full phase context for documentation
+        phase_context = {
+            'original_request': self.context.original_request,
+            'refined_requirements': self.context.refined_requirements,
+            'implementation_plan': self.context.implementation_plan,
+            'architecture_decisions': self.context.architecture_decisions,
+            'components': self.context.components,
+            'file_specifications': self.context.file_specifications,
+            'generated_files': self.context.generated_files,
+            'interfaces': self.context.interfaces,
+            'issues_found': self.context.issues_found,
+            'tests_passed': self.context.tests_passed,
+            'tests_failed': self.context.tests_failed,
+            'iteration': self.context.iteration,
+        }
+
+        # Build hook context
+        hook_context = {
+            'project_dir': str(self.project_dir),
+            'generated_files': self.context.generated_files,
+            'original_request': self.context.original_request,
+            'phase': phase,
+            'phase_context': phase_context,
+            'language': self._project_language,
+        }
+
+        try:
+            # Trigger PHASE_END hooks
+            if HookTrigger is not None:
+                await self.hook_manager.trigger(
+                    HookTrigger.PHASE_END,
+                    hook_context
+                )
+                self.logger.debug(f"Documentation hooks triggered for phase: {phase}")
+        except Exception as e:
+            self.logger.warning(f"Documentation hook failed: {e}")
+
+    def _trigger_doc_hooks_sync(self, phase: str) -> None:
+        """
+        Synchronous wrapper for _trigger_doc_hooks.
+
+        Used in the run() method which is synchronous.
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If already in an event loop, create a task
+                asyncio.create_task(self._trigger_doc_hooks(phase))
+            else:
+                # If no event loop, run directly
+                loop.run_until_complete(self._trigger_doc_hooks(phase))
+        except RuntimeError:
+            # No event loop, create one
+            asyncio.run(self._trigger_doc_hooks(phase))
 
     # =========================================================================
     # STATE MACHINE CONTROL
@@ -1810,6 +3100,9 @@ Return ONLY the README content, no code blocks."""
         Returns:
             True if completed successfully, False otherwise
         """
+        # DEBUG: Log what we received from orchestrator
+        self.logger.info(f"CLI_AGENT_RUN - Received user_request: {repr(user_request[:300])}")
+
         self._print_header(f"🤖 CLI CODING AGENT v{VERSION}")
         print(f"Project: {self.project_name}")
         print(f"Output: {self.project_dir}")
@@ -1827,6 +3120,8 @@ Return ONLY the README content, no code blocks."""
         # Phase execution loop
         phase_handlers = {
             DevelopmentPhase.REQUIREMENTS: lambda: self._phase_requirements(user_request),
+            DevelopmentPhase.COMPLEXITY_ASSESSMENT: self._phase_complexity_assessment,
+            DevelopmentPhase.SIMPLE_GENERATION: self._phase_simple_generation,
             DevelopmentPhase.PLANNING: self._phase_planning,
             DevelopmentPhase.ARCHITECTURE: self._phase_architecture,
             DevelopmentPhase.DESIGN: self._phase_design,
@@ -1836,13 +3131,60 @@ Return ONLY the README content, no code blocks."""
             DevelopmentPhase.TESTING: self._phase_testing,
         }
 
+        # Phases that trigger documentation generation
+        doc_phases = {
+            DevelopmentPhase.PLANNING,
+            DevelopmentPhase.ARCHITECTURE,
+            DevelopmentPhase.DESIGN,
+        }
+
+        # Phases to skip for SIMPLE complexity (after SIMPLE_GENERATION, jump to DEBUGGING)
+        simple_skip_phases = {
+            DevelopmentPhase.PLANNING,
+            DevelopmentPhase.ARCHITECTURE,
+            DevelopmentPhase.DESIGN,
+            DevelopmentPhase.INTERFACE_GENERATION,
+            DevelopmentPhase.CODING,
+        }
+
         while self.current_phase != DevelopmentPhase.COMPLETE:
+            # Skip SIMPLE_GENERATION if not SIMPLE complexity
+            if self.current_phase == DevelopmentPhase.SIMPLE_GENERATION:
+                if self.context.complexity != ProjectComplexity.SIMPLE.value:
+                    self.logger.debug(f"Skipping SIMPLE_GENERATION (complexity={self.context.complexity})")
+                    self._next_phase()
+                    continue
+
+            # Skip full project phases if SIMPLE complexity
+            if self.current_phase in simple_skip_phases:
+                if self.context.complexity == ProjectComplexity.SIMPLE.value:
+                    self.logger.info(f"SKIP: {self.current_phase.name} (SIMPLE complexity)")
+                    print(f"   ⏭️ Skipping {self.current_phase.name} (SIMPLE project)")
+                    self._next_phase()
+                    continue
+
             handler = phase_handlers.get(self.current_phase)
+            current_phase_name = self.current_phase.name
+
             if handler:
-                success = handler()
+                self.logger.info(f"EXECUTING PHASE: {current_phase_name}")
+                # Check if handler is async and await it if needed
+                import inspect
+                import asyncio
+                if inspect.iscoroutinefunction(handler):
+                    success = asyncio.run(handler())
+                else:
+                    success = handler()
                 if not success:
-                    self.logger.error(f"Phase {self.current_phase.name} failed")
+                    self.logger.error(f"PHASE FAILED: {current_phase_name} returned False")
+                    print(f"   ❌ Phase {current_phase_name} failed - continuing to salvage")
                     # Continue anyway to see what we can salvage
+                else:
+                    self.logger.info(f"PHASE COMPLETE: {current_phase_name}")
+
+            # Trigger documentation hooks for key phases
+            if self.current_phase in doc_phases:
+                self._trigger_doc_hooks_sync(current_phase_name)
 
             self._next_phase()
 
@@ -1851,10 +3193,20 @@ Return ONLY the README content, no code blocks."""
                 if self._should_iterate():
                     continue  # Loop back
 
-        # Generate or update README.md
+        # Generate comprehensive documentation at completion
         if self.context.generated_files:
             self._print_header("📄 DOCUMENTATION", "-")
+            # Trigger COMPLETE phase documentation (generates all docs)
+            self._trigger_doc_hooks_sync('COMPLETE')
+            # Also run the basic README update as fallback
             self._generate_or_update_readme()
+
+        # Setup Python environment (venv + dependencies) - MANDATORY for Python projects
+        if self.context.generated_files:
+            self._print_header("🐍 PYTHON ENVIRONMENT SETUP", "-")
+            env_success = self._setup_python_environment()
+            if not env_success:
+                self.logger.warning("Python environment setup had issues")
 
         # Final summary
         self._print_header("✅ DEVELOPMENT COMPLETE", "=")
@@ -1960,8 +3312,8 @@ Examples:
     parser.add_argument(
         "--max-iterations",
         type=int,
-        default=10,
-        help="Maximum development iterations (default: 10)"
+        default=2,
+        help="Maximum development iterations (default: 2)"
     )
 
     parser.add_argument(

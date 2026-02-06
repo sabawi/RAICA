@@ -1,3 +1,103 @@
+# ⛔🛑⚠️ MANDATORY PRE-FLIGHT HOOK - READ BEFORE ANY CODE CHANGE ⛔🛑⚠️
+
+## THIS HOOK MUST BE PROCESSED BEFORE EVERY CODE MODIFICATION
+
+**STOP. Before writing ANY code, you MUST verify your approach passes this checklist.**
+
+### THE CARDINAL RULE: LLM-DRIVEN ITERATION LOOP
+
+Every solution in RAICA MUST follow this pattern:
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. RAICA prompts LLM with context + request                │
+│  2. LLM responds with STRUCTURED DATA (JSON) telling        │
+│     RAICA exactly what to do                                │
+│  3. RAICA executes LLM's instructions (no interpretation!)  │
+│  4. RAICA feeds results back to LLM                         │
+│  5. REPEAT until LLM says task is complete                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### ⛔ FORBIDDEN - INSTANT REJECTION IF YOU DO ANY OF THESE:
+
+| VIOLATION | EXAMPLE | WHY IT'S WRONG |
+|-----------|---------|----------------|
+| **Hardcoded lists** | `KEYWORDS = ["fix", "debug", ...]` | RAICA doesn't decide meaning, LLM does |
+| **Pattern matching** | `if "install" in request:` | RAICA doesn't interpret text, LLM does |
+| **Text parsing for meaning** | Filtering "explanation" lines from LLM output | LLM should return JSON, not prose to parse |
+| **Special case handlers** | `if error_type == "ImportError":` | LLM handles ALL cases generically |
+| **Fallback defaults** | `return ['ls -la']` when LLM fails | Fail explicitly, don't guess |
+| **Keyword-based routing** | `WEB_SEARCH_KEYWORDS = [...]` | LLM classifies semantically |
+
+### ✅ REQUIRED - YOUR CODE MUST DO ALL OF THESE:
+
+| REQUIREMENT | IMPLEMENTATION |
+|-------------|----------------|
+| **LLM returns structured JSON** | `{"commands": [...], "next_action": "..."}` |
+| **RAICA only parses JSON** | `data = json.loads(response)` - no text interpretation |
+| **RAICA executes blindly** | Whatever LLM says, RAICA does (within safety limits) |
+| **Results fed back to LLM** | LLM sees output and decides next step |
+| **LLM decides completion** | `{"status": "complete"}` not RAICA guessing |
+
+### 🔍 PRE-FLIGHT CHECKLIST (Mental verification before coding):
+
+Before writing code, answer these questions:
+
+1. **"Am I adding a hardcoded list?"** → If YES, STOP. Make LLM decide.
+2. **"Am I parsing text to extract meaning?"** → If YES, STOP. Make LLM return JSON.
+3. **"Am I handling a specific case differently?"** → If YES, STOP. Generalize.
+4. **"Does RAICA interpret/decide anything?"** → If YES, STOP. LLM interprets/decides.
+5. **"Would a new edge case break this?"** → If YES, STOP. You're not generalized.
+6. **"Am I writing complex logic?"** → If YES, STOP. RAICA is scaffolding, LLM does heavy lifting.
+
+### ⚡ THE MINIMAL SCAFFOLDING PRINCIPLE:
+
+**RAICA IS NOT A TRADITIONAL FRAMEWORK - IT'S A SCAFFOLD FOR THE LLM**
+
+```
+┌────────────────────────────────────────────────────────┐
+│  RAICA's Role: MINIMAL SCAFFOLDING                     │
+│  - Call LLM with context                               │
+│  - Execute what LLM says                               │
+│  - Feed results back                                   │
+│  - Loop until complete                                 │
+│                                                         │
+│  LLM's Role: EVERYTHING ELSE                           │
+│  - Design                                              │
+│  - Code                                                │
+│  - Parse                                               │
+│  - Analyze                                             │
+│  - Fix                                                 │
+│  - Decide                                              │
+└────────────────────────────────────────────────────────┘
+```
+
+**NEVER OVERCODE - Examples:**
+
+| ❌ OVERCODING | ✅ MINIMAL SCAFFOLDING |
+|--------------|------------------------|
+| Write 60-line test parser with complex logic | Run test file, return output. LLM parses. |
+| Write regex patterns to extract code | Ask LLM to extract code in JSON |
+| Write error categorization logic | Show LLM the error, it categorizes |
+| Write validation checks for fixes | Apply fix, show LLM the result, it validates |
+| Write output formatters | LLM formats output as part of response |
+
+**The Test: "Could this be a simple LLM prompt instead?"**
+- If YES → Make it an LLM prompt
+- If NO → You need minimal scaffolding (loop, execute, return)
+
+### 🧪 THE GENERALIZATION TEST:
+
+```
+If tomorrow a completely new, never-seen-before request type appears,
+will your code handle it correctly?
+
+YES → Good, LLM will figure it out
+NO  → Bad, you hardcoded something
+```
+
+---
+
 - Operation Plan for updating and committing the project code: 1) Read and understand all project directive and rules in CLAUDE.md file, project configurations, /doc documentations to make sure you understand the baseline of the project 2) Review the development work status: What was accomplished in fixes, features, modifications for this the current update 3) Take count of all tracked files changes, added files, and configuration changes 4) Decisions: a) Does the documentaions need update as a result of the modifications?  b) does the install/upgrade process or scripts need update? Make a list of action plans to make the needed update to a, b, or both 5) Was thorough testing (Unit/Functional Verifications/ System) done? If it was not, build and run the needed testing scenaios. Once passed you are readu to the last 2 steps 6) Does the version number needs updating? if yes, increment the product version number 7) Stage the files correctly 8) Commit and push to github
 - YOU DO NOT NEED MY PERMISSION to view the logs or view any files in the project, YOU WILL NEED PERMISSION TO MAKE CODE OR CONFIGURATION CHANGES IN THE PROJECT FILES. ALWAYS EXPLAIN WHAT YOU ARE DOING AND WHY.
 - ALL DOCUMENTATIONS AND HELP INFORMATION SHOULD GO UNER THE ./docs DIRECTORY UNDER APPROPRIATE LOCATION AND POSSIBLY MERGED WIHIN THE MAIN DOCUMENTATION FILES
@@ -89,6 +189,132 @@ tests/
 - ENFORCE fail-fast behavior when configuration is missing
 
 **Before making ANY configuration changes, read /docs/PROJECT_CONFIGURATION_DIRECTIVE.md**
+
+# 🧠 MANDATORY GENERALIZATION DIRECTIVE 🧠
+## ZERO TOLERANCE FOR BAND-AID FIXES AND HARDCODED KNOWLEDGE
+
+**CRITICAL PRINCIPLE:** When building intelligent systems (agents, debuggers, analyzers), NEVER hardcode specific-case handling. Instead, provide the LLM with context and let it reason.
+
+### GENERALIZATION RULES (NO EXCEPTIONS):
+
+1. **NO BAND-AID FIXES FOR SPECIFIC CASES**
+   - ❌ WRONG: Hardcoding a list of Python built-in modules
+   - ✅ RIGHT: LLM asks "check if module X is built-in" → system runs `python -c "import sys; print('X' in sys.stdlib_module_names)"`
+   - ❌ WRONG: Pattern-matching specific error types to specific handlers
+   - ✅ RIGHT: LLM analyzes ANY error and requests what it needs to diagnose
+
+2. **LLM ASKS FOR WHAT IT NEEDS**
+   - When the LLM doesn't know something, it should REQUEST information
+   - System provides diagnostic capabilities: run commands, read files, search, etc.
+   - LLM reasons from gathered evidence, not from hardcoded knowledge
+
+3. **ITERATIVE DIAGNOSIS OVER SINGLE-SHOT FIXES**
+   - First ask: "What information do you need to diagnose this?"
+   - Execute diagnostic requests
+   - Feed results back
+   - Repeat until LLM has enough context to fix
+
+4. **DYNAMIC DISCOVERY OVER STATIC LISTS**
+   - ❌ WRONG: `BUILTIN_MODULES = ["os", "sys", "json", ...]`
+   - ✅ RIGHT: `check_module("os")` → runs actual Python check
+   - ❌ WRONG: `if error_type == "ImportError": do_import_fix()`
+   - ✅ RIGHT: LLM sees error, requests file contents, proposes fix
+
+5. **CONTEXT + PROMPT > HARDCODED LOGIC**
+   - Provide rich context (files, symbols, project structure, error traces)
+   - Let LLM reason about the problem
+   - Trust the LLM to figure out edge cases you didn't anticipate
+
+### ENFORCEMENT:
+- REJECT any code that handles specific cases with hardcoded logic
+- REQUIRE diagnostic/discovery mechanisms instead of static knowledge
+- VERIFY that LLM-driven components can request information dynamically
+- TEST with novel error types to ensure generalization works
+
+### THE GENERALIZATION TEST:
+Ask yourself: "If a completely new error type appears that I never anticipated, will this code handle it?"
+- If NO → You're doing pattern-matching, refactor to generalization
+- If YES → You're letting the LLM reason, good job
+
+# 🎯 MANDATORY REQUEST INTERPRETATION DIRECTIVE 🎯
+## LLM INTERPRETS USER INTENT - NOT THE USER
+
+**CRITICAL PRINCIPLE:** RAICA must NEVER require users to categorize their request (debug/fix/enhance/create). The LLM interprets intent from context + prompt.
+
+### THE PROBLEM (What NOT to do):
+```
+❌ WRONG: User must prefix with "Fix ...", "Debug ...", "Enhance ...", "Create ..."
+❌ WRONG: Different code paths based on user's command choice
+❌ WRONG: Forcing user to decide if "Pi key shows undefined" is a bug or missing feature
+```
+
+### THE SOLUTION (What TO do):
+
+**STEP 1: Gather Project Context**
+- Go to project directory (specified or current)
+- Build/load full context: files, structure, docs, logs, symbols, directives
+- If no project exists, that's context too (implies "create new")
+
+**STEP 2: LLM Interprets Request**
+System prompt to LLM:
+```
+Based on the provided project context (or lack of it), analyze this user request
+and determine the most likely intention:
+
+User request: "{user_prompt}"
+
+1. What is the user trying to accomplish?
+2. Based on the project context, is this:
+   - A FIX? (something exists but is broken)
+   - An ENHANCEMENT? (something exists, user wants it improved/extended)
+   - A NEW FEATURE? (something doesn't exist, user wants it added)
+   - A NEW PROJECT? (no project exists or user wants fresh start)
+3. What specific information do you need to proceed?
+
+Respond with your interpretation and information requests.
+```
+
+**STEP 3: Iterative Context Gathering**
+- LLM requests what it needs (read files, run commands, search, etc.)
+- System executes requests
+- LLM refines understanding
+- Repeat until LLM has enough context to proceed
+
+**STEP 4: Execute with Confirmed Intent**
+- LLM proceeds with the interpreted intent
+- No rigid "debug mode" vs "enhance mode" - just intelligent action
+
+### EXAMPLE:
+User prompt: "The Pi and e keys on the keypad produce undefined values, make them generate their actual values"
+
+**WITHOUT Context:**
+- Could be fix OR enhancement - ambiguous
+
+**WITH Context (LLM reads keypad.py):**
+```python
+# Found in keypad.py:
+KEYS = {"Pi": None, "e": None, "sqrt": math.sqrt}  # Pi and e are None!
+```
+LLM interpretation: "This is a FIX. The keys exist but have None values instead of math.pi and math.e. I need to update keypad.py lines 5-6."
+
+**OR WITH Different Context:**
+```python
+# Found in keypad.py:
+KEYS = {"sqrt": math.sqrt, "sin": math.sin}  # No Pi or e keys!
+```
+LLM interpretation: "This is an ENHANCEMENT. The user wants to ADD new keys for Pi and e. I need to add entries to the KEYS dict."
+
+### ENFORCEMENT:
+- REJECT any code that requires user to categorize request type
+- REQUIRE LLM interpretation step before any action
+- VERIFY that identical prompts can result in different actions based on context
+- TEST with ambiguous requests to ensure LLM interprets correctly
+
+### THE INTERPRETATION TEST:
+Ask yourself: "Does this code path change based on magic keywords in user's prompt?"
+- If YES → You're forcing user categorization, refactor
+- If NO → You're letting LLM interpret from context, good job
+
 - WHEN PROMPTED TO INVESTIGATE A BUG/PROBLEM ALWAYS START BY REVIEWING THE LOGS AND COMPARING IT TO THE EXPECTED SERVER BEHAVIOUR ACCORDING THE ARCHITECURE AND DESIGN
 - NEVER ASSUMES THE FIX WORKS UNLESS THE HUMAN USER TELLS YOU IT DOES
 - ALWAYS FOLLOW THE DOCUMENTED PROJECT DIRECTORY ORGANIZATION WHEN CREATING AND MOVING FILES

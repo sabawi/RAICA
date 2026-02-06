@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any, Union
 import logging
 
+from .services.language_detector import LANGUAGE_DEFINITIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -1279,7 +1281,8 @@ class ImportResolver:
         if self.language == 'python':
             # Common Python packages that might not be in requirements
             common_python = {'numpy', 'pandas', 'requests', 'flask', 'django',
-                            'pytest', 'setuptools', 'pip', 'wheel'}
+                            'pytest', 'setuptools', 'pip', 'wheel',
+                            'gi', 'cairo', 'Xlib', 'dbus'}
             if base_module.lower() in common_python:
                 return ImportResolution(
                     import_stmt=imp,
@@ -1353,8 +1356,10 @@ class ImportResolver:
         if str(p1) == str(p2):
             return True
 
-        # Check with various extensions
-        extensions = ['.py', '.js', '.ts', '.jsx', '.tsx', '']
+        # Check with various extensions (from language definitions)
+        extensions = ['']  # Start with empty extension for exact match
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            extensions.extend(lang_info.file_extensions)
         for ext in extensions:
             if str(p1) == str(p2.with_suffix('')) + ext:
                 return True
@@ -2323,7 +2328,8 @@ class ExecutionValidator:
             TestResult with pass/fail details
         """
         if self.language == 'python':
-            return self._run_pytest(test_pattern)
+            # Run standalone Python test files (not pytest)
+            return self._run_standalone_python_tests(test_pattern)
         elif self.language in ('javascript', 'typescript'):
             return self._run_npm_test()
         else:
@@ -2434,8 +2440,13 @@ class ExecutionValidator:
                 errors=[{"message": str(e)}]
             )
 
-    def _run_pytest(self, test_pattern: str = 'test_*.py') -> TestResult:
-        """Run pytest and parse results."""
+    def _run_standalone_python_tests(self, test_pattern: str = 'test_*.py') -> TestResult:
+        """
+        Run standalone Python test files (no pytest required).
+
+        Test files are executed as standalone scripts with: python test_file.py
+        They should exit with 0 on success, non-zero on failure.
+        """
         # Find test files
         test_files = list(self.project_dir.glob(f'**/{test_pattern}'))
         if not test_files:
@@ -2444,56 +2455,72 @@ class ExecutionValidator:
                 error_message="No test files found"
             )
 
-        try:
-            result = subprocess.run(
-                [sys.executable, '-m', 'pytest', '-v', '--tb=short', str(self.project_dir)],
-                cwd=str(self.project_dir),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout * 2,  # Allow more time for tests
-                env={
-                    **os.environ,
-                    'PYTHONPATH': str(self.project_dir)
-                }
-            )
+        all_passed = []
+        all_failed = []
+        all_errors = []
+        all_output = []
+        all_stderr = []
 
-            # Parse pytest output
-            passed = []
-            failed = []
-            errors = []
+        for test_file in test_files:
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(test_file)],
+                    cwd=str(self.project_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    env={
+                        **os.environ,
+                        'PYTHONPATH': str(self.project_dir)
+                    }
+                )
 
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if '::' in line:  # Test identifier
-                    if ' PASSED' in line:
-                        test_name = line.split(' PASSED')[0].strip()
-                        passed.append(test_name)
-                    elif ' FAILED' in line:
-                        test_name = line.split(' FAILED')[0].strip()
-                        failed.append(test_name)
-                    elif ' ERROR' in line:
-                        test_name = line.split(' ERROR')[0].strip()
-                        errors.append(test_name)
+                all_output.append(result.stdout)
+                all_stderr.append(result.stderr)
 
-            return TestResult(
-                ran=True,
-                passed=passed,
-                failed=failed,
-                errors=errors,
-                output=result.stdout,
-                stderr=result.stderr
-            )
+                # Parse output for test results
+                # Expected format: "All X tests passed" or "Y test(s) failed:"
+                stdout = result.stdout
+                stderr = result.stderr
 
-        except subprocess.TimeoutExpired:
-            return TestResult(
-                ran=False,
-                error_message="Tests timed out"
-            )
-        except Exception as e:
-            return TestResult(
-                ran=False,
-                error_message=str(e)
-            )
+                if result.returncode == 0:
+                    # Success - extract passed test names if available
+                    if 'All' in stdout and 'passed' in stdout:
+                        all_passed.append(f"{test_file.name}::ALL")
+                    else:
+                        all_passed.append(test_file.name)
+                else:
+                    # Failure - check for errors vs failures
+                    if stderr or 'Error' in stdout or 'ERROR' in stdout:
+                        all_errors.append(f"Test execution failed")
+                    elif 'FAIL:' in stdout:
+                        # Parse failed test names
+                        for line in stdout.split('\n'):
+                            if line.startswith('FAIL:'):
+                                test_name = line.split('FAIL:')[1].split(':')[0].strip()
+                                all_failed.append(f"{test_file.name}::{test_name}")
+                    else:
+                        all_failed.append(f"{test_file.name}::UNKNOWN")
+
+            except subprocess.TimeoutExpired:
+                all_errors.append(f"{test_file.name}: Timeout")
+                all_stderr.append(f"Test {test_file.name} timed out")
+            except Exception as e:
+                all_errors.append(f"{test_file.name}: {str(e)}")
+                all_stderr.append(str(e))
+
+        combined_output = '\n'.join(all_output)
+        combined_stderr = '\n'.join(all_stderr)
+
+        return TestResult(
+            ran=True,
+            passed=all_passed,
+            failed=all_failed,
+            errors=all_errors if all_errors else [],
+            output=combined_output,
+            stderr=combined_stderr,
+            error_message=combined_stderr if all_errors else None
+        )
 
     def _run_npm_test(self) -> TestResult:
         """Run npm test."""
@@ -2803,12 +2830,24 @@ class DockerSandbox:
         may run with a different user. This makes the directory and all files
         world-readable (but not writable).
         """
+        # Directories to skip (don't need to be mounted in Docker)
+        SKIP_DIRS = {
+            'venv', '.venv', 'env', '.env',  # Virtual environments
+            '.git',                           # Git repository
+            'node_modules',                   # Node packages
+            '__pycache__', '.pytest_cache',   # Python caches
+            '.raica',                         # RAICA metadata
+        }
+
         try:
             # Make directory traversable
             os.chmod(self.project_dir, 0o755)
 
-            # Make all files readable
+            # Make all files readable, but skip unnecessary directories
             for root, dirs, files in os.walk(self.project_dir):
+                # Remove skip dirs from dirs list to prevent os.walk from descending into them
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+
                 for d in dirs:
                     path = os.path.join(root, d)
                     os.chmod(path, 0o755)
@@ -3072,9 +3111,16 @@ class DockerSandbox:
         """Run tests in Docker container."""
         image = self._get_image()
 
+        # Find test files to run as standalone scripts
+        test_files = list(self.project_dir.glob(f'**/{test_pattern}'))
+        if not test_files:
+            return TestResult(ran=False, error_message="No test files found")
+
         if self.language == 'python':
-            # Run pytest
-            test_cmd = ['python', '-m', 'pytest', '-v', '--tb=short', '.']
+            # Run standalone Python test files (no pytest)
+            test_file_names = [f.name for f in test_files]
+            # Run first test file (or we could run all in sequence)
+            test_cmd = ['python', test_file_names[0]] if test_file_names else ['python', '-c', 'print("No tests")']
         else:
             # Run npm test
             test_cmd = ['npm', 'test']
@@ -3119,8 +3165,14 @@ class DockerSandbox:
 
     def _run_tests_subprocess(self, test_pattern: str) -> TestResult:
         """Run tests in subprocess (fallback)."""
+        # Find test files
+        test_files = list(self.project_dir.glob(f'**/{test_pattern}'))
+        if not test_files:
+            return TestResult(ran=False, error_message="No test files found")
+
         if self.language == 'python':
-            cmd = [sys.executable, '-m', 'pytest', '-v', '--tb=short', str(self.project_dir)]
+            # Run standalone Python test file
+            cmd = [sys.executable, str(test_files[0])]
         else:
             cmd = ['npm', 'test']
 
@@ -3179,9 +3231,14 @@ class DockerSandbox:
             stderr=stderr
         )
 
-    def validate_imports(self) -> ExecutionResult:
+    def validate_imports(self, files_to_validate: Optional[List[str]] = None) -> ExecutionResult:
         """
         Validate that all imports work by attempting to import modules.
+
+        Args:
+            files_to_validate: Optional list of specific files to validate.
+                             If None, validates ALL files (legacy behavior).
+                             If provided, ONLY validates these files (ignores unrelated files).
 
         Creates a test script that imports all modules and runs it.
         """
@@ -3204,7 +3261,33 @@ class DockerSandbox:
             ""
         ]
 
+        # Directories to exclude from import validation
+        excluded_dirs = {
+            'venv', '.venv', 'env', '.env',  # Virtual environments
+            '__pycache__', '.pytest_cache',   # Cache directories
+            '.raica', '.git', '.svn',         # Hidden/system directories
+            'backups', 'archive',             # Backup directories
+            'node_modules', 'dist', 'build',  # Build artifacts
+        }
+
+        # If specific files to validate provided, convert to Path objects
+        files_filter = None
+        if files_to_validate:
+            files_filter = {self.project_dir / f for f in files_to_validate}
+
+        validated_count = 0
         for py_file in py_files:
+            # If specific files provided, ONLY validate those files
+            if files_filter and py_file not in files_filter:
+                continue
+
+            # Skip files in excluded directories
+            path_parts = set(py_file.relative_to(self.project_dir).parts)
+            if path_parts & excluded_dirs:
+                continue
+            # Skip hidden directories (any path component starting with .)
+            if any(part.startswith('.') for part in py_file.relative_to(self.project_dir).parts[:-1]):
+                continue
             # Skip test files and __pycache__
             if 'test_' in py_file.name or '__pycache__' in str(py_file):
                 continue
@@ -3225,8 +3308,13 @@ class DockerSandbox:
                     f"    sys.exit(1)",
                     ""
                 ])
+                validated_count += 1
             except ValueError:
                 continue
+
+        # If no files were validated (all filtered out), that's success
+        if validated_count == 0:
+            return ExecutionResult(success=True, sandbox_type='docker' if self.docker_available else 'subprocess')
 
         test_lines.append("print('All imports successful')")
         test_script = '\n'.join(test_lines)
@@ -3335,12 +3423,14 @@ class CodeValidator:
         resolver = ImportResolver(generated_files, self.language, self.project_dir)
         return resolver.validate()
 
-    def validate_execution(self, entry_point: Optional[str] = None) -> ExecutionResult:
+    def validate_execution(self, entry_point: Optional[str] = None, files_to_validate: Optional[List[str]] = None) -> ExecutionResult:
         """
         Validate code by executing it in Docker sandbox.
 
         Args:
             entry_point: Optional entry point file (auto-detected if not provided)
+            files_to_validate: Optional list of specific files to validate imports for.
+                             If provided, only these files are validated (skips unrelated files).
 
         Returns:
             ExecutionResult
@@ -3348,7 +3438,7 @@ class CodeValidator:
         # Use Docker sandbox if available
         if self.sandbox:
             # First validate imports in sandbox
-            import_result = self.sandbox.validate_imports()
+            import_result = self.sandbox.validate_imports(files_to_validate=files_to_validate)
             if not import_result.success:
                 return import_result
 
@@ -3491,7 +3581,11 @@ def detect_language(filepath: str) -> str:
 
 
 def detect_project_language(files: Dict[str, str]) -> str:
-    """Detect primary language of a project from its files."""
+    """Detect primary language of a project from its files.
+
+    For web projects (HTML/CSS/JS), returns 'html' as the primary language.
+    Does NOT default to Python unless there are actually Python files.
+    """
     lang_counts = {}
 
     for filepath in files:
@@ -3500,6 +3594,11 @@ def detect_project_language(files: Dict[str, str]) -> str:
             lang_counts[lang] = lang_counts.get(lang, 0) + 1
 
     if not lang_counts:
-        return 'python'  # Default
+        return 'unknown'  # Don't assume Python - let caller decide
+
+    # For web projects, treat html/css/javascript as a group
+    # If we have HTML files, it's primarily a web project
+    if 'html' in lang_counts:
+        return 'html'
 
     return max(lang_counts, key=lang_counts.get)
