@@ -16,16 +16,19 @@ except ImportError:
 async def discover_user_tools(tools_directory: str = None) -> List[BaseUserTool]:
     """
     Discover and load all user-defined tools from the specified directory.
-    
+
     Args:
         tools_directory: Path to the directory containing user tools.
-                        Defaults to 'user_tools' in the current working directory.
-    
+                        Defaults to 'user_tools' in the RAICA installation directory.
+
     Returns:
         List of instantiated user tool objects
     """
     if tools_directory is None:
-        tools_directory = os.path.join(os.getcwd(), "user_tools")
+        # Default to RAICA installation directory, not current working directory
+        # This ensures user_tools are system-wide, not per-project
+        raica_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tools_directory = os.path.join(raica_root, "user_tools")
     
     tools = []
     
@@ -35,6 +38,9 @@ async def discover_user_tools(tools_directory: str = None) -> List[BaseUserTool]
     
     # Scan for Python files in the tools directory
     for filename in os.listdir(tools_directory):
+        # CLAUDE.MD EXEMPTION: File extension check is legitimate file system filtering,
+        # not semantic classification. This is technical fact (Python file format),
+        # not interpretation that LLM should do.
         if filename.endswith('.py') and not filename.startswith('_'):
             # Skip base class, discovery, and utility files
             if filename in ['base_user_tool.py', 'tool_discovery.py', 'citation_mastery.py']:
