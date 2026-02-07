@@ -332,29 +332,40 @@ Your task: Determine what type of execution this request requires.
 
 EXECUTION TYPES:
 
-1. ONE_SHOT_ACTION - Actions with SIDE EFFECTS that should execute ONCE:
-   - Send email, post message, publish content, tweet
-   - Delete file, drop database, kill process, remove user
-   - Download file, upload file, transfer data
-   - curl POST, API calls that create/modify resources
-   - Any action that changes external state
+1. ONE_SHOT_ACTION - **SINGLE** action with SIDE EFFECTS:
+   - "Send this email" (one step: send)
+   - "Post this tweet" (one step: post)
+   - "Delete this file" (one step: delete)
+   - "Download this URL" (one step: download)
 
-   KEY: If action has SIDE EFFECTS (changes state), it's ONE_SHOT!
+   KEY: SINGLE action that changes external state!
+   ⚠️ If request needs MULTIPLE STEPS, it's NOT ONE_SHOT!
+
+   Examples of what is NOT ONE_SHOT:
+   - "Research X and email results" → 2 steps (research + email) → INVESTIGATIVE_TASK
+   - "Find data and save to file" → 2 steps (find + save) → INVESTIGATIVE_TASK
+   - "Check status and notify me" → 2 steps (check + notify) → INVESTIGATIVE_TASK
 
    Phases: ["EXECUTE"]
    Retry: NO (will cause duplicates - email sent 3 times!)
    Verification: TRUST_EXIT_CODE (exit 0 = success, done!)
 
-2. INVESTIGATIVE_TASK - Read-only information gathering:
+2. INVESTIGATIVE_TASK - Multi-step workflows (can end with side effect):
    - Check system status, read files, search for info
    - Diagnose issue, analyze logs, inspect config
-   - Research, lookup, query (no state changes)
+   - Research, lookup, query (read-only)
+   - **Multi-step tasks:** "Research X and email it", "Find data and save it"
 
-   KEY: Read-only operations safe to retry.
+   KEY: Multiple sequential steps, even if last step has side effect!
+
+   Examples:
+   - "Look up latest news and email it" → INVESTIGATIVE_TASK (research + email = 2 steps)
+   - "Find all TODO items and save to file" → INVESTIGATIVE_TASK (find + save = 2 steps)
+   - "Check server status and notify me" → INVESTIGATIVE_TASK (check + notify = 2 steps)
 
    Phases: ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"]
-   Retry: YES (no side effects)
-   Verification: LLM_SEMANTIC (did we get the info?)
+   Retry: YES (each step can retry independently)
+   Verification: LLM_SEMANTIC (did we accomplish the full workflow?)
 
 3. CODE_MODIFICATION - Modify existing code:
    - Fix bug, add feature, improve code, refactor
@@ -370,16 +381,22 @@ EXECUTION TYPES:
    Retry: YES (idempotent)
    Verification: EXISTENCE_CHECK
 
-🚨 CRITICAL - SIDE EFFECTS DETECTION:
+🚨 CRITICAL - MULTI-STEP vs SINGLE-STEP:
 
-Does this request involve ANY of these?
-- Sending/transmitting (email, message, post, tweet, publish)
-- Deleting/destroying (rm, drop, delete, kill, remove)
-- Creating external state (API POST, database INSERT)
-- Financial transactions
-- User notifications
+Count the steps needed:
+1. One step? → ONE_SHOT_ACTION
+   Examples: "Send email", "Post tweet", "Delete file"
 
-If YES → ONE_SHOT_ACTION (no retry!)
+2. Multiple steps? → INVESTIGATIVE_TASK (even if last step has side effects!)
+   Examples:
+   - "Research news AND email it" (2 steps: research + email)
+   - "Find data AND save it" (2 steps: find + save)
+   - "Check status AND notify me" (2 steps: check + notify)
+
+⚠️ SIDE EFFECTS ALONE DON'T DETERMINE STRATEGY!
+The NUMBER OF STEPS determines strategy:
+- Single step with side effect → ONE_SHOT_ACTION
+- Multiple steps (even if last has side effect) → INVESTIGATIVE_TASK
 If NO → Choose based on read/write nature
 
 EXAMPLES:
