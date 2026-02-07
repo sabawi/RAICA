@@ -407,8 +407,9 @@ Request: "Check if nginx is running"
 Return ONLY valid JSON, no other text."""
 
         try:
+            # Use classification model for strategy selection (stronger model for critical decisions)
             response = await asyncio.to_thread(
-                self.llm_client.generate, prompt, max_tokens=600
+                self.llm_client.generate_for_classification, prompt, max_tokens=600
             )
             content = response.content if hasattr(response, 'content') else str(response)
 
@@ -1513,8 +1514,9 @@ Why wrong? That's exactly what INVESTIGATE with get_tool_details is for!
 Return ONLY the JSON object, no other text."""
 
         try:
+            # Use classification model for decision-making (stronger model for critical decisions)
             response = await asyncio.to_thread(
-                self.llm_client.generate, prompt, max_tokens=1000
+                self.llm_client.generate_for_classification, prompt, max_tokens=1000
             )
             content = response.content if hasattr(response, 'content') else str(response)
 
