@@ -367,6 +367,11 @@ EXECUTION TYPES:
    Retry: YES (each step can retry independently)
    Verification: LLM_SEMANTIC (did we accomplish the full workflow?)
 
+   ⚠️ max_retries GUIDANCE:
+   - Simple check (1-2 steps): max_retries: 3
+   - Multi-step workflow (3-5 steps): max_retries: 10
+   - Complex workflow (6+ steps): max_retries: 15
+
 3. CODE_MODIFICATION - Modify existing code:
    - Fix bug, add feature, improve code, refactor
 
@@ -415,10 +420,20 @@ Request: "Check if nginx is running"
 {{
   "execution_type": "INVESTIGATIVE_TASK",
   "phases_needed": ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
-  "retry_policy": {{"enabled": true, "max_retries": 3, "reason": "Read-only, safe to retry"}},
+  "retry_policy": {{"enabled": true, "max_retries": 3, "reason": "Simple check, 1-2 steps"}},
   "verification_strategy": "LLM_SEMANTIC",
   "failure_handling": "RETRY_WITH_DIFFERENT_APPROACH",
   "reasoning": "Read-only status check, safe to retry."
+}}
+
+Request: "Look up the latest news and email it to me"
+{{
+  "execution_type": "INVESTIGATIVE_TASK",
+  "phases_needed": ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
+  "retry_policy": {{"enabled": true, "max_retries": 10, "reason": "Multi-step workflow: get tool details → fetch news → get email tool details → send email (4+ iterations needed)"}},
+  "verification_strategy": "LLM_SEMANTIC",
+  "failure_handling": "RETRY_WITH_DIFFERENT_APPROACH",
+  "reasoning": "Multi-step workflow with tool delegation. Needs multiple iterations for investigation → execution cycles."
 }}
 
 Return ONLY valid JSON, no other text."""
@@ -449,7 +464,7 @@ Return ONLY valid JSON, no other text."""
                 return ExecutionStrategy(
                     execution_type="INVESTIGATIVE_TASK",
                     phases_needed=["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
-                    retry_policy=RetryPolicy(enabled=True, max_retries=3, reason="Fallback strategy"),
+                    retry_policy=RetryPolicy(enabled=True, max_retries=10, reason="Fallback strategy - assume multi-step workflow"),
                     verification_strategy="LLM_SEMANTIC",
                     failure_handling="RETRY_WITH_DIFFERENT_APPROACH",
                     reasoning="Fallback - could not determine strategy"
@@ -461,7 +476,7 @@ Return ONLY valid JSON, no other text."""
             return ExecutionStrategy(
                 execution_type="INVESTIGATIVE_TASK",
                 phases_needed=["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
-                retry_policy=RetryPolicy(enabled=True, max_retries=3, reason="Error in strategy selection"),
+                retry_policy=RetryPolicy(enabled=True, max_retries=10, reason="Error in strategy selection - assume multi-step workflow"),
                 verification_strategy="LLM_SEMANTIC",
                 failure_handling="RETRY_WITH_DIFFERENT_APPROACH",
                 reasoning=f"Error selecting strategy: {e}"
