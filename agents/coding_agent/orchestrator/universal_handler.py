@@ -1576,7 +1576,6 @@ Return ONLY the JSON object, no other text."""
 
                         if not tool_name:
                             # Try to extract from reasoning
-                            import re
                             match = re.search(r"'([a-z_]+)'", reasoning)
                             if match:
                                 tool_name = match.group(1)
