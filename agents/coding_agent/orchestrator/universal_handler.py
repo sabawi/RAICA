@@ -1963,17 +1963,77 @@ Return ONLY the JSON object, no other text."""
             return {'success': True}
 
         # ═══════════════════════════════════════════════════════════════════════
-        # INVESTIGATE VERIFICATION - Trust the result (MINIMAL SCAFFOLDING)
+        # INVESTIGATE VERIFICATION - Check if task is complete
         # ═══════════════════════════════════════════════════════════════════════
         # INVESTIGATE is for gathering information (get_tool_details, diagnostic commands)
-        # Success just means we got the information, not that the task is complete
+        # Success means we got the information AND the overall task is complete
+        # We must ask the LLM: "Is the ORIGINAL request fully accomplished?"
         # ═══════════════════════════════════════════════════════════════════════
         if decision.decision_type == DecisionType.INVESTIGATE:
-            # Investigation succeeded if act returned success
-            if act_result.get('success', False):
-                await self._output("Verification: Investigation completed", "info")
-                return {'success': True}
-            return {'success': False, 'error': act_result.get('output', 'Investigation failed')}
+            # First check: Did the investigation itself succeed?
+            if not act_result.get('success', False):
+                return {'success': False, 'error': act_result.get('output', 'Investigation failed')}
+
+            # Investigation succeeded - but is the ORIGINAL REQUEST complete?
+            # Ask LLM to determine if we need to continue or if we're done
+            await self._output("Verification: Investigation completed, checking if task is done...", "info")
+
+            # Build verification prompt
+            verification_prompt = f"""Analyze if the user's ORIGINAL request has been fully accomplished.
+
+ORIGINAL REQUEST: {request}
+
+WHAT WE JUST DID: {decision.reasoning}
+
+INVESTIGATION RESULT:
+{act_result.get('output', '')[:1000]}
+
+QUESTION: Is the ORIGINAL request now FULLY COMPLETE?
+
+Examples:
+- Original: "Get tool details for raica_research_agent"
+  Just did: Got tool details
+  Answer: YES - Request complete ✅
+
+- Original: "Look up latest news and email it"
+  Just did: Got tool details for raica_research_agent
+  Answer: NO - Still need to execute the tool and send email ❌
+
+Return JSON:
+{{
+    "task_complete": true/false,
+    "reasoning": "Brief explanation of what's done and what remains"
+}}
+
+Return ONLY JSON, no other text."""
+
+            try:
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_for_classification, verification_prompt, max_tokens=300
+                )
+                content = response.content if hasattr(response, 'content') else str(response)
+
+                # Parse JSON
+                import json
+                json_match = re.search(r'\{[\s\S]*\}', content)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    task_complete = data.get('task_complete', False)
+                    reasoning = data.get('reasoning', '')
+
+                    if task_complete:
+                        await self._output(f"✅ Task complete: {reasoning}", "success")
+                        return {'success': True}
+                    else:
+                        await self._output(f"⏩ Continue: {reasoning}", "info")
+                        # Investigation succeeded but task NOT complete - continue to next iteration
+                        return {'success': False, 'error': f'Task incomplete: {reasoning}'}
+
+            except Exception as e:
+                logger.warning(f"LLM verification failed, assuming task incomplete: {e}")
+
+            # Fallback: Assume task is NOT complete (safer to continue than stop early)
+            return {'success': False, 'error': 'Investigation complete but overall task status unclear - continuing'}
 
         # ═══════════════════════════════════════════════════════════════════════
         # OTHER VERIFICATIONS
