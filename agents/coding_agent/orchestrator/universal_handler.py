@@ -1137,25 +1137,83 @@ Available decision types:
 - RESPOND: Answer a question directly
 - CANNOT_PROCEED: ONLY use when request is fundamentally impossible
 
+🚨🚨🚨 CRITICAL: NEVER USE CANNOT_PROCEED WITHOUT CHECKING USER TOOLS FIRST! 🚨🚨🚨
+
+**BEFORE choosing CANNOT_PROCEED, you MUST check if any RAICA USER TOOLS can help!**
+
+1. **Look at the "RAICA USER TOOLS" section in gathered information**
+   - Do you see ANY tool that might help with this request?
+   - Examples: raica_research_agent (web search/research), secure_email_sender (email), pdf_generator (PDF), etc.
+
+2. **If you see a relevant tool in the catalog:**
+   ✅ Use INVESTIGATE with "get_tool_details <tool_name>" to learn how to use it
+   ❌ DO NOT use CANNOT_PROCEED just because you don't know the parameters yet!
+
+   Example:
+   - User: "look up latest news"
+   - You see: raica_research_agent in user tools catalog
+   - CORRECT: INVESTIGATE with "get_tool_details raica_research_agent"
+   - WRONG: CANNOT_PROCEED (you haven't tried the tool yet!)
+
+3. **CANNOT_PROCEED is ONLY for:**
+   - Illegal requests (hack into systems, bypass security)
+   - Impossible requests (violate laws of physics, time travel)
+   - Outside agent capabilities (physical world actions like "make me a sandwich")
+
+   **NOT for:**
+   - "I don't know the tool parameters" → Use INVESTIGATE!
+   - "Tool might not be available" → Use INVESTIGATE to check!
+   - "Not sure how to proceed" → Use INVESTIGATE to learn!
+
+**The user tools catalog shows AVAILABLE tools. If a tool is listed, you CAN use it - just INVESTIGATE to get details first!**
+
 🚨🚨🚨 CRITICAL DECISION RULES - READ CAREFULLY 🚨🚨🚨
 
-1. **EXECUTE**: Use for IMMEDIATE ACTIONS that can be accomplished via:
+1. **INVESTIGATE**: Use when you need MORE INFORMATION before acting:
+
+   **USE CASE 1: Getting User Tool Details (MOST COMMON!)**
+   - You see a tool name in "RAICA USER TOOLS" catalog but don't know its parameters
+   - Command format: "get_tool_details <tool_name>"
+   - This gives you the full parameter schema so you can use the tool
+
+   Examples:
+   - See "raica_research_agent" → INVESTIGATE with "get_tool_details raica_research_agent"
+   - See "secure_email_sender" → INVESTIGATE with "get_tool_details secure_email_sender"
+   - See "pdf_generator" → INVESTIGATE with "get_tool_details pdf_generator"
+
+   **After getting tool details, your NEXT decision should use the tool!**
+
+   **USE CASE 2: Diagnostic Commands for Retries**
+   - Previous command failed with unclear error
+   - Need to learn correct syntax/options
+
+   Examples:
+   - "mail: invalid option" → INVESTIGATE with "mail --help"
+   - "curl: unknown flag" → INVESTIGATE with "curl --help"
+
+2. **EXECUTE**: Use for IMMEDIATE ACTIONS that can be accomplished via:
+   - **RAICA USER TOOLS:** Call user tools with their parameters (after getting details via INVESTIGATE!)
    - Shell commands: ANY command available on the system (mail, curl, wget, grep, find, sendmail, git, docker, etc.)
    - Existing project scripts: Scripts already in the project directory
    - System tools: Any installed command-line tool
 
    IMPORTANT: Don't limit yourself to a predefined list of commands. Use whatever shell command accomplishes the task.
 
-   Examples:
+   Examples (shell commands):
    - "send email to John" → EXECUTE with mail/sendmail command
    - "download file from URL" → EXECUTE with curl/wget command
    - "check Gmail for bills" → EXECUTE existing script if found
    - "search for files containing 'TODO'" → EXECUTE with grep command
    - "compress this directory" → EXECUTE with tar command
 
-2. **FIX**: Use if existing code exists but needs modifications
+   Examples (user tools - after INVESTIGATE):
+   - "look up latest news" → After INVESTIGATE: EXECUTE raica_research_agent with {"query": "latest news", "task_type": "news_lookup"}
+   - "send professional email" → After INVESTIGATE: EXECUTE secure_email_sender with required parameters
+   - "generate PDF report" → After INVESTIGATE: EXECUTE pdf_generator with content and options
 
-3. **CREATE**: Use when NO suitable approach exists AND user wants a REUSABLE script/tool:
+3. **FIX**: Use if existing code exists but needs modifications
+
+4. **CREATE**: Use when NO suitable approach exists AND user wants a REUSABLE script/tool:
    - User asks: "write a script that...", "create a program to...", "make a tool that..."
    - No system command can accomplish the task
    - Task requires custom logic that can't be done in a single shell command
@@ -1166,11 +1224,12 @@ Available decision types:
    - If the original request was an ACTION ("send email", "download file"), set `execute_after_create: true` in your response
    - If the request was to BUILD something ("create a script", "write a tool"), set `execute_after_create: false`
 
-4. **INSTALL**: Use when a system tool (not Python library) is missing
+5. **INSTALL**: Use when a system tool (not Python library) is missing
 
-5. **RESPOND**: Use for questions, not action requests
+6. **RESPOND**: Use for questions, not action requests
 
-6. **CANNOT_PROCEED**: ONLY for truly impossible requests (e.g., "hack into NASA")
+7. **CANNOT_PROCEED**: ONLY for truly impossible requests (e.g., "hack into NASA")
+   ⚠️ Check user tools with INVESTIGATE before using this!
 
 🚨🚨🚨 CRITICAL: IMMEDIATE ACTIONS vs SCRIPT CREATION 🚨🚨🚨
 
@@ -1382,6 +1441,23 @@ For INVESTIGATE (getting user tool details):
     "requires_approval": false
 }}
 
+For INVESTIGATE (getting user tool details - news + email example):
+{{
+    "decision_type": "INVESTIGATE",
+    "reasoning": "User wants to look up latest news and email it. I see 'raica_research_agent' in RAICA USER TOOLS which can handle web search and research. Getting its details first.",
+    "commands": ["get_tool_details raica_research_agent"],
+    "requires_approval": false
+}}
+
+🚨 IMPORTANT: After INVESTIGATE returns tool details, your NEXT decision should EXECUTE the tool!
+Don't INVESTIGATE and then give up - use what you learned!
+
+Example of COMPLETE workflow (news lookup + email):
+Step 1: INVESTIGATE to get raica_research_agent details
+Step 2: EXECUTE raica_research_agent to fetch news
+Step 3: INVESTIGATE to get secure_email_sender details
+Step 4: EXECUTE secure_email_sender to send email
+
 For INVESTIGATE (diagnostic command to learn - RETRY Strategy 1):
 {{
     "decision_type": "INVESTIGATE",
@@ -1408,6 +1484,30 @@ For CREATE (switched strategy after EXECUTE failures - RETRY Strategy 3):
     "target": "send_email.py",
     "execute_after_create": true,
     "requires_approval": true
+}}
+
+🚨🚨🚨 ANTI-PATTERN: NEVER DO THIS! 🚨🚨🚨
+
+❌ WRONG - Using CANNOT_PROCEED without checking user tools:
+{{
+    "decision_type": "CANNOT_PROCEED",
+    "reasoning": "I need to look up news but don't know how to do web searches"
+}}
+Why wrong? You see 'raica_research_agent' in user tools! Use INVESTIGATE first!
+
+❌ WRONG - Using CANNOT_PROCEED because you don't know parameters:
+{{
+    "decision_type": "CANNOT_PROCEED",
+    "reasoning": "I see raica_research_agent tool but don't know its parameters"
+}}
+Why wrong? That's exactly what INVESTIGATE with get_tool_details is for!
+
+✅ CORRECT - Use INVESTIGATE then proceed:
+{{
+    "decision_type": "INVESTIGATE",
+    "reasoning": "I see raica_research_agent in user tools. Getting its parameter schema.",
+    "commands": ["get_tool_details raica_research_agent"],
+    "requires_approval": false
 }}
 
 Return ONLY the JSON object, no other text."""
