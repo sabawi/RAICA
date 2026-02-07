@@ -59,12 +59,13 @@ llm:
   primary:
     type: ollama
     config:
-      model: mistral-large-3:675b-cloud # deepseek-v3.2:cloud # deepseek-v3.1:671b-cloud
+      model: deepseek-v3.2:cloud # deepseek-v3.1:671b-cloud
       timeout: 600
       temperature: 0.7
       max_tokens: 16384
       context_window_size: 16384
       stream: true
+      think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
     type: openai
     config:
@@ -119,7 +120,7 @@ llm:
 performance:
   connection_pool_size: 10
   max_concurrent_requests: 5
-  request_timeout: 600
+  request_timeout: 1200
   streaming_chunk_size: 1024
 platform:
   config_dir:
@@ -158,34 +159,99 @@ optimization:
   rollout_percentage: 100.0
   detailed_logging: true
 code_generation:
-  type: ollama
+  # ============================================================
+  # MODEL SELECTION - Change this ONE value to switch models
+  # ============================================================
+  selected_model: glm-4.7
+
+  # Classification model override (for tasks requiring strict JSON output)
+  # Kimi is great at code generation but returns thinking tags instead of pure JSON
+  # Use a model that reliably returns JSON for classification/orchestration tasks
+  classification_model: gpt-oss:120b-cloud  # qwen3-next requires reasoning_effort param; qwen3-coder:480b-cloud sometimes 503
+
+  # Available model presets (friendly name → provider + model)
+  model_presets:
+    # OpenAI models
+    gpt-4o:
+      provider: openai
+      model: gpt-4o
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+    gpt-4-turbo:
+      provider: openai
+      model: gpt-4-turbo
+    # Anthropic Claude models
+    claude-sonnet:
+      provider: anthropic
+      model: claude-sonnet-4-20250514
+    claude-opus:
+      provider: anthropic
+      model: claude-opus-4-20250514
+    # Google Gemini models
+    gemini-flash:
+      provider: gemini
+      model: gemini-2.0-flash
+    gemini-pro:
+      provider: gemini
+      model: gemini-2.5-pro
+    # Ollama local models
+    Kimi-k2.5:
+      provider: ollama
+      model: Kimi-k2.5:cloud
+    gpt-oss-20b:
+      provider: ollama
+      model: gpt-oss:20b-cloud
+    gpt-oss-120b:
+      provider: ollama
+      model: gpt-oss:120b-cloud
+    glm-4.7:
+      provider: ollama
+      model: glm-4.7:cloud
+    deepseek-v3:
+      provider: ollama
+      model: deepseek-v3.2:cloud
+    qwen-coder:
+      provider: ollama
+      model: qwen3-coder:480b-cloud
+    ministral-3:14b:
+      provider: ollama
+      model: ministral-3:14b-cloud
+    qwen3-coder-next:
+      provider: ollama
+      model: qwen3-coder-next:cloud
+
+  # Fallback order (used when selected model fails)
   fallback:
     enabled: true
-    # Fallback order supports two formats:
-    # 1. Simple: just provider name (uses default model from providers section)
-    # 2. Detailed: provider + model pair for specific model fallbacks
     order:
+      # Best models first - automatic fallback chain
       - provider: ollama
-        model: glm-4.7:cloud
+        model: gpt-oss:120b-cloud
       - provider: ollama
-        model: deepseek-v3.2:cloud
-      - provider: ollama
-        model: mistral-large-3:675b-cloud
-      - provider: gemini
-        model: gemini-2.5-pro
+        model: qwen3-coder:480b-cloud
       - provider: openai
         model: gpt-4o
       - provider: anthropic
         model: claude-sonnet-4-20250514
-      - provider: qwen
-        model: qwen-max
+      - provider: openai
+        model: gpt-4o-mini
+      - provider: gemini
+        model: gemini-2.0-flash
+      - provider: ollama
+        model: deepseek-v3.2:cloud
+      - provider: ollama
+        model: qwen3-coder:480b-cloud
+
+  # Provider configurations (credentials and settings)
   providers:
-    gemini:
-      model: gemini-2.5-pro
-      api_key: ${GEMINI_API_KEY}
+    openai:
+      model: gpt-4o
+      api_key: ${OPENAI_API_KEY}
+      base_url: https://api.openai.com/v1
       timeout: 300
       temperature: 0.0
-      max_tokens: 32768
+      max_tokens: 16384
       retry_attempts: 3
       retry_delay: 2
     anthropic:
@@ -197,33 +263,25 @@ code_generation:
       max_tokens: 16384
       retry_attempts: 3
       retry_delay: 2
-    openai:
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
-      base_url: https://api.openai.com/v1
+    gemini:
+      model: gemini-2.0-flash
+      api_key: ${GEMINI_API_KEY}
       timeout: 300
       temperature: 0.0
-      max_tokens: 16384
-      retry_attempts: 3
-      retry_delay: 2
-    qwen:
-      model: qwen-max
-      api_key: ${QWEN_API_KEY}
-      base_url: https://dashscope.aliyuncs.com/api/v1
-      timeout: 300
-      temperature: 0.0
-      max_tokens: 16384
+      max_tokens: 32768
       retry_attempts: 3
       retry_delay: 2
     ollama:
-      model: glm-4.7:cloud
+      # Single ollama config - use Kimi-k2 as default
+      model: Kimi-k2.5:cloud
       base_url: http://127.0.0.1:11434
       timeout: 600
       temperature: 0.0
       max_tokens: 32768
-      context_window: 131072
-      retry_attempts: 3
+      context_window: 32768
+      retry_attempts: 2
       retry_delay: 2
+      think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
 vision:
   type: ollama
   config:
@@ -439,3 +497,213 @@ email:
     enable_company_detection: true
     enable_fuzzy_matching: true
     confidence_threshold: 0.7
+
+# =============================================================================
+# USER TOOLS CONFIGURATION
+# =============================================================================
+user_tools:
+  # Sandboxed Executor - Secure code execution and system command access
+  sandboxed_executor:
+    # Workspace settings
+    base_directory: null  # null = user's home directory, or specify path
+    sandbox_workspace_name: "sandbox_workspace"
+
+    # Security limits
+    execution:
+      max_execution_time: 120  # seconds (increased from 30 for complex operations)
+      max_output_size: 100000  # characters (increased from 50000)
+      max_file_size: 52428800  # bytes (50MB, increased from 10MB)
+
+    # Command access control
+    # Set mode to control command restrictions:
+    #   - strict: Only allowed_commands whitelist (default, most secure)
+    #   - permissive: All commands except blocked_commands blacklist
+    #   - unrestricted: All commands allowed (use with caution!)
+    command_mode: "permissive"
+
+    # Allowed commands (whitelist) - used when command_mode = "strict"
+    allowed_commands:
+      # Development tools
+      - python3
+      - python
+      - node
+      - npm
+      - npx
+      - pip
+      - pip3
+      - yarn
+      - pnpm
+
+      # Compilers and build tools
+      - gcc
+      - g++
+      - clang
+      - make
+      - cmake
+      - javac
+      - java
+      - rustc
+      - cargo
+      - go
+
+      # System utilities
+      - ls
+      - cat
+      - head
+      - tail
+      - wc
+      - grep
+      - find
+      - echo
+      - pwd
+      - whoami
+      - id
+      - uname
+      - which
+      - whereis
+      - file
+
+      # File operations
+      - chmod
+      - mkdir
+      - rmdir
+      - touch
+      - cp
+      - mv
+      - rm
+      - ln
+
+      # Archive tools
+      - tar
+      - gzip
+      - gunzip
+      - zip
+      - unzip
+      - bzip2
+      - xz
+
+      # Network tools
+      - curl
+      - wget
+      - ping
+      - telnet
+
+      # Document tools
+      - pandoc
+      - pdflatex
+      - latex
+      - convert
+      - gs
+
+      # Version control
+      - git
+      - svn
+      - hg
+
+      # Package managers (non-sudo)
+      - apt-cache  # Query package info (no sudo needed)
+      - dpkg-query  # Query installed packages
+
+    # Blocked commands (blacklist) - ALWAYS blocked regardless of mode
+    # These are dangerous commands that can cause system damage
+    blocked_commands:
+      # Filesystem destruction
+      - mkfs       # Format filesystem
+      - dd         # Can overwrite disks
+
+      # System control (without sudo config)
+      - reboot
+      - shutdown
+      - halt
+      - init
+      - poweroff
+
+      # User/permission changes (without sudo config)
+      - passwd     # Change passwords
+      - chown      # Change ownership
+      - chgrp      # Change group
+
+      # Dangerous patterns (these are checked as regex patterns)
+      - "rm -rf /"     # Recursive delete from root
+      - "rm -rf /*"    # Recursive delete from root
+      - "> /dev/sd"    # Overwrite disk devices
+
+    # Sudo/Root privilege configuration
+    sudo_access:
+      enabled: true  # Allow sudo commands
+
+      # Require user approval for sudo commands
+      require_approval: true  # If true, asks user before running sudo
+
+      # Allowed sudo commands (whitelist)
+      # Only these commands can be run with sudo
+      allowed_sudo_commands:
+        # Package management
+        - apt
+        - apt-get
+        - apt-cache
+        - dpkg
+        - snap
+        - flatpak
+
+        # System services
+        - systemctl
+        - service
+
+        # Network configuration
+        - ip
+        - ifconfig
+        - netstat
+
+        # File system
+        - mount
+        - umount
+        - chown
+        - chmod
+
+        # Others
+        - docker
+        - docker-compose
+        - nginx
+        - apache2
+
+      # Blocked sudo commands (blacklist)
+      # These are NEVER allowed even with sudo
+      blocked_sudo_commands:
+        - rm
+        - mkfs
+        - dd
+        - fdisk
+        - parted
+        - passwd
+        - userdel
+        - groupdel
+        - reboot
+        - shutdown
+        - halt
+        - init
+
+    # File system access
+    filesystem:
+      # Default base directory (null = user home directory)
+      default_base: null  # null = Path.home()
+
+      # Allow absolute paths outside base directory
+      allow_absolute_paths: true
+
+      # Restricted paths (never accessible)
+      restricted_paths:
+        - /etc/shadow
+        - /etc/passwd
+        - /root
+        - /proc
+        - /sys
+        - /dev
+        - /boot
+
+      # Allowed additional paths (beyond base directory)
+      allowed_paths:
+        - /tmp
+        - /var/tmp
+        - /opt
+        - /usr/local

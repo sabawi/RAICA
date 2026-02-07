@@ -33,6 +33,16 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Context-First Architecture imports
+try:
+    from ..services.context_builder import ContextBuilder, Context
+    from ..services.first_contact_template import build_first_contact_prompt, build_iteration_prompt
+    from ..services.tool_details_provider import get_tool_details
+    CONTEXT_FIRST_AVAILABLE = True
+except ImportError:
+    logger.warning("Context-First modules not available - using fallback mode")
+    CONTEXT_FIRST_AVAILABLE = False
+
 
 # =============================================================================
 # TRIAGE PHASE - What information does the LLM need?
@@ -96,7 +106,8 @@ class DecisionType(Enum):
     CREATE = auto()          # Create new code (CODE_GENERATION)
     INSTALL = auto()         # Install missing tool
     CONFIGURE = auto()       # Configure service/application
-    SEARCH_MORE = auto()     # Need more information before deciding
+    INVESTIGATE = auto()     # Gather more information (read files, run commands, get tool details)
+    SEARCH_MORE = auto()     # Need more information before deciding (deprecated - use INVESTIGATE)
     DELEGATE = auto()        # Hand off to specialist handler
     CANNOT_PROCEED = auto()  # Cannot fulfill request (explain why)
 
@@ -159,6 +170,41 @@ class UniversalHandlerResult:
             'duration_seconds': self.duration_seconds,
             'tokens_saved_estimate': self.tokens_saved_estimate
         }
+
+
+# =============================================================================
+# EXECUTION STRATEGY - LLM-Driven Phase Selection
+# =============================================================================
+
+@dataclass
+class RetryPolicy:
+    """Retry policy for execution strategy."""
+    enabled: bool
+    max_retries: int = 3
+    reason: str = ""
+
+
+@dataclass
+class ExecutionStrategy:
+    """
+    LLM-decided execution strategy for this request.
+
+    Replaces hardcoded phase flow with intelligent strategy selection.
+    """
+    execution_type: str  # ONE_SHOT_ACTION, INVESTIGATIVE_TASK, CODE_MODIFICATION, etc.
+    phases_needed: List[str]  # Which phases to execute
+    retry_policy: RetryPolicy
+    verification_strategy: str  # TRUST_EXIT_CODE, LLM_SEMANTIC, TEST_DRIVEN, etc.
+    failure_handling: str  # REPORT_AND_STOP, RETRY_WITH_DIFFERENT_APPROACH, ROLLBACK_AND_RETRY
+    reasoning: str  # Why this strategy was chosen
+
+    def should_retry(self) -> bool:
+        """Check if retries are allowed for this strategy."""
+        return self.retry_policy.enabled
+
+    def is_one_shot(self) -> bool:
+        """Check if this is a one-shot action (no retries, no verification)."""
+        return self.execution_type == "ONE_SHOT_ACTION"
 
 
 # =============================================================================
@@ -247,10 +293,161 @@ class UniversalHandler:
         self.context_manager = context_manager
         self.allow_sudo = allow_sudo
         self.max_triage_iterations = max_triage_iterations
+
+        # Context-First Architecture
+        self.context_builder = ContextBuilder() if CONTEXT_FIRST_AVAILABLE else None
+        self.first_contact_context: Optional[Context] = None
+        self.iteration_count = 0
         self.max_act_iterations = max_act_iterations
 
         # Ensure project directory exists
         self.project_dir.mkdir(parents=True, exist_ok=True)
+
+    # =========================================================================
+    # PHASE 0: STRATEGY SELECTION - LLM decides execution approach
+    # =========================================================================
+
+    async def _select_execution_strategy(self, request: str) -> ExecutionStrategy:
+        """
+        Ask LLM to analyze request and decide execution strategy.
+
+        This replaces the hardcoded phase flow with LLM-driven decisions.
+        The LLM decides:
+        - What type of execution (ONE_SHOT_ACTION, INVESTIGATIVE_TASK, etc.)
+        - Which phases are needed
+        - Whether retries are allowed
+        - Verification strategy
+
+        Args:
+            request: User's request text
+
+        Returns:
+            ExecutionStrategy with LLM's decisions
+        """
+        prompt = f"""Analyze this user request and decide the execution strategy.
+
+USER REQUEST: {request}
+
+Your task: Determine what type of execution this request requires.
+
+EXECUTION TYPES:
+
+1. ONE_SHOT_ACTION - Actions with SIDE EFFECTS that should execute ONCE:
+   - Send email, post message, publish content, tweet
+   - Delete file, drop database, kill process, remove user
+   - Download file, upload file, transfer data
+   - curl POST, API calls that create/modify resources
+   - Any action that changes external state
+
+   KEY: If action has SIDE EFFECTS (changes state), it's ONE_SHOT!
+
+   Phases: ["EXECUTE"]
+   Retry: NO (will cause duplicates - email sent 3 times!)
+   Verification: TRUST_EXIT_CODE (exit 0 = success, done!)
+
+2. INVESTIGATIVE_TASK - Read-only information gathering:
+   - Check system status, read files, search for info
+   - Diagnose issue, analyze logs, inspect config
+   - Research, lookup, query (no state changes)
+
+   KEY: Read-only operations safe to retry.
+
+   Phases: ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"]
+   Retry: YES (no side effects)
+   Verification: LLM_SEMANTIC (did we get the info?)
+
+3. CODE_MODIFICATION - Modify existing code:
+   - Fix bug, add feature, improve code, refactor
+
+   Phases: ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"]
+   Retry: YES (can rollback)
+   Verification: TEST_DRIVEN (run tests)
+
+4. RESOURCE_CREATION - Create new files/resources:
+   - Create project, generate files
+
+   Phases: ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"]
+   Retry: YES (idempotent)
+   Verification: EXISTENCE_CHECK
+
+🚨 CRITICAL - SIDE EFFECTS DETECTION:
+
+Does this request involve ANY of these?
+- Sending/transmitting (email, message, post, tweet, publish)
+- Deleting/destroying (rm, drop, delete, kill, remove)
+- Creating external state (API POST, database INSERT)
+- Financial transactions
+- User notifications
+
+If YES → ONE_SHOT_ACTION (no retry!)
+If NO → Choose based on read/write nature
+
+EXAMPLES:
+
+Request: "Send email to John"
+{{
+  "execution_type": "ONE_SHOT_ACTION",
+  "phases_needed": ["EXECUTE"],
+  "retry_policy": {{"enabled": false, "max_retries": 0, "reason": "Side effects - will send email multiple times if retried"}},
+  "verification_strategy": "TRUST_EXIT_CODE",
+  "failure_handling": "REPORT_AND_STOP",
+  "reasoning": "Sending email has side effects. Must execute once only."
+}}
+
+Request: "Check if nginx is running"
+{{
+  "execution_type": "INVESTIGATIVE_TASK",
+  "phases_needed": ["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
+  "retry_policy": {{"enabled": true, "max_retries": 3, "reason": "Read-only, safe to retry"}},
+  "verification_strategy": "LLM_SEMANTIC",
+  "failure_handling": "RETRY_WITH_DIFFERENT_APPROACH",
+  "reasoning": "Read-only status check, safe to retry."
+}}
+
+Return ONLY valid JSON, no other text."""
+
+        try:
+            response = await asyncio.to_thread(
+                self.llm_client.generate, prompt, max_tokens=600
+            )
+            content = response.content if hasattr(response, 'content') else str(response)
+
+            # Parse JSON
+            from ..utils.json_utils import extract_json_from_llm_response
+            data = extract_json_from_llm_response(content)
+
+            if data:
+                return ExecutionStrategy(
+                    execution_type=data['execution_type'],
+                    phases_needed=data['phases_needed'],
+                    retry_policy=RetryPolicy(**data['retry_policy']),
+                    verification_strategy=data['verification_strategy'],
+                    failure_handling=data['failure_handling'],
+                    reasoning=data['reasoning']
+                )
+            else:
+                # Fallback: Conservative approach with retries
+                logger.warning("Failed to parse execution strategy, using conservative fallback")
+                return ExecutionStrategy(
+                    execution_type="INVESTIGATIVE_TASK",
+                    phases_needed=["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
+                    retry_policy=RetryPolicy(enabled=True, max_retries=3, reason="Fallback strategy"),
+                    verification_strategy="LLM_SEMANTIC",
+                    failure_handling="RETRY_WITH_DIFFERENT_APPROACH",
+                    reasoning="Fallback - could not determine strategy"
+                )
+
+        except Exception as e:
+            logger.error(f"Strategy selection failed: {e}")
+            # Fallback
+            return ExecutionStrategy(
+                execution_type="INVESTIGATIVE_TASK",
+                phases_needed=["TRIAGE", "GATHER", "DECIDE", "ACT", "VERIFY"],
+                retry_policy=RetryPolicy(enabled=True, max_retries=3, reason="Error in strategy selection"),
+                verification_strategy="LLM_SEMANTIC",
+                failure_handling="RETRY_WITH_DIFFERENT_APPROACH",
+                reasoning=f"Error selecting strategy: {e}"
+            )
 
     async def handle(self, request: str) -> UniversalHandlerResult:
         """
@@ -267,6 +464,200 @@ class UniversalHandler:
 
         try:
             await self._output(f"Universal Handler: Processing request...", "info")
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE 0: PREPARATION - Build context (if Context-First available)
+            # ═══════════════════════════════════════════════════════════════
+            user_tools_context = ""
+            if CONTEXT_FIRST_AVAILABLE and self.context_builder and self.iteration_count == 0:
+                await self._output("Building context (system, user, tools)...", "info")
+                try:
+                    self.first_contact_context = await self.context_builder.build_context(
+                        request=request,
+                        project_dir=self.project_dir if self.project_dir.exists() else None
+                    )
+
+                    # Add user tools catalog to context
+                    if self.first_contact_context.user_tools and self.first_contact_context.user_tools.tools:
+                        tools_catalog = self.first_contact_context.user_tools.tools
+                        comm_tools = self.first_contact_context.user_tools.communication_tools
+
+                        user_tools_context = f"\n\n═══ RAICA USER TOOLS ═══\n"
+                        user_tools_context += f"You have access to {len(tools_catalog)} user-defined tools on the RAICA server.\n"
+                        user_tools_context += f"Communication hub tools: {', '.join(comm_tools)}\n\n"
+
+                        for tool_name, tool_info in sorted(tools_catalog.items()):
+                            category = tool_info.get('category', 'utility')
+                            desc = tool_info.get('description', 'No description')
+                            marker = "⭐" if tool_name in comm_tools else " "
+                            user_tools_context += f"{marker} [{category}] {tool_name}: {desc}\n"
+
+                        user_tools_context += f"\n💡 To USE a tool, first request details:\n"
+                        user_tools_context += f"   Decision: INVESTIGATE\n"
+                        user_tools_context += f"   Commands: [\"get_tool_details <tool_name>\"]\n"
+                        user_tools_context += f"   This returns the full parameter schema.\n\n"
+
+                        await self._output(f"Found {len(tools_catalog)} user tools", "info")
+                except Exception as e:
+                    logger.warning(f"Failed to build context: {e}")
+
+            self.iteration_count += 1
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE 0.5: STRATEGY SELECTION - Ask LLM how to execute this request
+            # ═══════════════════════════════════════════════════════════════
+            await self._output("Selecting execution strategy...", "info")
+            strategy = await self._select_execution_strategy(request)
+            await self._output(
+                f"Strategy: {strategy.execution_type} (retry: {strategy.retry_policy.enabled})",
+                "info"
+            )
+            logger.info(f"Execution strategy: {strategy.execution_type}, reasoning: {strategy.reasoning}")
+
+            # ═══════════════════════════════════════════════════════════════
+            # ONE-SHOT ACTION: Intelligent retry with different approaches
+            # ═══════════════════════════════════════════════════════════════
+            if strategy.is_one_shot():
+                await self._output("ONE-SHOT ACTION: Using intelligent retry loop", "info")
+
+                # Skip TRIAGE/GATHER for first attempt
+                # Use intelligent retry loop: DECIDE → ACT → INVESTIGATE → DECIDE (different approach)
+
+                error_context = ""
+                decision = None
+                max_one_shot_attempts = 3
+
+                for attempt in range(1, max_one_shot_attempts + 1):
+                    if attempt > 1:
+                        await self._output(f"Attempt {attempt}/{max_one_shot_attempts} with different approach...", "info")
+
+                    # ═══════════════════════════════════════════════════════════
+                    # DECIDE: LLM decides what to try (with error context from previous attempt)
+                    # ═══════════════════════════════════════════════════════════
+                    await self._phase_start("DECIDE")
+                    result.phases_completed.append(f"DECIDE_START_ATTEMPT{attempt}")
+
+                    # Build context with error information from previous attempt
+                    one_shot_context = user_tools_context if user_tools_context else ""
+                    one_shot_context += f"\n\n🚨 ONE-SHOT ACTION (Attempt {attempt}/{max_one_shot_attempts}):"
+                    one_shot_context += "\nThis action has SIDE EFFECTS. Do NOT retry the same command!"
+                    one_shot_context += "\nIf previous attempt failed, analyze the error and try a DIFFERENT approach."
+
+                    # Add error context from previous failed attempt
+                    if error_context:
+                        one_shot_context += error_context
+
+                    decision = await self._decide(request, one_shot_context)
+                    result.decision = decision
+
+                    if self.callbacks.on_decision:
+                        await self.callbacks.on_decision(decision)
+
+                    await self._output(f"Decision: {decision.decision_type.name}", "info")
+                    result.phases_completed.append(f"DECIDE_COMPLETE_ATTEMPT{attempt}")
+
+                    # ═══════════════════════════════════════════════════════════
+                    # ACT: Execute the decision
+                    # ═══════════════════════════════════════════════════════════
+                    await self._phase_start("ACT")
+                    result.phases_completed.append(f"ACT_START_ATTEMPT{attempt}")
+
+                    # Get approval if needed
+                    if decision.requires_approval and self.callbacks.on_approval_needed:
+                        approved = await self.callbacks.on_approval_needed(
+                            f"Execute {decision.decision_type.name}: {decision.target or decision.reasoning[:50]}?",
+                            decision
+                        )
+                        if not approved:
+                            result.error = "User did not approve action"
+                            await self._output("Action not approved by user", "warning")
+                            return result
+
+                    # Execute with extended timeout for one-shot actions
+                    act_start_time = datetime.now()
+                    act_result = await self._act(decision, is_one_shot=True)
+                    act_duration = (datetime.now() - act_start_time).total_seconds()
+
+                    result.execution_output = act_result.get('output', '')
+                    result.generated_files = act_result.get('files', [])
+                    result.success = act_result.get('success', False)
+                    result.phases_completed.append(f"ACT_COMPLETE_ATTEMPT{attempt}")
+
+                    # ═══════════════════════════════════════════════════════════
+                    # VERIFY: Check if action succeeded
+                    # ═══════════════════════════════════════════════════════════
+                    if result.success:
+                        await self._output(f"✅ ONE-SHOT ACTION completed successfully on attempt {attempt}", "success")
+                        result.duration_seconds = (datetime.now() - start_time).total_seconds()
+                        return result
+
+                    # ═══════════════════════════════════════════════════════════
+                    # INVESTIGATE: Action failed - prepare error context for LLM
+                    # ═══════════════════════════════════════════════════════════
+                    await self._output(f"❌ Attempt {attempt} failed, investigating...", "warning")
+                    result.phases_completed.append(f"INVESTIGATE_START_ATTEMPT{attempt}")
+
+                    # Capture complete error information
+                    error_info = {
+                        'attempt': attempt,
+                        'command': decision.commands if decision.commands else decision.target,
+                        'decision_type': decision.decision_type.name,
+                        'output': act_result.get('output', ''),
+                        'duration': act_duration,
+                        'error_detected': not result.success
+                    }
+
+                    # Format error context for LLM
+                    error_context = f"""
+
+🚨 PREVIOUS ATTEMPT {attempt} FAILED:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Decision Type: {error_info['decision_type']}
+Command/Target: {error_info['command']}
+Duration: {error_info['duration']:.1f} seconds
+Output/Error: {error_info['output'][:500] if error_info['output'] else '(no output)'}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔍 ANALYZE THIS FAILURE:
+1. What went wrong?
+2. Was the action partially successful? (e.g., email sent but command timed out)
+3. What is a DIFFERENT approach to accomplish the task?
+
+⚠️ CRITICAL: Do NOT retry the same command if it has side effects!
+   - If this was an email and it might have been sent, try a DIFFERENT verification approach
+   - If this was a deletion and it might have succeeded, try checking if file exists
+   - Always choose a DIFFERENT tool/method/approach for retry
+
+DIFFERENT APPROACHES TO CONSIDER:
+- Different command (mail → sendmail → mutt → Python script)
+- Different parameters (--no-wait, --timeout=300, etc.)
+- Different tool entirely (system command → Python script → RAICA user tool)
+- Verification approach (check if action already completed instead of retrying)
+- CREATE a custom script with better error handling
+
+What should we try next?
+"""
+
+                    await self._output(f"Error details captured, will try different approach", "info")
+                    result.phases_completed.append(f"INVESTIGATE_COMPLETE_ATTEMPT{attempt}")
+
+                    # If this was the last attempt, exit with failure
+                    if attempt >= max_one_shot_attempts:
+                        result.error = f"Failed after {max_one_shot_attempts} attempts with different approaches"
+                        await self._output(f"❌ ONE-SHOT ACTION failed after {max_one_shot_attempts} attempts", "error")
+                        result.duration_seconds = (datetime.now() - start_time).total_seconds()
+                        return result
+
+                    # Loop continues - LLM will see error_context and decide different approach
+
+                # Should not reach here, but just in case
+                result.duration_seconds = (datetime.now() - start_time).total_seconds()
+                return result
+
+            # ═══════════════════════════════════════════════════════════════
+            # FULL FLOW: TRIAGE → GATHER → DECIDE → ACT → VERIFY (with retries)
+            # ═══════════════════════════════════════════════════════════════
+            await self._output("FULL FLOW: Using complete investigation-first pattern", "info")
 
             # ═══════════════════════════════════════════════════════════════
             # PHASE 1: TRIAGE - What information do we need?
@@ -310,6 +701,11 @@ class UniversalHandler:
 
             # Build context from all triage results
             gathered_context = self._build_context(all_triage_results)
+
+            # Prepend user tools context (if available)
+            if user_tools_context:
+                gathered_context = user_tools_context + "\n" + gathered_context
+
             await self._output(f"Gathered {len(all_triage_results)} pieces of information", "info")
 
             # ═══════════════════════════════════════════════════════════════
@@ -319,11 +715,14 @@ class UniversalHandler:
             last_error = None
             decision = None
 
-            while act_iteration < self.max_act_iterations:
+            # Use strategy's max_retries if retries enabled, otherwise use default
+            max_iterations = strategy.retry_policy.max_retries if strategy.should_retry() else self.max_act_iterations
+
+            while act_iteration < max_iterations:
                 act_iteration += 1
 
                 if act_iteration > 1:
-                    await self._output(f"Retry attempt {act_iteration}/{self.max_act_iterations}...", "info")
+                    await self._output(f"Retry attempt {act_iteration}/{max_iterations}...", "info")
 
                 # ═══════════════════════════════════════════════════════════
                 # PHASE 3: DECIDE - What action should be taken?
@@ -394,18 +793,18 @@ class UniversalHandler:
                     result.error = last_error
                     result.phases_completed.append(f"VERIFY_FAILED_ITER{act_iteration}")
 
-                    if act_iteration < self.max_act_iterations:
+                    if act_iteration < max_iterations:
                         await self._output(
                             f"❌ Verification FAILED on attempt {act_iteration}: {last_error}",
                             "warning"
                         )
                         await self._output(
-                            f"Will retry with different approach (attempt {act_iteration + 1}/{self.max_act_iterations})...",
+                            f"Will retry with different approach (attempt {act_iteration + 1}/{max_iterations})...",
                             "info"
                         )
                     else:
                         await self._output(
-                            f"❌ Verification FAILED after {self.max_act_iterations} attempts: {last_error}",
+                            f"❌ Verification FAILED after {max_iterations} attempts: {last_error}",
                             "error"
                         )
 
@@ -731,6 +1130,7 @@ DECISION PHASE: What action should be taken?
 
 Available decision types:
 - EXECUTE: Run commands/scripts (shell commands, existing scripts, system tools)
+- INVESTIGATE: Gather more information (get_tool_details <tool_name>, read files, run diagnostic commands)
 - FIX: Modify existing code to fix/improve it
 - CREATE: Create new code/files (when nothing suitable exists)
 - INSTALL: Install a missing tool/package first, then proceed
@@ -974,9 +1374,17 @@ For INSTALL (system tool missing):
     "requires_sudo": true
 }}
 
-For EXECUTE (diagnostic command to learn - RETRY Strategy 1):
+For INVESTIGATE (getting user tool details):
 {{
-    "decision_type": "EXECUTE",
+    "decision_type": "INVESTIGATE",
+    "reasoning": "User wants to send email. I see 'secure_email_sender' tool in RAICA USER TOOLS. Need full details to use it.",
+    "commands": ["get_tool_details secure_email_sender"],
+    "requires_approval": false
+}}
+
+For INVESTIGATE (diagnostic command to learn - RETRY Strategy 1):
+{{
+    "decision_type": "INVESTIGATE",
     "reasoning": "Previous mail command failed with 'invalid option' error. Running mail --help to learn correct syntax before retrying.",
     "target": "mail",
     "commands": ["mail --help"],
@@ -1061,17 +1469,21 @@ Return ONLY the JSON object, no other text."""
     # PHASE 4: ACT
     # =========================================================================
 
-    async def _act(self, decision: Decision) -> Dict[str, Any]:
+    async def _act(self, decision: Decision, is_one_shot: bool = False) -> Dict[str, Any]:
         """
         Execute the decided action.
 
         Args:
             decision: The decision to execute
+            is_one_shot: If True, use extended timeout for one-shot actions (mail, network commands)
 
         Returns:
             Dict with 'success', 'output', 'files' keys
         """
         result = {'success': False, 'output': '', 'files': []}
+
+        # Use extended timeout for one-shot actions (mail/network commands may take longer)
+        exec_timeout = 300 if is_one_shot else 120
 
         try:
             if decision.decision_type == DecisionType.RESPOND:
@@ -1087,20 +1499,65 @@ Return ONLY the JSON object, no other text."""
                     for cmd in decision.commands:
                         await self._output(f"Executing: {cmd}", "info")
                         if self.system_executor:
-                            exec_result = await self.system_executor.execute(cmd, timeout=120)
+                            exec_result = await self.system_executor.execute(cmd, timeout=exec_timeout)
                             outputs.append(exec_result.stdout or exec_result.stderr)
                             if not exec_result.success:
                                 result['output'] = f"Command failed: {exec_result.stderr}"
                                 return result
                         else:
                             import subprocess
-                            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+                            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=exec_timeout)
                             outputs.append(proc.stdout or proc.stderr)
 
                     result['success'] = True
                     result['output'] = "\n".join(outputs)
                 else:
                     result['output'] = "No commands specified for EXECUTE"
+
+            elif decision.decision_type == DecisionType.INVESTIGATE:
+                # INVESTIGATE - Gather more information
+                # Handles commands like "get_tool_details <tool_name>"
+                if decision.commands:
+                    outputs = []
+                    for cmd in decision.commands:
+                        await self._output(f"Investigating: {cmd}", "info")
+
+                        # Check for special investigate commands
+                        if cmd.startswith('get_tool_details '):
+                            # Get user tool details on-demand
+                            tool_name = cmd.split(' ', 1)[1].strip()
+                            if CONTEXT_FIRST_AVAILABLE:
+                                details = await get_tool_details(tool_name)
+                                outputs.append(f"Tool Details for '{tool_name}':\n{json.dumps(details, indent=2)}")
+                            else:
+                                outputs.append(f"Context-First modules not available - cannot get tool details")
+
+                        elif cmd.startswith('list_tools'):
+                            # List all available user tools
+                            if CONTEXT_FIRST_AVAILABLE:
+                                from ..services.tool_details_provider import list_all_tools
+                                all_tools = await list_all_tools()
+                                outputs.append(f"Available Tools:\n{json.dumps(all_tools, indent=2)}")
+                            else:
+                                outputs.append("Context-First modules not available - cannot list tools")
+
+                        else:
+                            # Regular command execution (read-only investigation commands)
+                            if self.system_executor:
+                                exec_result = await self.system_executor.execute(cmd, timeout=60)
+                                outputs.append(exec_result.stdout or exec_result.stderr)
+                                if not exec_result.success:
+                                    result['output'] = f"Investigation command failed: {exec_result.stderr}"
+                                    return result
+                            else:
+                                import subprocess
+                                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+                                outputs.append(proc.stdout or proc.stderr)
+
+                    result['success'] = True
+                    result['output'] = "\n\n".join(outputs)
+                else:
+                    result['output'] = "No investigation commands specified"
 
             elif decision.decision_type == DecisionType.FIX:
                 # Delegate to CodeDebugAgent
@@ -1331,6 +1788,18 @@ Return ONLY the JSON object, no other text."""
             # Don't ask LLM, don't retry - the action already happened!
             return {'success': True}
 
+        # ═══════════════════════════════════════════════════════════════════════
+        # INVESTIGATE VERIFICATION - Trust the result (MINIMAL SCAFFOLDING)
+        # ═══════════════════════════════════════════════════════════════════════
+        # INVESTIGATE is for gathering information (get_tool_details, diagnostic commands)
+        # Success just means we got the information, not that the task is complete
+        # ═══════════════════════════════════════════════════════════════════════
+        if decision.decision_type == DecisionType.INVESTIGATE:
+            # Investigation succeeded if act returned success
+            if act_result.get('success', False):
+                await self._output("Verification: Investigation completed", "info")
+                return {'success': True}
+            return {'success': False, 'error': act_result.get('output', 'Investigation failed')}
 
         # ═══════════════════════════════════════════════════════════════════════
         # OTHER VERIFICATIONS
