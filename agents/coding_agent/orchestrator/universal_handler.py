@@ -807,7 +807,31 @@ What should we try next?
                 else:
                     # Verification FAILED
                     result.success = False
-                    last_error = verification.get('error', 'Verification failed')
+
+                    # Build comprehensive retry context that includes what was ACCOMPLISHED
+                    error_msg = verification.get('error', 'Verification failed')
+
+                    # For INVESTIGATE that succeeded but task incomplete, include what we learned
+                    if decision.decision_type == DecisionType.INVESTIGATE and act_result.get('success', False):
+                        # Investigation succeeded - we have new information!
+                        investigation_output = act_result.get('output', '')[:500]  # First 500 chars
+                        last_error = f"""✅ ACCOMPLISHED: {decision.reasoning}
+
+INFORMATION OBTAINED:
+{investigation_output}
+
+⚠️ TASK STATUS: {error_msg}
+
+🚨 CRITICAL - DO NOT REPEAT:
+- You already have the information from the investigation above
+- Do NOT investigate the same tool again
+- NEXT ACTION: Use the information you now have to proceed (e.g., EXECUTE the tool)
+
+What should you do next to complete the original request?"""
+                    else:
+                        # Regular failure - use standard error
+                        last_error = error_msg
+
                     result.error = last_error
                     result.phases_completed.append(f"VERIFY_FAILED_ITER{act_iteration}")
 
