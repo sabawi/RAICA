@@ -1207,7 +1207,7 @@ Available decision types:
    - "compress this directory" → EXECUTE with tar command
 
    Examples (user tools - after INVESTIGATE):
-   - "look up latest news" → After INVESTIGATE: EXECUTE raica_research_agent with {"query": "latest news", "task_type": "news_lookup"}
+   - "look up latest news" → After INVESTIGATE: EXECUTE raica_research_agent with {{"query": "latest news", "task_type": "news_lookup"}}
    - "send professional email" → After INVESTIGATE: EXECUTE secure_email_sender with required parameters
    - "generate PDF report" → After INVESTIGATE: EXECUTE pdf_generator with content and options
 
