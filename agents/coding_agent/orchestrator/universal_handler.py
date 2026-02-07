@@ -1541,6 +1541,62 @@ Return ONLY the JSON object, no other text."""
                 decision_type_str = data.get('decision_type', 'CANNOT_PROCEED').upper()
                 decision_type = decision_type_map.get(decision_type_str, DecisionType.CANNOT_PROCEED)
 
+                # ═══════════════════════════════════════════════════════════════
+                # INTELLIGENT FALLBACK: Auto-correct CANNOT_PROCEED misuse
+                # ═══════════════════════════════════════════════════════════════
+                # If LLM chose CANNOT_PROCEED but has commands like "get_tool_details"
+                # then it actually meant INVESTIGATE
+                if decision_type == DecisionType.CANNOT_PROCEED:
+                    commands = data.get('commands', [])
+                    reasoning = data.get('reasoning', '').lower()
+
+                    # Check if commands suggest investigation (not truly cannot proceed)
+                    investigate_commands = any(
+                        cmd.startswith('get_tool_details ') for cmd in commands
+                    ) if commands else False
+
+                    # Check if reasoning mentions needing tool details
+                    needs_tool_details = any(phrase in reasoning for phrase in [
+                        'need the parameter schema',
+                        'need to get',
+                        'must first retrieve',
+                        'i need the',
+                        'need its parameter',
+                        'need full details',
+                    ])
+
+                    if investigate_commands or needs_tool_details:
+                        # Extract tool name from reasoning or commands
+                        tool_name = None
+                        if commands:
+                            for cmd in commands:
+                                if cmd.startswith('get_tool_details '):
+                                    tool_name = cmd.split(' ', 1)[1].strip()
+                                    break
+
+                        if not tool_name:
+                            # Try to extract from reasoning
+                            import re
+                            match = re.search(r"'([a-z_]+)'", reasoning)
+                            if match:
+                                tool_name = match.group(1)
+
+                        if tool_name or investigate_commands:
+                            logger.warning(
+                                f"🔧 AUTO-CORRECT: LLM chose CANNOT_PROCEED but clearly needs investigation. "
+                                f"Converting to INVESTIGATE{' for ' + tool_name if tool_name else ''}"
+                            )
+                            await self._output(
+                                f"🔧 Auto-correcting decision: CANNOT_PROCEED → INVESTIGATE",
+                                "warning"
+                            )
+
+                            decision_type = DecisionType.INVESTIGATE
+                            if not commands and tool_name:
+                                commands = [f"get_tool_details {tool_name}"]
+                                data['commands'] = commands
+                            data['requires_approval'] = False  # Investigation doesn't need approval
+
                 return Decision(
                     decision_type=decision_type,
                     reasoning=data.get('reasoning', ''),
