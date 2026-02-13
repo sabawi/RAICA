@@ -2,6 +2,9 @@
 """
 Sandboxed System Command Executor Tool
 Provides secure code execution and system command access within isolated environment
+
+Configuration is loaded from config/llm_config.yaml under user_tools.sandboxed_executor
+No hardcoded security limits - all configurable per PROJECT_CONFIGURATION_DIRECTIVE
 """
 
 import os
@@ -11,8 +14,10 @@ import time
 import shutil
 import tempfile
 import subprocess
+import yaml
+import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Set
 from datetime import datetime
 
 try:
@@ -36,55 +41,113 @@ except ImportError:
         return content
 
 
+def load_config() -> Dict[str, Any]:
+    """
+    Load sandboxed_executor configuration from llm_config.yaml.
+
+    Returns:
+        Configuration dictionary with all settings
+
+    Raises:
+        FileNotFoundError: If config file not found
+        ValueError: If configuration is missing or invalid
+    """
+    # Find config file
+    config_paths = [
+        Path(__file__).parent.parent / "config" / "llm_config.yaml",
+        Path.cwd() / "config" / "llm_config.yaml",
+    ]
+
+    config_path = None
+    for path in config_paths:
+        if path.exists():
+            config_path = path
+            break
+
+    if not config_path:
+        raise FileNotFoundError(
+            f"llm_config.yaml not found. Searched: {[str(p) for p in config_paths]}"
+        )
+
+    # Load YAML
+    with open(config_path, 'r') as f:
+        full_config = yaml.safe_load(f)
+
+    # Extract sandboxed_executor config
+    try:
+        config = full_config['user_tools']['sandboxed_executor']
+    except KeyError:
+        raise ValueError(
+            "Configuration missing: user_tools.sandboxed_executor not found in llm_config.yaml"
+        )
+
+    return config
+
+
 class SandboxedExecutorTool(BaseUserTool):
     """
-    A secure sandboxed environment for executing system commands and running code.
-    
+    A configurable sandboxed environment for executing system commands and running code.
+
     Features:
-    - Isolated workspace directory with full RWX permissions
+    - Configurable workspace directory (defaults to user's home directory)
     - Per-request workspace isolation for concurrent users (Phase 1B)
     - Secure command execution with output capture
-    - File management within sandbox boundaries
-    - Resource limits and security controls
+    - File management with configurable access controls
+    - Configurable resource limits and security controls
     - Support for multiple programming languages
+    - Optional sudo/root privilege access (with approval)
+    - Three security modes: strict, permissive, unrestricted
+
+    Configuration loaded from: config/llm_config.yaml -> user_tools.sandboxed_executor
     """
-    
+
     def __init__(self):
         super().__init__()
-        
-        # Sandbox configuration
-        self.base_dir = Path.cwd()
-        self.sandbox_name = "sandbox_workspace"
+
+        # Load configuration from llm_config.yaml
+        try:
+            self.config = load_config()
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load sandboxed_executor configuration: {e}\n"
+                "Please ensure config/llm_config.yaml has user_tools.sandboxed_executor section"
+            )
+
+        # Workspace configuration
+        base_dir_config = self.config.get('base_directory')
+        self.base_dir = Path(base_dir_config) if base_dir_config else Path.home()
+        self.sandbox_name = self.config.get('sandbox_workspace_name', 'sandbox_workspace')
         self.sandbox_path = self.base_dir / self.sandbox_name
-        
-        # Security settings
-        self.max_execution_time = 30  # seconds
-        self.max_output_size = 50000  # characters
-        self.max_file_size = 10 * 1024 * 1024  # 10MB
-        
-        # Allowed/blocked commands for security
-        self.allowed_commands = {
-            'python3', 'python', 'node', 'npm', 'pip', 'pip3',
-            'gcc', 'g++', 'javac', 'java', 'rustc', 'cargo',
-            'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'find',
-            'echo', 'pwd', 'whoami', 'id', 'uname',
-            'chmod', 'mkdir', 'rmdir', 'touch', 'cp', 'mv', 'rm',
-            'tar', 'gzip', 'gunzip', 'curl', 'wget',
-            'pandoc', 'pdflatex', 'latex', 'convert'
-        }
-        
-        self.blocked_commands = {
-            'sudo', 'su', 'passwd', 'chown', 'chgrp',
-            'mount', 'umount', 'fdisk', 'mkfs',
-            'iptables', 'systemctl', 'service',
-            'reboot', 'shutdown', 'halt', 'init',
-            'crontab', 'at', 'batch',
-            'ssh', 'scp', 'rsync', 'nc', 'netcat'
-        }
-        
+
+        # Execution limits (from config)
+        exec_config = self.config.get('execution', {})
+        self.max_execution_time = exec_config.get('max_execution_time', 120)
+        self.max_output_size = exec_config.get('max_output_size', 100000)
+        self.max_file_size = exec_config.get('max_file_size', 52428800)
+
+        # Command access control mode
+        self.command_mode = self.config.get('command_mode', 'permissive')
+
+        # Command lists (from config)
+        self.allowed_commands = set(self.config.get('allowed_commands', []))
+        self.blocked_commands = set(self.config.get('blocked_commands', []))
+
+        # Sudo configuration
+        sudo_config = self.config.get('sudo_access', {})
+        self.sudo_enabled = sudo_config.get('enabled', False)
+        self.sudo_require_approval = sudo_config.get('require_approval', True)
+        self.allowed_sudo_commands = set(sudo_config.get('allowed_sudo_commands', []))
+        self.blocked_sudo_commands = set(sudo_config.get('blocked_sudo_commands', []))
+
+        # Filesystem access control
+        fs_config = self.config.get('filesystem', {})
+        self.allow_absolute_paths = fs_config.get('allow_absolute_paths', True)
+        self.restricted_paths = set(fs_config.get('restricted_paths', []))
+        self.allowed_paths = set(fs_config.get('allowed_paths', []))
+
         # Phase 1B: Workspace isolation support
         self.supports_workspace_isolation = True
-        
+
         # Initialize sandbox
         self._setup_sandbox()
     
@@ -94,7 +157,22 @@ class SandboxedExecutorTool(BaseUserTool):
     
     @property
     def description(self) -> str:
-        return "Execute system commands, read/write files, and run code in a secure sandboxed environment. Use 'read_file' action to read specific files by path (e.g., PDFs, documents). Use 'create_file' to generate new files. Use 'execute' for system commands. Full diagnostic output capture for LLM analysis."
+        mode_desc = {
+            'strict': 'whitelist-only commands',
+            'permissive': 'most commands allowed',
+            'unrestricted': 'all commands allowed'
+        }.get(self.command_mode, 'configured')
+
+        sudo_desc = "with sudo access" if self.sudo_enabled else "without sudo"
+
+        return (
+            f"Execute system commands, read/write files, and run code in a configurable sandboxed environment. "
+            f"Current mode: {mode_desc} ({sudo_desc}). "
+            f"Access: {self.base_dir}/** and configured paths. "
+            f"Use 'execute' for system commands, 'read_file' to read files, 'create_file' to write files. "
+            f"Supports: Python, JavaScript, Bash, C, C++, Java, Rust code execution. "
+            f"Full diagnostic output capture for LLM analysis."
+        )
     
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -506,10 +584,11 @@ This analysis incorporates:
             (self.sandbox_path / "tmp").mkdir(exist_ok=True)
             
             # Create a README
+            sudo_status = "enabled (requires approval)" if self.sudo_enabled else "disabled"
             readme_content = f"""# Sandboxed Workspace
 Created: {datetime.now().isoformat()}
 
-This is a secure sandboxed environment for code execution and system commands.
+This is a configurable sandboxed environment for code execution and system commands.
 
 ## Directory Structure:
 - src/    - Source code files
@@ -517,11 +596,24 @@ This is a secure sandboxed environment for code execution and system commands.
 - data/   - Data files
 - tmp/    - Temporary files
 
-## Security:
-- No access outside this directory
-- Limited system commands
-- Resource limits enforced
-- All output captured for analysis
+## Security Configuration:
+- Command Mode: {self.command_mode}
+- Sudo Access: {sudo_status}
+- Base Directory: {self.base_dir}
+- Allowed Paths: {', '.join(self.allowed_paths) if self.allowed_paths else 'base directory only'}
+- Execution Timeout: {self.max_execution_time}s
+- Max File Size: {self.max_file_size / 1024 / 1024:.1f}MB
+- Max Output Size: {self.max_output_size} chars
+
+## Command Access:
+- Strict Mode: Only whitelisted commands ({len(self.allowed_commands)} commands)
+- Permissive Mode: All except blacklisted ({len(self.blocked_commands)} blocked)
+- Unrestricted Mode: All commands allowed
+
+Current mode: **{self.command_mode.upper()}**
+
+All output captured for analysis.
+Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
 """
             
             readme_path = self.sandbox_path / "README.md"
@@ -535,32 +627,86 @@ This is a secure sandboxed environment for code execution and system commands.
             raise
     
     def _validate_command(self, command: str) -> Tuple[bool, str]:
-        """Validate command for security."""
+        """
+        Validate command for security based on configured mode.
+
+        Modes:
+        - strict: Only allowed_commands whitelist
+        - permissive: All commands except blocked_commands blacklist (default)
+        - unrestricted: All commands allowed (use with caution!)
+
+        Returns:
+            Tuple[bool, str]: (is_valid, message)
+        """
         if not command or not command.strip():
             return False, "Empty command"
-        
-        # Extract the base command
-        base_cmd = command.strip().split()[0]
-        
-        # Check if command is blocked
-        if base_cmd in self.blocked_commands:
-            return False, f"Blocked command: {base_cmd}"
-        
-        # Check for dangerous patterns (excluding safe compilation chains)
+
+        # Extract the base command (handle sudo)
+        cmd_parts = command.strip().split()
+        base_cmd = cmd_parts[0]
+        is_sudo = (base_cmd == 'sudo' or base_cmd.startswith('sudo'))
+
+        # Get actual command after sudo
+        actual_cmd = cmd_parts[1] if is_sudo and len(cmd_parts) > 1 else base_cmd
+
+        # Check if sudo is being used
+        if is_sudo:
+            if not self.sudo_enabled:
+                return False, "Sudo access is disabled in configuration"
+
+            # Check if the command after sudo is allowed
+            if actual_cmd not in self.allowed_sudo_commands:
+                return False, f"Sudo command '{actual_cmd}' not in allowed_sudo_commands list"
+
+            # Check if command is in blocked sudo list
+            if actual_cmd in self.blocked_sudo_commands:
+                return False, f"Sudo command '{actual_cmd}' is explicitly blocked"
+
+            # Sudo approval check (if configured)
+            if self.sudo_require_approval:
+                # Note: Approval will be requested by execute method
+                pass
+
+        # Always check blocked commands (regardless of mode)
+        if actual_cmd in self.blocked_commands:
+            return False, f"Command '{actual_cmd}' is explicitly blocked"
+
+        # Check for dangerous patterns in blocked_commands (regex patterns)
+        for pattern in self.blocked_commands:
+            if '*' in pattern or '/' in pattern or '>' in pattern:
+                # It's a pattern, check if it matches
+                if pattern.lower() in command.lower():
+                    return False, f"Dangerous pattern detected: {pattern}"
+
+        # Mode-specific validation
+        if self.command_mode == 'strict':
+            # Strict mode: Only whitelisted commands allowed
+            if actual_cmd not in self.allowed_commands:
+                return False, f"Command '{actual_cmd}' not in allowed_commands list (strict mode)"
+
+        elif self.command_mode == 'permissive':
+            # Permissive mode: All except blocked commands (already checked above)
+            pass
+
+        elif self.command_mode == 'unrestricted':
+            # Unrestricted mode: All commands allowed (only basic checks)
+            pass
+
+        else:
+            return False, f"Invalid command_mode: {self.command_mode}"
+
+        # Additional safety checks for known dangerous patterns
         dangerous_patterns = [
-            '../', '..\\', '/etc/', '/proc/', '/sys/', '/dev/',
-            '$(', '`', 'rm -rf /', 'dd if=', 'mkfs', 'format'
+            '/etc/shadow',
+            '/etc/passwd',
+            '/boot',
         ]
-        
-        # Special handling for compilation chains - allow controlled && usage
-        if not self._is_safe_compilation_command(command):
-            dangerous_patterns.extend(['&&', '||', ';', '|'])
-        
+
         for pattern in dangerous_patterns:
-            if pattern in command.lower():
-                return False, f"Dangerous pattern detected: {pattern}"
-        
-        return True, "Command allowed"
+            if pattern in command:
+                return False, f"Access to {pattern} is restricted"
+
+        return True, f"Command allowed (mode: {self.command_mode})"
     
     def _analyze_command_error(self, command: str, return_code: int, stderr: str) -> str:
         """Analyze command errors and provide helpful suggestions."""
@@ -631,17 +777,49 @@ This is a secure sandboxed environment for code execution and system commands.
         return False
     
     def _validate_path(self, path: str) -> Tuple[bool, str]:
-        """Ensure path is within sandbox boundaries."""
+        """
+        Validate path based on configured filesystem access rules.
+
+        Checks:
+        1. Restricted paths (always blocked)
+        2. Base directory access (default: user home)
+        3. Allowed paths (additional accessible locations)
+        4. Absolute path policy
+
+        Returns:
+            Tuple[bool, str]: (is_valid, absolute_path)
+        """
         try:
             # Convert to absolute path
-            abs_path = Path(path).resolve() if Path(path).is_absolute() else (self.sandbox_path / path).resolve()
-            
-            # Check if path is within sandbox
-            if not str(abs_path).startswith(str(self.sandbox_path.resolve())):
-                return False, f"Path outside sandbox: {abs_path}"
-            
-            return True, str(abs_path)
-            
+            if Path(path).is_absolute():
+                abs_path = Path(path).resolve()
+            else:
+                abs_path = (self.sandbox_path / path).resolve()
+
+            abs_path_str = str(abs_path)
+
+            # Check restricted paths (always blocked)
+            for restricted in self.restricted_paths:
+                if abs_path_str.startswith(restricted):
+                    return False, f"Access to {restricted} is restricted"
+
+            # Check if path is within base directory (e.g., /home/sabawi)
+            base_dir_str = str(self.base_dir.resolve())
+            if abs_path_str.startswith(base_dir_str):
+                return True, abs_path_str
+
+            # Check allowed additional paths
+            for allowed in self.allowed_paths:
+                if abs_path_str.startswith(allowed):
+                    return True, abs_path_str
+
+            # If absolute paths are not allowed and path is outside base
+            if not self.allow_absolute_paths:
+                return False, f"Absolute paths outside base directory are not allowed: {abs_path}"
+
+            # Path is outside base but absolute paths are allowed
+            return True, abs_path_str
+
         except Exception as e:
             return False, f"Invalid path: {e}"
     

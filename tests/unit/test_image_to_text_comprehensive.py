@@ -11,8 +11,9 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 # Add project root to path for imports
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, project_root)
+from tests.utilities.test_helpers import setup_test_paths
+
+setup_test_paths()
 
 from user_tools.image_to_text import ImageToTextTool
 

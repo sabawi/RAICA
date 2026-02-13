@@ -150,7 +150,8 @@ from ..orchestrator import (
     OrchestratorCallbacks, CommandRisk
 )
 from agents.common.state_manager import StateManager
-from ..agent_config import AgentDefaults
+from ..config_accessor import get_max_iterations
+from ..services.language_detector import LANGUAGE_DEFINITIONS
 
 # Import Context Management System (v2.2)
 try:
@@ -272,6 +273,7 @@ class InteractiveAgentApp(App):
         self._raica_server_url = self._config.get('raica_server_url', 'http://localhost:5000')
         self._verbose = self._config.get('verbose', False)
         self._allow_sudo = self._config.get('allow_sudo', False)
+        self._initial_request = self._config.get('initial_request')  # For CLI create mode
 
         # Track last request for continuation handling
         self._last_request: Optional[str] = None
@@ -336,6 +338,20 @@ class InteractiveAgentApp(App):
 
         # Check for interrupt requests every 500ms (gives Textual a chance to handle gracefully)
         self.set_interval(0.5, self._check_interrupt)
+        
+        # Auto-submit initial request if provided (for CLI create mode)
+        if self._initial_request:
+            self.output.add_info(f"📋 Auto-starting with request: {self._initial_request[:100]}...")
+            # Use call_later to submit after mount is complete
+            self.call_later(self._auto_submit_request)
+
+    def _auto_submit_request(self) -> None:
+        """Auto-submit initial request for CLI create mode."""
+        if self._initial_request:
+            # Simulate the input submission
+            from agents.coding_agent.tui.widgets.prompt_panel import PromptPanel
+            event = PromptPanel.PromptSubmitted(value=self._initial_request)
+            self.post_message(event)
 
     def _check_interrupt(self) -> None:
         """Check for interrupt requests and handle gracefully within Textual."""
@@ -1138,19 +1154,25 @@ class InteractiveAgentApp(App):
         if not self._project_dir.exists():
             return False
 
-        # Check for source code files
-        code_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs', '.cpp', '.c', '.rb', '.php'}
+        # Check for source code files (use all extensions from language detector)
+        code_extensions = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            code_extensions.update(lang_info.file_extensions)
         for item in self._project_dir.iterdir():
             if item.is_file() and item.suffix in code_extensions:
                 logger.info(f"[DETECT] Found source file: {item.name}")
                 return True
 
-        # Check for package/config files
-        package_files = {
-            'package.json', 'requirements.txt', 'Cargo.toml', 'go.mod',
-            'pom.xml', 'build.gradle', 'Gemfile', 'composer.json',
-            'setup.py', 'pyproject.toml', 'Makefile', 'CMakeLists.txt'
-        }
+        # Check for package/config files (include manifest files from language detector)
+        package_files = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            for manifest in lang_info.manifest_files:
+                if not manifest.startswith('*'):  # Skip glob patterns
+                    package_files.add(manifest)
+        # Add additional common files not in language definitions
+        package_files.update({
+            'Makefile', 'CMakeLists.txt', 'docker-compose.yml', '.gitignore'
+        })
         for pf in package_files:
             if (self._project_dir / pf).exists():
                 logger.info(f"[DETECT] Found package file: {pf}")
@@ -1376,7 +1398,7 @@ Example that should return TRUE:
                     llm_client=self._llm_client,
                     project_dir=self._project_dir,
                     output_callback=lambda msg: self.output.add_info(msg),
-                    max_iterations=AgentDefaults.MAX_ITERATIONS
+                    max_iterations=get_max_iterations()
                 )
 
                 result = await controller.run_enhancement(
@@ -1422,7 +1444,7 @@ Example that should return TRUE:
                     llm_client=self._llm_client,
                     project_dir=self._project_dir,
                     output_callback=lambda msg: self.output.add_info(msg),
-                    max_iterations=AgentDefaults.MAX_ITERATIONS
+                    max_iterations=get_max_iterations()
                 )
     
                 # Run autonomous debug loop - NO APPROVALS
@@ -1558,7 +1580,7 @@ Example that should return TRUE:
                 llm_client=self._llm_client,
                 project_dir=self._project_dir,
                 output_callback=lambda msg: self.output.add_info(msg),
-                max_iterations=AgentDefaults.MAX_ITERATIONS
+                max_iterations=get_max_iterations()
             )
 
             # Run autonomous debug loop - NO APPROVALS
@@ -2036,8 +2058,11 @@ Example that should return TRUE:
 
         total_phases = len(phases)
         agent.context.original_request = request
+        
+        logger.info(f"[PHASES] Starting phase execution loop - {total_phases} phases to run")
 
         for idx, (phase, phase_name) in enumerate(phases):
+            logger.info(f"[PHASES] Starting phase {idx+1}/{total_phases}: {phase_name}")
             if self._paused:
                 self.output.add_warning("Agent paused. Press Ctrl+R to resume.")
                 while self._paused:
@@ -2323,12 +2348,27 @@ Define:
             return False
 
     async def _phase_design(self) -> bool:
-        """Execute design phase."""
+        """Execute design phase with LLD verification."""
         agent = self._agent
+        
+        # Import quality gates with explicit logging
+        quality_gates = None
+        try:
+            from ..quality_gates import QualityGates
+            quality_gates = QualityGates(
+                llm_client=agent.llm_client,
+                project_dir=agent.project_dir,
+                output_fn=lambda msg: self.output.add_info(msg)
+            )
+            logger.info("[QUALITY_GATES] Successfully initialized QualityGates for design phase")
+            self.output.add_info("🔒 Quality gates enabled for LLD verification")
+        except Exception as e:
+            logger.error(f"[QUALITY_GATES] Failed to import QualityGates: {e}")
+            self.output.add_warning(f"Quality gates not available: {e}")
 
         self.output.add_info("Creating detailed design...")
 
-        prompt = f"""Create detailed file specifications:
+        prompt = f"""Create detailed file specifications (Low-Level Design):
 
 REQUIREMENTS:
 {chr(10).join(f'- {r}' for r in agent.context.refined_requirements[:5])}
@@ -2337,10 +2377,18 @@ ARCHITECTURE:
 {agent.context.architecture[:500] if hasattr(agent.context, 'architecture') else 'Standard modular design'}
 
 Specify each file to create with:
-1. Filename
+1. Filename (MUST include main.py or index.html as entry point)
 2. Purpose
-3. Key classes/functions
-4. Dependencies"""
+3. Key classes/functions with signatures
+4. Dependencies (imports)
+
+CRITICAL: You MUST specify a clear ENTRY POINT file (main.py for Python, index.html for web).
+
+Format each file as:
+[NEW] filename.ext
+- Purpose: ...
+- Functions: func1(), func2(), ...
+- Dependencies: module1, module2, ..."""
 
         try:
             response = await asyncio.to_thread(
@@ -2350,9 +2398,13 @@ Specify each file to create with:
             content = response.content if hasattr(response, 'content') else str(response)
             self.output.add_llm_response(content[:1000], agent._provider)
 
+            # NEW: Verify LLD completeness
+            if quality_gates:
+                content = await quality_gates.verify_lld_completeness(content)
+            
             # Parse file specifications
             agent.context.file_specs = content
-            self.output.add_success("Design specifications complete")
+            self.output.add_success("Design specifications complete (verified)")
             return True
 
         except Exception as e:
@@ -2367,8 +2419,25 @@ Specify each file to create with:
         return True
 
     async def _phase_coding(self) -> bool:
-        """Execute coding phase - generate actual code files."""
+        """Execute coding phase - generate actual code files with quality gates."""
         agent = self._agent
+        
+        # Import quality gates
+        try:
+            from ..quality_gates import QualityGates
+            quality_gates = QualityGates(
+                llm_client=agent.llm_client,
+                project_dir=agent.project_dir,
+                output_fn=lambda msg: self.output.add_info(msg)
+            )
+            logger.info("[QUALITY_GATES] Successfully initialized QualityGates for coding phase")
+            self.output.add_info("🔒 Quality gates enabled for stub detection")
+        except Exception as e:
+            logger.error(f"[QUALITY_GATES] Failed to import QualityGates in coding phase: {e}")
+            self.output.add_warning(f"Quality gates not available in coding: {e}")
+        
+        # Track files for documentation
+        files_created = []
 
         self.output.add_info("Generating code files...")
 
@@ -2398,10 +2467,12 @@ Example: ["index.html", "styles.css", "script.js"]
             import json
             import re
             
-            # Valid file extensions to look for
-            valid_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.html', '.css', '.json',
-                               '.yaml', '.yml', '.md', '.txt', '.sh', '.go', '.rs', '.java',
-                               '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.sql', '.vue', '.svelte'}
+            # Valid file extensions to look for (from language definitions)
+            valid_extensions = set()
+            for lang_info in LANGUAGE_DEFINITIONS.values():
+                valid_extensions.update(lang_info.file_extensions)
+            # Add common config/doc extensions
+            valid_extensions.update({'.json', '.yaml', '.yml', '.md', '.txt', '.sh', '.sql', '.vue', '.svelte', '.toml'})
 
             def is_valid_filename(s: str) -> bool:
                 """Check if string looks like a valid filename."""
@@ -2446,16 +2517,67 @@ Example: ["index.html", "styles.css", "script.js"]
                         if len(files_to_generate) >= 10:  # Limit to prevent runaway
                             break
 
-            # Sanity check
+            # Sanity check - use LLM to classify entry file (CLAUDE.md compliance)
             if not files_to_generate:
-                self.output.add_warning("Could not determine files, falling back to basic structure.")
-                files_to_generate = ["index.html"] if "html" in agent.context.original_request.lower() else ["main.py"]
+                self.output.add_warning("Could not determine files, asking LLM to classify...")
+                # Use LLM classification instead of keyword matching
+                if hasattr(agent, '_llm_classify_entry_file'):
+                    entry_file = agent._llm_classify_entry_file(agent.context.original_request)
+                    files_to_generate = [entry_file]
+                else:
+                    # Fallback only if method unavailable (should not happen)
+                    self.output.add_warning("LLM classification unavailable, defaulting to main.py")
+                    files_to_generate = ["main.py"]
+            
+            # NEW: Enforce entry point exists
+            if quality_gates:
+                files_to_generate = quality_gates.enforce_entry_point(files_to_generate)
+            else:
+                # Manual fallback check
+                has_main = any(f == 'main.py' for f in files_to_generate)
+                has_index = any(f == 'index.html' for f in files_to_generate)
+                if not has_main and not has_index:
+                    py_files = [f for f in files_to_generate if f.endswith('.py')]
+                    if py_files:
+                        files_to_generate = ['main.py'] + files_to_generate
+                        self.output.add_warning("Added main.py as entry point")
             
             self.output.add_info(f"Files to generate: {', '.join(files_to_generate)}")
 
         except Exception as e:
             self.output.add_error(f"Failed to determine file list: {e}")
-            files_to_generate = ["main.py", "requirements.txt"]
+            # Use LLM classification for fallback (CLAUDE.md compliance)
+            try:
+                if hasattr(agent, '_llm_classify_entry_file') and agent.context.original_request:
+                    entry_file = agent._llm_classify_entry_file(agent.context.original_request)
+                    # Add appropriate companion file based on entry type
+                    if entry_file.endswith('.html'):
+                        files_to_generate = [entry_file, "style.css"]
+                    elif entry_file.endswith('.js') or entry_file.endswith('.ts'):
+                        files_to_generate = [entry_file, "package.json"]
+                    elif entry_file.endswith('.py'):
+                        files_to_generate = [entry_file, "requirements.txt"]
+                    else:
+                        files_to_generate = [entry_file]
+                else:
+                    files_to_generate = ["main.py", "requirements.txt"]
+            except Exception as llm_err:
+                self.output.add_warning(f"LLM classification failed: {llm_err}")
+                files_to_generate = ["main.py", "requirements.txt"]
+
+        # [NEW] Initialize Symbol Extractor for real-time resolution
+        symbol_context_str = ""
+        try:
+            from ..services.symbol_extractor import SymbolExtractor, SymbolContextGenerator
+            extractor = SymbolExtractor(agent.project_dir)
+            # Initialize with empty table or pre-scan if needed (but directory starts empty)
+            extractor.build_symbol_table([]) 
+            ctx_gen = SymbolContextGenerator(extractor.symbol_table)
+            logger.info("Initialized real-time symbol extraction")
+        except Exception as e:
+            logger.warning(f"Failed to initialize symbol extractor: {e}")
+            extractor = None
+            ctx_gen = None
 
         for i, filename in enumerate(files_to_generate):
             self.output.add_info(f"Generating {filename}...")
@@ -2479,6 +2601,8 @@ REQUIREMENTS:
 
 === FILE SPECIFICATIONS (LLD) ===
 {file_specs[:2000] if file_specs else f'Files to create: {", ".join(files_to_generate)}'}
+
+{symbol_context_str}
 
 FILES IN THIS PROJECT: {', '.join(files_to_generate)}
 
@@ -2587,11 +2711,35 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
                 code = self._extract_code(content, expected_type=file_ext)
 
                 if code:
+                    # NEW: Stub detection and completion
+                    if quality_gates:
+                        stubs = quality_gates.detect_stubs(code, filename)
+                        if stubs:
+                            self.output.add_warning(f"Detected {len(stubs)} stubs in {filename}, completing...")
+                            code = await quality_gates.complete_stubs(filename, code, stubs)
+                        
+                        # NEW: Code quality review
+                        code = await quality_gates.review_code_quality(filename, code)
+                    
                     # Save file
                     file_path = agent.project_dir / filename
                     # Ensure parent dirs exist
                     file_path.parent.mkdir(parents=True, exist_ok=True)
                     file_path.write_text(code)
+                    
+                    # [NEW] Update symbol table immediately
+                    if extractor and ctx_gen:
+                        try:
+                            extractor.update_file(file_path)
+                            # Regenerate context for next file
+                            symbol_context_str = ctx_gen.generate_context(max_symbols_per_file=30)
+                            logger.info(f"Updated symbol context after generating {filename}")
+                        except Exception as e:
+                            logger.warning(f"Failed to update symbols for {filename}: {e}")
+
+                    
+                    # Track for documentation
+                    files_created.append(filename)
 
                     self.output.add_file_generated(filename, len(code))
                     self._files_generated += 1
@@ -2621,6 +2769,32 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
                 break
             self.output.add_info(f"🔄 Correction attempt {attempt + 1}/3...")
             await self._fix_code_issues(issues)
+        
+        # NEW: Generate documentation using quality gates
+        if quality_gates and files_created:
+            await quality_gates.generate_documentation(
+                files_created=files_created,
+                project_name=agent.project_name if hasattr(agent, 'project_name') else "",
+                original_request=agent.context.original_request
+            )
+            
+            # NEW: Final verification checklist
+            design_content = getattr(agent.context, 'file_specs', '')
+            if design_content:
+                verification_result = await quality_gates.verify_against_design(
+                    design_content=design_content,
+                    files_created=files_created
+                )
+                if not verification_result['passed']:
+                    self.output.add_warning(
+                        f"Verification: {verification_result['completion_pct']:.1f}% complete"
+                    )
+        else:
+            # Fallback to existing readme generation
+            await self._generate_project_readme()
+        
+        # Show run instructions to user
+        self._show_run_instructions()
         
         return True
 
@@ -2670,8 +2844,48 @@ Output ONLY the code/content wrapped in a code block, no explanations."""
         elif issues_found:
             self.output.add_warning(f"Found issues in {len(issues_found)} languages")
             self._logger.warning("Found issues in %d languages", len(issues_found))
+            
+            # [NEW] Auto-fix loop
+            self.output.add_info("🔧 Attempting to auto-fix issues...")
+            
+            for attempt in range(3):
+                # We need to structure the issues for the fix function
+                # The _fix_code_issues expects a list of issue strings
+                
+                # Combine all found issues into one list for the fix prompt
+                all_issues = []
+                for issue_block in issues_found:
+                     # Each block is "Language Issues:\n line 1...\n line 2..."
+                     # We just pass the whole block to the context
+                     all_issues.append(issue_block)
+                
+                self.output.add_info(f"🔄 Fix attempt {attempt + 1}/3...")
+                await self._fix_code_issues(all_issues)
+                
+                # Re-run linters to verify
+                issues_found = []
+                failures = 0
+                for lang in languages_to_check:
+                    result = await run_linter(agent.project_dir, lang)
+                    if result.get('has_issues'):
+                        issues_msg = result.get('issues', '').strip()
+                        issues_found.append(f"{lang.title()} Issues:\n{issues_msg}")
+                        failures += 1
+                
+                if failures == 0:
+                    self.output.add_success(f"✓ All issues resolved after {attempt + 1} attempt(s)")
+                    break
+                else:
+                    self.output.add_warning(f"⚠ {failures} languages still have issues")
+            
+            if issues_found:
+                # Still have issues after 3 attempts - but code may still work
+                self.output.add_warning("⚠ Some linting issues remain (code may still work)")
+                self.output.add_info("   Run 'flake8 .' manually to see details")
+            else:
+                self.output.add_success("✅ All issues resolved")
         else:
-            self.output.add_success("All checks passed")
+            self.output.add_success("✅ No errors found")
             self._logger.info("All checks passed")
 
         return True
@@ -2768,19 +2982,30 @@ Output complete test code."""
         
         # 1. Create virtual environment
         venv_path = project_dir / "venv"
+        self.output.add_info(f"Target venv path: {venv_path}")
+        
         if not venv_path.exists():
             self.output.add_info("Creating virtual environment...")
             try:
+                # Use check=False to capture stderr manually
+                cmd = [sys.executable, "-m", "venv", str(venv_path)]
+                logger.info(f"Running venv command: {cmd}")
+                
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    [sys.executable, "-m", "venv", str(venv_path)],
+                    cmd,
                     capture_output=True, text=True, timeout=60
                 )
+                
                 if result.returncode == 0:
-                    self.output.add_success("✓ Virtual environment created")
+                    if venv_path.exists():
+                        self.output.add_success(f"✓ Virtual environment created at {venv_path}")
+                    else:
+                        self.output.add_error(f"Venv command succeeded but folder missing: {venv_path}")
                 else:
-                    self.output.add_error(f"Failed to create venv: {result.stderr[:200]}")
+                    self.output.add_error(f"Failed to create venv (code {result.returncode}): {result.stderr[:200]}")
                     return False
+
             except subprocess.TimeoutExpired:
                 self.output.add_error("Venv creation timed out")
                 return False
@@ -3119,6 +3344,180 @@ Output complete test code."""
                 self.output.add_warning(f"Could not fix issue: {e}")
                 
         return True
+
+    async def _generate_project_readme(self) -> None:
+        """
+        Generate a comprehensive README.md for the project.
+        
+        Includes installation instructions, usage, project structure,
+        and dependencies based on the actual generated files.
+        """
+        agent = self._agent
+        project_dir = agent.project_dir
+        
+        self.output.add_info("📝 Generating README.md...")
+        
+        # Collect project info (use LANGUAGE_DEFINITIONS for all code extensions)
+        all_files = []
+        code_extensions = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            code_extensions.update(lang_info.file_extensions)
+        # Also include common config files
+        code_extensions.update(['.yaml', '.json', '.toml', '.ini'])
+        for ext in code_extensions:
+            all_files.extend([f.name for f in project_dir.glob(f"*{ext}")])
+        
+        # Get requirements
+        requirements = []
+        if (project_dir / "requirements.txt").exists():
+            req_content = (project_dir / "requirements.txt").read_text().strip()
+            requirements = [r for r in req_content.split('\n') if r.strip() and not r.startswith('#')]
+        
+        # Detect entry point
+        entry_point = None
+        for ep in ['main.py', 'app.py', '__main__.py', 'index.py']:
+            if (project_dir / ep).exists():
+                entry_point = ep
+                break
+        
+        # Get project description from context
+        project_desc = getattr(agent.context, 'original_request', 'Generated Project')
+        
+        # Build prompt for README generation
+        prompt = f"""Generate a README.md for this project.
+
+PROJECT NAME: {project_dir.name}
+PROJECT DESCRIPTION: {project_desc}
+
+FILES IN PROJECT: {', '.join(all_files[:15])}
+
+REQUIREMENTS: {', '.join(requirements[:10]) if requirements else 'None specified'}
+
+ENTRY POINT: {entry_point or 'main.py'}
+
+Generate a complete README.md with these sections:
+1. # {project_dir.name} - Project title
+2. ## Description - Brief summary of what the project does
+3. ## Installation - Step-by-step installation:
+   - cd into project directory
+   - Create virtual environment: python -m venv venv  
+   - Activate: source venv/bin/activate (Linux/Mac) or venv\\Scripts\\activate (Windows)
+   - Install deps: pip install -r requirements.txt
+4. ## Usage - How to run the project (python {entry_point or 'main.py'})
+5. ## Project Structure - Brief description of each file
+6. ## Dependencies - List from requirements.txt
+
+Use proper Markdown formatting. Be concise but complete.
+Output ONLY the markdown content, no code blocks wrapping it.
+"""
+        
+        try:
+            response = await asyncio.to_thread(agent.llm_client.generate, prompt)
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Clean up response - remove code block wrappers if present
+            readme = content.strip()
+            if readme.startswith('```markdown'):
+                readme = readme[11:]
+            if readme.startswith('```md'):
+                readme = readme[5:]
+            if readme.startswith('```'):
+                readme = readme[3:]
+            if readme.endswith('```'):
+                readme = readme[:-3]
+            readme = readme.strip()
+            
+            # Ensure it has a title
+            if not readme.startswith('#'):
+                readme = f"# {project_dir.name}\n\n{readme}"
+            
+            (project_dir / "README.md").write_text(readme)
+            self.output.add_file_generated("README.md", len(readme))
+            
+        except Exception as e:
+            self._logger.warning("Failed to generate README: %s", e)
+            # Generate a basic fallback README
+            fallback = f"""# {project_dir.name}
+
+## Description
+
+{project_desc}
+
+## Installation
+
+```bash
+cd {project_dir}
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\\Scripts\\activate
+pip install -r requirements.txt
+```
+
+## Usage
+
+```bash
+python {entry_point or 'main.py'}
+```
+
+## Files
+
+{chr(10).join(f'- `{f}`' for f in all_files[:10])}
+
+## Dependencies
+
+{chr(10).join(f'- {r}' for r in requirements[:10]) if requirements else 'See requirements.txt'}
+"""
+            (project_dir / "README.md").write_text(fallback)
+            self.output.add_file_generated("README.md", len(fallback))
+
+    def _show_run_instructions(self) -> None:
+        """
+        Display clear run instructions for the generated project.
+        
+        Shows the project location, how to activate venv,
+        install dependencies, and run the entry point.
+        """
+        agent = self._agent
+        project_dir = agent.project_dir
+        
+        # Detect entry point
+        entry_point = None
+        for ep in ['main.py', 'app.py', '__main__.py', 'index.py']:
+            if (project_dir / ep).exists():
+                entry_point = ep
+                break
+        
+        has_venv = (project_dir / 'venv').exists()
+        has_requirements = (project_dir / 'requirements.txt').exists()
+        
+        # Build the run commands
+        commands = []
+        commands.append(f"cd {project_dir}")
+        
+        if has_venv:
+            commands.append("source venv/bin/activate  # On Windows: venv\\Scripts\\activate")
+        else:
+            commands.append("python -m venv venv")
+            commands.append("source venv/bin/activate")
+        
+        if has_requirements:
+            commands.append("pip install -r requirements.txt")
+        
+        commands.append(f"python {entry_point or 'main.py'}")
+        
+        # Display formatted output
+        self.output.add_info("")
+        self.output.add_info("=" * 55)
+        self.output.add_success("🎉 PROJECT GENERATION COMPLETE!")
+        self.output.add_info("=" * 55)
+        
+        self.output.add_info(f"\n📁 Project location: {project_dir}")
+        
+        self.output.add_info("\n🚀 To run your project:\n")
+        self.output.add_code('\n'.join(commands), language='bash')
+        
+        # Add note about README
+        if (project_dir / "README.md").exists():
+            self.output.add_info("\n📖 See README.md for full documentation")
 
     def _should_launch_project(self, request: str) -> bool:
         """

@@ -11,7 +11,10 @@ import json
 import os
 import asyncio
 import time
+import logging
 from typing import Dict, Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Import dependencies
 try:
@@ -342,6 +345,398 @@ async def post_tweet(
             "result": None,
             "error": f"Unexpected error: {str(e)}",
             "error_category": "unknown"
+        }
+
+
+# =============================================================================
+# Twitter Read Operations (API v2)
+# =============================================================================
+
+def get_bearer_auth() -> Optional[str]:
+    """
+    Get Bearer token for app-only authentication (read operations).
+
+    Returns:
+        Bearer token or None if not configured
+    """
+    bearer_env = os.getenv('BEARER_TOKEN_ENV', 'TWITTER_BEARER_TOKEN')
+    return os.getenv(bearer_env)
+
+
+async def get_authenticated_user_id(oauth: OAuth1) -> Optional[str]:
+    """
+    Get the authenticated user's ID.
+
+    Args:
+        oauth: OAuth1 authentication object
+
+    Returns:
+        User ID or None if failed
+    """
+    try:
+        url = f"{TWITTER_API_BASE}/{TWITTER_API_VERSION}/users/me"
+        response = requests.get(
+            url,
+            auth=oauth,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get('data', {}).get('id')
+    except Exception as e:
+        logger.error(f"Failed to get authenticated user ID: {e}")
+        return None
+
+
+async def get_user_tweets(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get the authenticated user's recent tweets.
+
+    Args:
+        limit: Maximum number of tweets to return (default: 10, max: 100)
+
+    Returns:
+        Dict with success status and list of tweets
+    """
+    start_time = time.time()
+
+    try:
+        # Load credentials
+        api_key, api_secret, access_token, access_secret = load_credentials()
+
+        if not all([api_key, api_secret, access_token, access_secret]):
+            return {
+                "success": False,
+                "result": None,
+                "error": "Missing OAuth credentials for get_user_tweets",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        oauth = create_oauth1_session(api_key, api_secret, access_token, access_secret)
+
+        # Get user ID first
+        user_id = await get_authenticated_user_id(oauth)
+        if not user_id:
+            return {
+                "success": False,
+                "result": None,
+                "error": "Failed to get authenticated user ID",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        # Fetch user's tweets
+        url = f"{TWITTER_API_BASE}/{TWITTER_API_VERSION}/users/{user_id}/tweets"
+        params = {
+            "max_results": min(limit, 100),
+            "tweet.fields": "id,text,created_at,public_metrics,conversation_id",
+            "expansions": "author_id",
+            "user.fields": "username,name"
+        }
+
+        response = requests.get(
+            url,
+            auth=oauth,
+            params=params,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+
+        if response.status_code == 429:
+            reset_time = response.headers.get('x-rate-limit-reset', 'unknown')
+            return {
+                "success": False,
+                "result": None,
+                "error": f"Rate limit exceeded. Resets at: {reset_time}",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        response.raise_for_status()
+        data = response.json()
+
+        tweets = []
+        for tweet in data.get('data', []):
+            tweets.append({
+                "id": tweet.get('id'),
+                "text": tweet.get('text'),
+                "created_at": tweet.get('created_at'),
+                "metrics": tweet.get('public_metrics', {}),
+                "conversation_id": tweet.get('conversation_id')
+            })
+
+        return {
+            "success": True,
+            "result": {
+                "tweets": tweets,
+                "count": len(tweets),
+                "user_id": user_id
+            },
+            "error": None,
+            "metadata": {
+                "execution_time": time.time() - start_time,
+                "limit_requested": limit
+            }
+        }
+
+    except requests.exceptions.RequestException as e:
+        api_key, api_secret, access_token, access_secret = load_credentials()
+        error_msg = sanitize_credentials_in_error(
+            str(e), api_key, api_secret, access_token, access_secret
+        )
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Failed to get user tweets: {error_msg}",
+            "metadata": {"execution_time": time.time() - start_time}
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Unexpected error in get_user_tweets: {str(e)}",
+            "metadata": {"execution_time": time.time() - start_time}
+        }
+
+
+async def get_tweet_replies(tweet_id: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    Get replies to a specific tweet.
+
+    Uses Twitter API v2 search with conversation_id filter.
+
+    Args:
+        tweet_id: ID of the tweet to get replies for
+        limit: Maximum number of replies to return (default: 10, max: 100)
+
+    Returns:
+        Dict with success status and list of replies
+    """
+    start_time = time.time()
+
+    try:
+        # Load credentials
+        api_key, api_secret, access_token, access_secret = load_credentials()
+
+        if not all([api_key, api_secret, access_token, access_secret]):
+            return {
+                "success": False,
+                "result": None,
+                "error": "Missing OAuth credentials for get_tweet_replies",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        oauth = create_oauth1_session(api_key, api_secret, access_token, access_secret)
+
+        # Search for replies using conversation_id
+        # Note: This requires elevated API access for full search
+        url = f"{TWITTER_API_BASE}/{TWITTER_API_VERSION}/tweets/search/recent"
+        params = {
+            "query": f"conversation_id:{tweet_id} is:reply",
+            "max_results": min(max(limit, 10), 100),  # API requires min 10
+            "tweet.fields": "id,text,created_at,public_metrics,author_id,in_reply_to_user_id",
+            "expansions": "author_id",
+            "user.fields": "username,name"
+        }
+
+        response = requests.get(
+            url,
+            auth=oauth,
+            params=params,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+
+        if response.status_code == 429:
+            reset_time = response.headers.get('x-rate-limit-reset', 'unknown')
+            return {
+                "success": False,
+                "result": None,
+                "error": f"Rate limit exceeded. Resets at: {reset_time}",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        if response.status_code == 403:
+            return {
+                "success": False,
+                "result": None,
+                "error": "Forbidden: Search API requires elevated access. Check API tier.",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        response.raise_for_status()
+        data = response.json()
+
+        # Build user lookup from includes
+        users = {}
+        for user in data.get('includes', {}).get('users', []):
+            users[user['id']] = {
+                "username": user.get('username'),
+                "name": user.get('name')
+            }
+
+        replies = []
+        for tweet in data.get('data', []):
+            author_id = tweet.get('author_id')
+            replies.append({
+                "id": tweet.get('id'),
+                "text": tweet.get('text'),
+                "created_at": tweet.get('created_at'),
+                "metrics": tweet.get('public_metrics', {}),
+                "author_id": author_id,
+                "author": users.get(author_id, {})
+            })
+
+        return {
+            "success": True,
+            "result": {
+                "replies": replies,
+                "count": len(replies),
+                "original_tweet_id": tweet_id
+            },
+            "error": None,
+            "metadata": {
+                "execution_time": time.time() - start_time,
+                "limit_requested": limit
+            }
+        }
+
+    except requests.exceptions.RequestException as e:
+        api_key, api_secret, access_token, access_secret = load_credentials()
+        error_msg = sanitize_credentials_in_error(
+            str(e), api_key, api_secret, access_token, access_secret
+        )
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Failed to get tweet replies: {error_msg}",
+            "metadata": {"execution_time": time.time() - start_time}
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Unexpected error in get_tweet_replies: {str(e)}",
+            "metadata": {"execution_time": time.time() - start_time}
+        }
+
+
+async def get_mentions(limit: int = 10) -> Dict[str, Any]:
+    """
+    Get mentions of the authenticated user.
+
+    Args:
+        limit: Maximum number of mentions to return (default: 10, max: 100)
+
+    Returns:
+        Dict with success status and list of mentions
+    """
+    start_time = time.time()
+
+    try:
+        # Load credentials
+        api_key, api_secret, access_token, access_secret = load_credentials()
+
+        if not all([api_key, api_secret, access_token, access_secret]):
+            return {
+                "success": False,
+                "result": None,
+                "error": "Missing OAuth credentials for get_mentions",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        oauth = create_oauth1_session(api_key, api_secret, access_token, access_secret)
+
+        # Get user ID first
+        user_id = await get_authenticated_user_id(oauth)
+        if not user_id:
+            return {
+                "success": False,
+                "result": None,
+                "error": "Failed to get authenticated user ID",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        # Fetch mentions
+        url = f"{TWITTER_API_BASE}/{TWITTER_API_VERSION}/users/{user_id}/mentions"
+        params = {
+            "max_results": min(max(limit, 5), 100),  # API requires min 5
+            "tweet.fields": "id,text,created_at,public_metrics,author_id,conversation_id",
+            "expansions": "author_id",
+            "user.fields": "username,name"
+        }
+
+        response = requests.get(
+            url,
+            auth=oauth,
+            params=params,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+
+        if response.status_code == 429:
+            reset_time = response.headers.get('x-rate-limit-reset', 'unknown')
+            return {
+                "success": False,
+                "result": None,
+                "error": f"Rate limit exceeded. Resets at: {reset_time}",
+                "metadata": {"execution_time": time.time() - start_time}
+            }
+
+        response.raise_for_status()
+        data = response.json()
+
+        # Build user lookup from includes
+        users = {}
+        for user in data.get('includes', {}).get('users', []):
+            users[user['id']] = {
+                "username": user.get('username'),
+                "name": user.get('name')
+            }
+
+        mentions = []
+        for tweet in data.get('data', []):
+            author_id = tweet.get('author_id')
+            mentions.append({
+                "id": tweet.get('id'),
+                "text": tweet.get('text'),
+                "created_at": tweet.get('created_at'),
+                "metrics": tweet.get('public_metrics', {}),
+                "author_id": author_id,
+                "author": users.get(author_id, {}),
+                "conversation_id": tweet.get('conversation_id')
+            })
+
+        return {
+            "success": True,
+            "result": {
+                "mentions": mentions,
+                "count": len(mentions),
+                "user_id": user_id
+            },
+            "error": None,
+            "metadata": {
+                "execution_time": time.time() - start_time,
+                "limit_requested": limit
+            }
+        }
+
+    except requests.exceptions.RequestException as e:
+        api_key, api_secret, access_token, access_secret = load_credentials()
+        error_msg = sanitize_credentials_in_error(
+            str(e), api_key, api_secret, access_token, access_secret
+        )
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Failed to get mentions: {error_msg}",
+            "metadata": {"execution_time": time.time() - start_time}
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "result": None,
+            "error": f"Unexpected error in get_mentions: {str(e)}",
+            "metadata": {"execution_time": time.time() - start_time}
         }
 
 

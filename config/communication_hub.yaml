@@ -96,14 +96,14 @@ communication_hub:
 
     # Twitter/X Channel
     twitter:
-      enabled: false  # Enable when implementing Twitter channel
+      enabled: true  # Enabled for Communication Hub
 
       credentials:
-        api_key: ${TWITTER_API_KEY}
-        api_secret: ${TWITTER_API_SECRET}
-        access_token: ${TWITTER_ACCESS_TOKEN}
-        access_token_secret: ${TWITTER_ACCESS_TOKEN_SECRET}
-        bearer_token: ${TWITTER_BEARER_TOKEN}
+        api_key: ${TWITTER_TEST_API_KEY}
+        api_secret: ${TWITTER_TEST_API_SECRET}
+        access_token: ${TWITTER_TEST_ACCESS_TOKEN}
+        access_token_secret: ${TWITTER_TEST_ACCESS_SECRET}
+        bearer_token: ${TWITTER_BEARER_TOKEN:}
 
       settings:
         supports_attachments: true

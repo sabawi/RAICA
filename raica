@@ -3,30 +3,32 @@
 RAICA - RAG AI Coding Agent
 ============================
 
-Interactive terminal-based AI coding agent powered by Ollama LLMs.
+Intelligent coding agent that interprets user intent from context.
 
 Usage:
-    raica                      # Launch interactive TUI
-    raica --project-dir PATH   # Specify project directory
-    raica --resume             # Resume previous session
-    raica debug                # Debug existing project (current directory)
-    raica debug -d PATH        # Debug specific project
-    raica --help               # Show this help
+    raica -p "your request here"           # LLM interprets: fix, enhance, or create
+    raica -d ./project -p "add dark mode"  # Work in specified project
+    raica                                  # Launch interactive TUI
+
+    # The LLM decides what to do based on context:
+    raica -p "the Pi key shows undefined"  # → LLM checks if key exists, decides fix/enhance
+    raica -p "create a calculator"         # → LLM sees no project, decides create
+    raica -p "make it faster"              # → LLM sees project, decides enhance
+
+    # Optional explicit hints (power users):
+    raica debug                            # Force debug mode
+    raica create "game"                    # Force create mode
 
 Features:
-    - Interactive terminal UI with scrolling output
-    - Multi-phase development: Requirements -> Planning -> Architecture ->
-      Design -> Coding -> Debugging -> Testing -> Complete
-    - Real-time progress display
-    - Clarification prompts when needed
-    - Approval dialogs for key decisions
+    - LLM-driven intent interpretation (no rigid categorization required)
+    - Iterative context gathering before action
+    - Unified handling of fix/enhance/create
+    - Interactive terminal UI for complex workflows
     - Session persistence and resumption
-    - Automated testing and verification (90% success gate)
-    - Knowledge integration via RAICA Server API
-    - Automated hooks: documentation, testing, git commits
+    - Automated testing and verification
 
 Author: RAICA Project
-Version: 2.1.0
+Version: 2.3.0
 """
 
 import os
@@ -70,21 +72,63 @@ def check_dependencies():
         sys.exit(1)
 
 
+def _check_raica_server_health(server_url: str, timeout: float = 3.0) -> bool:
+    """
+    Check if RAICA server is available and healthy.
+
+    Performs a quick health check on the RAICA server.
+    If available, RAICA server tools will be offered to the LLM.
+
+    Args:
+        server_url: RAICA server base URL
+        timeout: Request timeout in seconds
+
+    Returns:
+        True if server is healthy, False otherwise
+    """
+    import urllib.request
+    import urllib.error
+
+    health_url = f"{server_url.rstrip('/')}/health"
+
+    try:
+        req = urllib.request.Request(health_url, method='GET')
+        req.add_header('User-Agent', 'RAICA-Agent/1.0')
+
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            return response.status == 200
+
+    except urllib.error.URLError:
+        return False
+    except urllib.error.HTTPError:
+        return False
+    except TimeoutError:
+        return False
+    except Exception:
+        return False
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         prog='raica',
-        description='RAICA - Interactive AI Coding Agent',
+        description='RAICA - Intelligent AI Coding Agent (LLM interprets your intent)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  raica                         Launch interactive TUI
-  raica -d ./my-project         Work in specified directory
-  raica --resume                Resume previous session
-  raica --no-hooks              Disable automated hooks
-  raica debug                   Debug existing project in current directory
-  raica debug -d ./my-project   Debug specific project
-  raica debug --max-attempts 5  Debug with custom retry limit
+Examples (Intelligent Mode - Recommended):
+  raica -p "add dark mode to the app"        LLM interprets as enhancement
+  raica -p "the login is broken, fix it"     LLM interprets as fix/debug
+  raica -p "create a calculator app"         LLM interprets as new project
+  raica -d ./myproject -p "make it faster"   Work in specified directory
+
+  The LLM analyzes project context to determine the right action.
+  You don't need to decide if it's a "fix", "enhance", or "create".
+
+Examples (Power User - Explicit Modes):
+  raica                            Launch interactive TUI
+  raica debug                      Force debug mode (current directory)
+  raica debug ./my-project         Force debug on specific project
+  raica create "snake game"        Force create mode
 
 For more information, visit: https://github.com/sabawi/RAICA
         """
@@ -107,10 +151,17 @@ This mode operates with "DO NO HARM" principle:
 - Rolls back if regression cannot be fixed
         """
     )
+    # Positional argument for project path (optional, alternative to -d)
+    debug_parser.add_argument(
+        'project_path',
+        nargs='?',
+        default=None,
+        help='Project directory to debug (positional argument)'
+    )
     debug_parser.add_argument(
         '-d', '--project-dir',
         type=str,
-        default='.',
+        default=None,
         help='Project directory to debug (default: current directory)'
     )
     debug_parser.add_argument(
@@ -141,13 +192,83 @@ This mode operates with "DO NO HARM" principle:
         default=None,
         help='Override LLM model (default: from config)'
     )
+    debug_parser.add_argument(
+        '--v2',
+        action='store_true',
+        help='Use new tool-calling architecture (recommended)'
+    )
+
+    # Create subcommand
+    create_parser = subparsers.add_parser(
+        'create',
+        help='Create a new project from description',
+        description="""
+Create Mode - Generate a new project from a description.
+
+This mode runs the full development pipeline:
+- Requirements Analysis
+- Planning & Architecture  
+- Design & Interface Generation
+- Code Generation with validation
+- README.md with run instructions
+        """
+    )
+    create_parser.add_argument(
+        'description',
+        type=str,
+        help='Description of the project to create (in quotes)'
+    )
+    create_parser.add_argument(
+        '-o', '--output-dir',
+        type=str,
+        default=None,
+        help='Output directory for the project (default: auto-generated name in current dir)'
+    )
+    create_parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Enable verbose output'
+    )
+    create_parser.add_argument(
+        '--model',
+        type=str,
+        default=None,
+        help='Override LLM model (default: from config)'
+    )
+    create_parser.add_argument(
+        '--no-hooks',
+        action='store_true',
+        help='Disable automated hooks (docs, tests, git commits)'
+    )
+
+    create_parser.add_argument(
+        '--no-tui',
+        action='store_true',
+        help='Run in headless mode (no TUI) for scripts/automation'
+    )
 
     # Main parser arguments (for default mode)
+
     parser.add_argument(
         '-d', '--project-dir',
         type=str,
         default='.',
         help='Project directory to work in (default: current directory)'
+    )
+
+    # NEW: Prompt argument for intelligent routing
+    parser.add_argument(
+        '-p', '--prompt',
+        type=str,
+        default=None,
+        help='Your request (LLM interprets intent from context). Example: -p "add dark mode"'
+    )
+
+    parser.add_argument(
+        '-i', '--issue',
+        type=str,
+        default=None,
+        help='Alias for --prompt (backward compatibility)'
     )
 
     parser.add_argument(
@@ -197,20 +318,161 @@ This mode operates with "DO NO HARM" principle:
     parser.add_argument(
         '--version',
         action='version',
-        version='%(prog)s 2.1.0 (RAICA CLI Coding Agent)'
+        version='%(prog)s 2.3.0 (RAICA CLI - Intelligent Intent Interpretation)'
+    )
+
+    parser.add_argument(
+        '--show-config',
+        action='store_true',
+        help='Show all RAICA configurations including LLM settings and exit'
     )
 
     return parser.parse_args()
+
+
+def run_debug_v2(args, project_dir):
+    """
+    Run debug mode using the new tool-calling architecture (v2).
+    
+    This uses DebugOrchestrator which:
+    - Gets JSON diagnosis plans from LLM
+    - Executes structured tool calls
+    - Tracks all activity with context
+    - Provides feedback loop to LLM
+    """
+    import asyncio
+    
+    print("\n" + "═" * 60)
+    print("🔧 RAICA DEBUG V2 - Tool-Calling Architecture")
+    print("═" * 60)
+    print(f"Project: {project_dir}")
+    print("═" * 60)
+    
+    # Get issue description
+    issue = args.issue
+    if not issue:
+        print("\nDescribe the issue to fix (paste error/traceback, then press Enter twice):")
+        print(">>> ", end="", flush=True)
+        
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip().lower() in ('q', 'quit', 'exit') and not lines:
+                    print("Exiting debug mode.")
+                    sys.exit(0)
+                if line == "" and lines:
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+        
+        issue = "\n".join(lines).strip()
+    
+    if not issue:
+        print("ERROR: No issue description provided.")
+        sys.exit(1)
+    
+    print(f"\n📋 Issue: {issue[:200]}{'...' if len(issue) > 200 else ''}")
+    print("-" * 60)
+    
+    # Import orchestrator and LLM client
+    try:
+        from agents.coding_agent.services.debug_orchestrator import DebugOrchestrator
+        from agents.coding_agent.llm_client import CodeGenLLMClient
+    except ImportError as e:
+        print(f"ERROR: Failed to import v2 components: {e}")
+        print("\nFalling back to v1 debug mode...")
+        # Fall back to v1
+        args.v2 = False
+        run_debug_mode(args, project_dir)
+        return
+    
+    # Create LLM client
+    try:
+        llm_client = CodeGenLLMClient(model_override=args.model)
+    except Exception as e:
+        print(f"ERROR: Failed to create LLM client: {e}")
+        sys.exit(1)
+    
+    # Get error trace by running main.py
+    error_trace = ""
+    main_py = project_dir / 'main.py'
+    if main_py.exists():
+        print("\n📝 Capturing error trace...")
+        import subprocess
+        try:
+            result = subprocess.run(
+                ['python', str(main_py)],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(project_dir)
+            )
+            if result.returncode != 0:
+                error_trace = result.stderr[:1000]
+                print(f"   Captured: {error_trace[:200]}...")
+        except Exception as e:
+            print(f"   ⚠ Could not capture error: {e}")
+    
+    # Run orchestrator
+    async def run_orchestrator():
+        orchestrator = DebugOrchestrator(
+            project_dir=project_dir,
+            llm_client=llm_client,
+            issue=issue,
+            error_trace=error_trace,
+            output_fn=print,
+            max_iterations=args.max_attempts
+        )
+        
+        result = await orchestrator.run()
+        return result
+    
+    try:
+        result = asyncio.run(run_orchestrator())
+        
+        print("\n" + "═" * 60)
+        if result.get("success"):
+            print("✅ DEBUG V2 COMPLETE - Issue fixed!")
+            if result.get("files_modified"):
+                print(f"   Modified: {', '.join(result['files_modified'])}")
+        else:
+            print("❌ DEBUG V2 - Issue not fully resolved")
+            if result.get("error"):
+                print(f"   Error: {result['error']}")
+        print(f"   Session: {result.get('session_id', 'unknown')}")
+        print(f"   Tool calls: {result.get('tool_calls', {}).get('total', 0)}")
+        print("═" * 60 + "\n")
+        
+        sys.exit(0 if result.get("success") else 1)
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Interrupted by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Debug v2 failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
 
 
 def run_debug_mode(args, project_dir):
     """Run the debug mode for fixing existing projects."""
     import asyncio
 
-    # Import debug agent
+    # Check if using v2 (tool-calling) architecture
+    use_v2 = getattr(args, 'v2', False)
+    
+    if use_v2:
+        # Use new tool-calling orchestrator
+        run_debug_v2(args, project_dir)
+        return
+
+    # Import debug agent and context system
     try:
         from agents.coding_agent.code_debug_agent import CodeDebugAgent
-        from agents.common.llm_client import create_llm_client
+        from agents.coding_agent.llm_client import CodeGenLLMClient
+        from agents.common.context.manager import ContextManager
     except ImportError as e:
         print(f"ERROR: Failed to import debug agent: {e}")
         print("\nMake sure the CODE_DEBUG feature is properly installed.")
@@ -228,12 +490,25 @@ def run_debug_mode(args, project_dir):
     # Get issue description
     issue = args.issue
     if not issue:
-        print("\nDescribe the issue to fix (or 'q' to quit):")
-        print(">" * 3, end=" ")
-        issue = input().strip()
-        if issue.lower() in ('q', 'quit', 'exit'):
-            print("Exiting debug mode.")
-            sys.exit(0)
+        print("\nDescribe the issue to fix (paste error/traceback, then press Enter twice to submit, or 'q' to quit):")
+        print(">>> ", end="", flush=True)
+
+        # Read multi-line input until empty line
+        lines = []
+        while True:
+            try:
+                line = input()
+                if line.strip().lower() in ('q', 'quit', 'exit') and not lines:
+                    print("Exiting debug mode.")
+                    sys.exit(0)
+                if line == "" and lines:
+                    # Empty line after content = submit
+                    break
+                lines.append(line)
+            except EOFError:
+                break
+
+        issue = "\n".join(lines).strip()
 
     if not issue:
         print("ERROR: No issue description provided.")
@@ -244,46 +519,94 @@ def run_debug_mode(args, project_dir):
 
     # Create LLM client
     try:
-        llm_client = create_llm_client(model_override=args.model)
+        llm_client = CodeGenLLMClient(model_override=args.model)
     except Exception as e:
         print(f"ERROR: Failed to create LLM client: {e}")
         sys.exit(1)
 
-    # Create simple callbacks for CLI output
+    # Initialize context manager for the existing project
+    # This enables file structure tracking to prevent hallucination
+    print("Initializing project context...")
+    context_manager = None
+    try:
+        import signal
+
+        def timeout_handler(signum, frame):
+            raise TimeoutError("Context initialization timed out")
+
+        # Set 30 second timeout for context initialization
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(30)
+
+        try:
+            context_manager = ContextManager(project_dir=project_dir)
+            print("✓ Context manager initialized")
+
+            # Try to scan file structure with shorter timeout
+            signal.alarm(20)  # 20 second timeout for scan
+            context_manager.project_context.scan_file_structure(
+                force=False,  # Don't force - only scan if needed
+                extract_symbols=True
+            )
+            file_count = len(context_manager.project_context.file_entries)
+            if file_count > 0:
+                print(f"✓ Scanned {file_count} files")
+            else:
+                print("⚠ No files scanned (will scan on demand)")
+
+        finally:
+            signal.alarm(0)  # Cancel alarm
+
+    except TimeoutError as e:
+        print(f"⚠ Context initialization timed out - continuing without full context")
+        print("  (File structure will be determined on-demand during debugging)")
+        if context_manager is None:
+            # Create minimal context manager without scanning
+            try:
+                context_manager = ContextManager(project_dir=project_dir, auto_initialize=False)
+            except:
+                context_manager = None
+
+    except Exception as e:
+        print(f"WARNING: Failed to initialize context manager: {e}")
+        print("Continuing without project context (may result in less accurate fixes)")
+        context_manager = None
+
+    # Create simple callbacks for CLI output (synchronous - they just print)
     class CLIDebugCallbacks:
-        async def on_phase_change(self, phase, description):
+        def on_phase_change(self, phase, description):
             print(f"\n=== {phase}: {description} ===")
 
-        async def on_progress(self, message, progress):
+        def on_progress(self, message, progress=0.0):
             print(f"[{int(progress * 100):3d}%] {message}")
 
-        async def on_baseline_captured(self, file_count):
+        def on_baseline_captured(self, file_count):
             print(f"✓ Baseline captured: {file_count} files")
 
-        async def on_regression_detected(self, regressions):
+        def on_regression_detected(self, regressions):
             print(f"⚠️  Detected {len(regressions)} regression(s)")
             for reg in regressions[:5]:
                 print(f"  - {reg}")
 
-        async def on_fix_attempt(self, attempt, strategy, target):
+        def on_fix_attempt(self, attempt, strategy, target):
             print(f"🔧 Fix attempt {attempt} ({strategy}): {target}")
 
-        async def on_rollback(self, reason):
+        def on_rollback(self, reason):
             print(f"↩️  Rolling back: {reason}")
 
-        async def on_approval_needed(self, message, risk_level):
+        def on_approval_needed(self, message, risk_level):
             print(f"\n⚠️  Approval needed ({risk_level}): {message}")
             response = input("Approve? [y/N]: ").strip().lower()
             return response in ('y', 'yes')
 
-        async def on_user_input(self, prompt):
+        def on_user_input(self, prompt):
             print(f"\n{prompt}")
             return input("> ").strip()
 
-        async def on_error(self, error):
+        def on_error(self, error):
             print(f"❌ Error: {error}")
 
-        async def on_success(self, summary):
+        def on_success(self, summary):
             print(f"✅ {summary}")
 
     async def run_debug():
@@ -291,8 +614,9 @@ def run_debug_mode(args, project_dir):
             project_dir=project_dir,
             llm_client=llm_client,
             callbacks=CLIDebugCallbacks(),
-            max_fix_attempts=args.max_attempts,
-            auto_rollback=not args.no_rollback
+            max_regression_attempts=args.max_attempts,
+            auto_rollback=not args.no_rollback,
+            context_manager=context_manager
         )
 
         result = await debug_agent.run(issue)
@@ -327,6 +651,444 @@ def run_debug_mode(args, project_dir):
         sys.exit(1)
 
 
+def run_create_mode(args):
+    """Run the create mode for generating new projects."""
+    import asyncio
+    import re
+    
+    description = args.description
+    
+    # Print create banner
+    print("\n" + "=" * 60)
+    print("🚀 RAICA CREATE MODE - New Project Generation")
+    print("=" * 60)
+    print(f"Description: {description}")
+    
+    # Determine output directory
+    if args.output_dir:
+        output_dir = Path(args.output_dir).resolve()
+    else:
+        # Generate a semantic name from description
+        # Convert "calculator app with GUI" -> "calculator_app_with_gui"
+        safe_name = re.sub(r'[^a-zA-Z0-9\s]', '', description.lower())
+        safe_name = '_'.join(safe_name.split()[:5])  # max 5 words
+        if not safe_name:
+            safe_name = 'new_project'
+        output_dir = Path('.').resolve() / safe_name
+    
+    print(f"Output: {output_dir}")
+    print("=" * 60)
+    
+    # Create the output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Run the agent
+    if args.no_tui:
+        # Headless mode: Use CLICodingAgent directly
+        try:
+            from agents.coding_agent.cli_coding_agent import CLICodingAgent
+        except ImportError as e:
+            print(f"ERROR: Failed to import CLICodingAgent: {e}")
+            sys.exit(1)
+            
+        print("🤖 Running in HEADLESS mode (no TUI)...")
+        
+        # Change to output dir so relative paths work if needed
+        os.chdir(output_dir)
+        
+        agent = CLICodingAgent(
+            output_dir=str(output_dir),
+            project_name=output_dir.name,
+            verbose=args.verbose,
+            model=args.model,
+            use_existing_project=True  # Because we already created the dir
+        )
+        
+        success = agent.run(description)
+        sys.exit(0 if success else 1)
+        
+    else:
+        # Standard TUI mode
+        try:
+            from agents.coding_agent.tui.agent_runner import run_interactive_agent
+        except ImportError as e:
+            print(f"ERROR: Failed to import agent runner: {e}")
+            sys.exit(1)
+            
+        # Build configuration 
+        config = {
+            'project_dir': str(output_dir),
+            'resume': False,
+            'hooks_enabled': not args.no_hooks,
+            'knowledge_enabled': True,
+            'verification_enabled': True,
+            'model_override': args.model,
+            'raica_server_url': None,
+            'verbose': args.verbose,
+            # Pass the initial request to skip the TUI prompt
+            'initial_request': description,
+        }
+        
+        # Change to output dir
+        os.chdir(output_dir)
+
+        try:
+            run_interactive_agent(config)
+        except KeyboardInterrupt:
+            print("\n\nInterrupted by user. Goodbye!")
+            sys.exit(0)
+        except Exception as e:
+            print(f"\nERROR: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+
+
+def run_intelligent_mode(args, project_dir, prompt):
+    """
+    Run RAICA with intelligent intent interpretation.
+
+    The LLM analyzes the prompt + project context to determine:
+    - Is this a FIX? (something exists but is broken)
+    - Is this an ENHANCEMENT? (something exists, user wants it improved)
+    - Is this a NEW FEATURE? (add something that doesn't exist)
+    - Is this a NEW PROJECT? (no project exists)
+
+    Then routes to the appropriate handler.
+    """
+    import asyncio
+
+    print("\n" + "═" * 60)
+    print("🧠 RAICA - Intelligent Intent Interpretation")
+    print("═" * 60)
+    print(f"Project: {project_dir}")
+    print(f"Request: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
+    print("═" * 60)
+
+    # Import components
+    try:
+        from agents.coding_agent.orchestrator.orchestrator import Orchestrator, OrchestratorCallbacks
+        from agents.coding_agent.orchestrator.request_classifier import RequestType
+        from agents.coding_agent.llm_client import CodeGenLLMClient
+        from agents.common.context.manager import ContextManager
+    except ImportError as e:
+        print(f"ERROR: Failed to import orchestrator components: {e}")
+        print("\nFalling back to interactive TUI mode...")
+        return None  # Signal to fall back to TUI
+
+    # Create LLM client
+    try:
+        llm_client = CodeGenLLMClient(model_override=args.model)
+        print("✓ LLM client initialized")
+    except Exception as e:
+        print(f"ERROR: Failed to create LLM client: {e}")
+        sys.exit(1)
+
+    # Step 1: Quick LLM classification BEFORE scanning files
+    # This determines if we even need to scan the project directory
+    print("\n[QUICK CLASSIFICATION]")
+    print("   Determining request type...")
+
+    from agents.coding_agent.orchestrator.request_classifier import RequestClassifier, RequestType
+    quick_classifier = RequestClassifier(llm_client)
+    quick_classification = quick_classifier.classify(prompt, context="")  # No file context yet
+
+    print(f"   → Initial type: {quick_classification.primary_type.name}")
+
+    # Types that require project context scanning
+    # Only code-related requests need to scan project files
+    needs_project_scan = quick_classification.primary_type in (
+        RequestType.CODE_GENERATION,
+        RequestType.CODE_DEBUG,
+        RequestType.HYBRID
+    )
+
+    # Initialize context manager - only scan if needed
+    context_manager = None
+    if needs_project_scan:
+        print("\n[GATHERING PROJECT CONTEXT]")
+        try:
+            context_manager = ContextManager(project_dir=project_dir)
+            context_manager.project_context.scan_file_structure(
+                force=False,
+                extract_symbols=True
+            )
+            file_count = len(context_manager.project_context.file_entries)
+            print(f"   ✓ Scanned {file_count} files")
+
+            if file_count == 0:
+                print("   → No existing project files detected")
+                print("   → This may be interpreted as a NEW PROJECT request")
+        except Exception as e:
+            print(f"   ⚠ Could not scan project: {e}")
+            print("   → Will interpret based on prompt alone")
+    else:
+        print(f"   → Skipping file scan (not needed for {quick_classification.primary_type.name})")
+
+    # Create CLI callbacks
+    class CLICallbacks:
+        async def on_classification(self, classification):
+            print(f"\n[INTENT INTERPRETED]")
+            print(f"   Type: {classification.primary_type.name}")
+            print(f"   Confidence: {classification.confidence:.0%}")
+            print(f"   Intent: {classification.intent}")
+            if classification.reasoning:
+                print(f"   Reasoning: {classification.reasoning[:100]}...")
+
+        async def on_output(self, message, msg_type="info"):
+            prefix = {"info": "ℹ", "success": "✓", "error": "✗", "warning": "⚠"}.get(msg_type, "")
+            print(f"   {prefix} {message}")
+
+        async def on_approval_needed(self, action, description, risk):
+            print(f"\n⚠ APPROVAL NEEDED: {action}")
+            print(f"   {description}")
+            response = input("   Proceed? [y/N]: ").strip().lower()
+            return response in ('y', 'yes')
+
+        async def on_error(self, error):
+            print(f"\n❌ Error: {error}")
+
+        async def on_complete(self, result):
+            print(f"\n{'✅' if result.get('success') else '❌'} Complete")
+
+    callbacks = OrchestratorCallbacks(
+        on_classification=CLICallbacks().on_classification,
+        on_output=CLICallbacks().on_output,
+        on_approval_needed=CLICallbacks().on_approval_needed,
+        on_error=CLICallbacks().on_error,
+        on_complete=CLICallbacks().on_complete
+    )
+
+    # Create and run orchestrator
+    async def run_orchestrator():
+        orchestrator = Orchestrator(
+            llm_client=llm_client,
+            project_dir=project_dir,
+            callbacks=callbacks,
+            allow_sudo=False,
+            context_manager=context_manager
+        )
+
+        print("\n[INTERPRETING REQUEST]")
+
+        # If we did a project scan, let the orchestrator re-classify with full context
+        # Otherwise, use the quick classification to skip redundant LLM call
+        if needs_project_scan:
+            print("   Asking LLM to analyze context and determine intent...")
+            result = await orchestrator.handle_request(prompt)
+        else:
+            print(f"   Using quick classification: {quick_classification.primary_type.name}")
+            result = await orchestrator.handle_request(prompt, classification=quick_classification)
+        return result
+
+    try:
+        result = asyncio.run(run_orchestrator())
+
+        print("\n" + "═" * 60)
+        if result.success:
+            print("✅ REQUEST COMPLETED SUCCESSFULLY")
+            if result.generated_files:
+                print(f"   Generated: {', '.join(result.generated_files[:5])}")
+        else:
+            print("❌ REQUEST NOT FULLY COMPLETED")
+            if result.error:
+                print(f"   Error: {result.error}")
+
+        print(f"   Classification: {result.classification.primary_type.name}")
+        print(f"   Duration: {result.duration_seconds:.1f}s")
+        print("═" * 60)
+
+        # Display execution output (e.g., tool results, news content, research, etc.)
+        # Note: Only some result types have execution_output (e.g., UniversalHandler results)
+        # Web searches display output via callbacks during execution
+        if hasattr(result, 'execution_output') and result.execution_output and result.execution_output.strip():
+            output = result.execution_output.strip()
+
+            # Render markdown output prominently
+            try:
+                from rich.console import Console
+                from rich.markdown import Markdown
+
+                console = Console()
+
+                # Eye-catching header
+                print("\n\n")
+                print("╔" + "═" * 58 + "╗")
+                print("║" + " " * 20 + "📋 RESULT OUTPUT" + " " * 22 + "║")
+                print("╚" + "═" * 58 + "╝")
+                print()
+
+                # Render as markdown
+                # Limit to reasonable length for terminal
+                if len(output) > 10000:
+                    # Show first part + last part
+                    first_part = output[:5000]
+                    last_part = output[-5000:]
+
+                    md = Markdown(first_part)
+                    console.print(md)
+                    console.print(f"\n[dim]... [{len(output) - 10000} characters omitted] ...[/dim]\n")
+                    md = Markdown(last_part)
+                    console.print(md)
+                else:
+                    md = Markdown(output)
+                    console.print(md)
+
+                print("\n" + "─" * 60 + "\n")
+
+            except ImportError:
+                # Fallback if rich not available (shouldn't happen since we check deps)
+                print("\n\n" + "═" * 60)
+                print("📋 RESULT OUTPUT:")
+                print("═" * 60 + "\n")
+                print(output if len(output) <= 5000 else output[:5000] + f"\n... [truncated] ...")
+                print("\n" + "═" * 60 + "\n")
+
+        sys.exit(0 if result.success else 1)
+
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Interrupted by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Intelligent mode failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        # Don't exit - let it fall back to TUI
+        return None
+
+
+def show_config():
+    """Display all RAICA configurations including LLM settings."""
+    import yaml
+
+    print("\n" + "═" * 70)
+    print("🔧 RAICA CONFIGURATION")
+    print("═" * 70)
+
+    # Load LLM config
+    config_path = RAICA_ROOT / "config" / "llm_config.yaml"
+
+    if not config_path.exists():
+        print(f"❌ Config file not found: {config_path}")
+        return
+
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+    except Exception as e:
+        print(f"❌ Failed to load config: {e}")
+        return
+
+    # Get code_generation config (what RAICA actually uses)
+    code_gen = config.get('code_generation', {})
+
+    # Selected model preset
+    selected_model = code_gen.get('selected_model', 'not set')
+    model_presets = code_gen.get('model_presets', {})
+
+    print("\n📦 CODE GENERATION (Used by RAICA for coding tasks)")
+    print("-" * 70)
+    print(f"   Selected Model Preset: {selected_model}")
+
+    if selected_model in model_presets:
+        preset = model_presets[selected_model]
+        print(f"   ├── Provider: {preset.get('provider', 'unknown')}")
+        print(f"   └── Model: {preset.get('model', 'unknown')}")
+
+    # Fallback configuration
+    fallback = code_gen.get('fallback', {})
+    fallback_enabled = fallback.get('enabled', False)
+    fallback_order = fallback.get('order', [])
+
+    print(f"\n   Fallback Enabled: {'✅ Yes' if fallback_enabled else '❌ No'}")
+    if fallback_enabled and fallback_order:
+        print("   Fallback Order:")
+        for i, entry in enumerate(fallback_order[:10], 1):
+            if isinstance(entry, dict):
+                provider = entry.get('provider', '?')
+                model = entry.get('model', 'default')
+                print(f"      {i}. {provider}/{model}")
+            else:
+                print(f"      {i}. {entry}")
+        if len(fallback_order) > 10:
+            print(f"      ... and {len(fallback_order) - 10} more")
+
+    # Provider configurations
+    providers = code_gen.get('providers', {})
+    print("\n   Provider Settings:")
+    for name, pconfig in providers.items():
+        model = pconfig.get('model', 'default')
+        temp = pconfig.get('temperature', 'default')
+        max_tokens = pconfig.get('max_tokens', 'default')
+        print(f"      {name}:")
+        print(f"         model: {model}, temp: {temp}, max_tokens: {max_tokens}")
+
+    # Available presets
+    print("\n   Available Model Presets:")
+    for name, preset in model_presets.items():
+        marker = "→" if name == selected_model else " "
+        print(f"      {marker} {name}: {preset.get('provider')}/{preset.get('model')}")
+
+    # Server LLM config (for reference)
+    llm = config.get('llm', {})
+    print("\n📡 SERVER LLM (Used by FastAPI server - for reference)")
+    print("-" * 70)
+    primary = llm.get('primary', {})
+    print(f"   Primary Type: {primary.get('type', 'not set')}")
+    primary_config = primary.get('config', {})
+    print(f"   ├── Model: {primary_config.get('model', 'not set')}")
+    print(f"   ├── Temperature: {primary_config.get('temperature', 'not set')}")
+    print(f"   └── Max Tokens: {primary_config.get('max_tokens', 'not set')}")
+
+    # Tool calling config
+    tool_calling = llm.get('tool_calling', {})
+    if tool_calling:
+        print(f"\n   Tool Calling:")
+        print(f"   ├── Provider: {tool_calling.get('type', 'not set')}")
+        tc_config = tool_calling.get('config', {})
+        print(f"   └── Model: {tc_config.get('model', 'not set')}")
+
+    # Fallback for server
+    server_fallback = llm.get('fallback', {})
+    print(f"\n   Server Fallback: {'✅ Enabled' if server_fallback.get('enabled') else '❌ Disabled'}")
+    if server_fallback.get('order'):
+        print(f"   Order: {', '.join(server_fallback['order'][:5])}")
+
+    # Config file location
+    print("\n📁 Configuration Files")
+    print("-" * 70)
+    print(f"   LLM Config: {config_path}")
+
+    agents_config = RAICA_ROOT / "config" / "agents_config.yaml"
+    if agents_config.exists():
+        print(f"   Agents Config: {agents_config}")
+
+    env_file = RAICA_ROOT / ".env"
+    if env_file.exists():
+        print(f"   Environment: {env_file}")
+
+    # Show environment variables that affect LLM
+    print("\n🔑 Environment Variables (API Keys)")
+    print("-" * 70)
+    env_vars = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY',
+                'OPENROUTER_API_KEY', 'QWEN_API_KEY']
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            # Show masked key
+            masked = value[:8] + "..." + value[-4:] if len(value) > 12 else "***"
+            print(f"   {var}: {masked}")
+        else:
+            print(f"   {var}: (not set)")
+
+    print("\n" + "═" * 70)
+    print("💡 To change the active model, edit 'selected_model' in:")
+    print(f"   {config_path}")
+    print("═" * 70 + "\n")
+
+
 def main():
     """Main entry point for the RAICA CLI."""
     # Check dependencies first
@@ -335,9 +1097,21 @@ def main():
     # Parse arguments
     args = parse_args()
 
-    # Handle debug subcommand
+    # Handle --show-config first
+    if getattr(args, 'show_config', False):
+        show_config()
+        sys.exit(0)
+
+    # Handle debug subcommand (power-user hint - forces debug mode)
     if args.command == 'debug':
-        project_dir = Path(args.project_dir).resolve()
+        # Resolve project directory: positional argument takes precedence, then -d, then current dir
+        if args.project_path:
+            project_dir = Path(args.project_path).resolve()
+        elif args.project_dir:
+            project_dir = Path(args.project_dir).resolve()
+        else:
+            project_dir = Path('.').resolve()
+
         if not project_dir.exists():
             print(f"ERROR: Project directory does not exist: {project_dir}")
             sys.exit(1)
@@ -347,6 +1121,43 @@ def main():
 
         run_debug_mode(args, project_dir)
         return
+
+    # Handle create subcommand (power-user hint - forces create mode)
+    if args.command == 'create':
+        run_create_mode(args)
+        return
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # NEW: Intelligent mode - LLM interprets intent from context + prompt
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Get prompt from positional arg or --issue flag
+    prompt = args.prompt or getattr(args, 'issue', None)
+
+    if prompt:
+        # User provided a prompt - use intelligent routing
+        project_dir = Path(args.project_dir).resolve()
+
+        # Create directory if it doesn't exist (might be a new project)
+        if not project_dir.exists():
+            print(f"Directory {project_dir} does not exist.")
+            response = input("Create it? [Y/n]: ").strip().lower()
+            if response in ('', 'y', 'yes'):
+                project_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                print("Aborted.")
+                sys.exit(1)
+
+        os.chdir(project_dir)
+
+        # Try intelligent mode
+        result = run_intelligent_mode(args, project_dir, prompt)
+        if result is not None:
+            # Intelligent mode handled it
+            return
+
+        # Fall through to TUI if intelligent mode returned None
+        print("\nFalling back to interactive TUI...")
 
     # Default: Run interactive TUI
 
@@ -368,6 +1179,16 @@ def main():
         print("or specify the correct path with --project-dir")
         sys.exit(1)
 
+    # Check RAICA server availability (if knowledge enabled)
+    raica_server_available = False
+    if not args.no_knowledge:
+        print(f"   Checking RAICA server at {args.raica_server}...", end=" ", flush=True)
+        raica_server_available = _check_raica_server_health(args.raica_server)
+        if raica_server_available:
+            print("✓ Available")
+        else:
+            print("✗ Not available (will use local tools)")
+
     # Build configuration from command line args
     config = {
         'project_dir': str(project_dir),
@@ -377,6 +1198,7 @@ def main():
         'verification_enabled': not args.no_verification,
         'model_override': args.model,
         'raica_server_url': args.raica_server,
+        'raica_server_available': raica_server_available,  # NEW: availability status
         'verbose': args.verbose,
     }
 
@@ -388,6 +1210,8 @@ def main():
         print(f"Project Directory: {project_dir}")
         print(f"Hooks: {'enabled' if config['hooks_enabled'] else 'disabled'}")
         print(f"Knowledge: {'enabled' if config['knowledge_enabled'] else 'disabled'}")
+        if config['knowledge_enabled']:
+            print(f"RAICA Server: {'✓ available' if raica_server_available else '✗ not available'}")
         print(f"Verification: {'enabled' if config['verification_enabled'] else 'disabled'}")
         if args.model:
             print(f"Model Override: {args.model}")

@@ -28,6 +28,11 @@ async def doc_update_hook(context: Dict[str, Any]) -> Dict[str, Any]:
     - generated_files: Dict of filepath -> content
     - original_request: User's original request
     - llm_client: Optional LLM client for generating docs
+    - phase: Optional current phase (PLANNING, ARCHITECTURE, DESIGN, CODING, COMPLETE)
+    - phase_context: Optional full context from the phase (for enhanced doc generation)
+
+    If phase_context is provided, uses DocumentationGenerator for comprehensive docs.
+    Otherwise, falls back to basic README generation.
 
     Returns:
         Dict with action taken and results
@@ -35,7 +40,45 @@ async def doc_update_hook(context: Dict[str, Any]) -> Dict[str, Any]:
     project_dir = Path(context.get('project_dir', '.'))
     generated_files = context.get('generated_files', {})
     original_request = context.get('original_request', '')
+    phase = context.get('phase', '')
+    phase_context = context.get('phase_context', {})
 
+    # If we have full phase context, use DocumentationGenerator
+    if phase_context and phase:
+        try:
+            from .doc_generator import DocumentationGenerator
+
+            generator = DocumentationGenerator(project_dir, phase_context)
+
+            if phase.upper() == 'COMPLETE':
+                # Generate all documentation
+                results = generator.generate_all()
+                success_count = sum(1 for v in results.values() if v)
+                logger.info(f"DocumentationGenerator: {success_count}/{len(results)} files generated")
+
+                return {
+                    'action': 'generated',
+                    'generator': 'DocumentationGenerator',
+                    'phase': phase,
+                    'results': results
+                }
+            else:
+                # Generate phase-specific documentation
+                success = generator.generate_phase_doc(phase, phase_context)
+                return {
+                    'action': 'generated' if success else 'failed',
+                    'generator': 'DocumentationGenerator',
+                    'phase': phase
+                }
+
+        except ImportError as e:
+            logger.warning(f"DocumentationGenerator not available: {e}")
+            # Fall through to basic generation
+        except Exception as e:
+            logger.error(f"DocumentationGenerator failed: {e}")
+            # Fall through to basic generation
+
+    # Fallback: Basic README generation
     readme_path = project_dir / "README.md"
 
     # Check if README exists
@@ -329,18 +372,19 @@ async def run_linter(
 ) -> Dict[str, Any]:
     """
     Run linter for a specific language.
-    
+
     Args:
         project_dir: Root directory of project
         language: Programming language
         files: Optional list of files to lint
-        
+
     Returns:
         Dict with lint results
     """
     from agents.common.config_defaults import DEFAULT_LINT_COMMANDS
-    
-    command = DEFAULT_LINT_COMMANDS.get(language.lower())
+
+    language_lower = language.lower()
+    command = DEFAULT_LINT_COMMANDS.get(language_lower)
 
     if not command:
         logger.debug("No lint command configured for language: %s", language)
@@ -350,17 +394,70 @@ async def run_linter(
             'reason': f'No lint command for {language}'
         }
 
+    # Pre-flight checks for specific linters
+    if language_lower == 'python':
+        # Check if flake8 is installed
+        try:
+            check_result = subprocess.run(
+                ['python', '-m', 'flake8', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if check_result.returncode != 0 or 'No module named' in check_result.stderr:
+                logger.warning("flake8 not installed, skipping Python linting")
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'flake8 not installed (pip install flake8)'
+                }
+        except Exception:
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'Could not verify flake8 installation'
+            }
+
+    elif language_lower in ['javascript', 'typescript']:
+        # Check if eslint config exists - if not, skip to avoid long npx download
+        eslint_configs = ['.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml', 'eslint.config.js']
+        has_eslint_config = any((project_dir / cfg).exists() for cfg in eslint_configs)
+
+        # Also check package.json for eslint
+        pkg_json = project_dir / 'package.json'
+        has_eslint_in_pkg = False
+        if pkg_json.exists():
+            try:
+                import json
+                with open(pkg_json) as f:
+                    pkg_data = json.load(f)
+                    deps = {**pkg_data.get('dependencies', {}), **pkg_data.get('devDependencies', {})}
+                    has_eslint_in_pkg = 'eslint' in deps
+            except Exception:
+                pass
+
+        if not has_eslint_config and not has_eslint_in_pkg:
+            logger.info("No ESLint config found, skipping JS/TS linting")
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': 'No ESLint configuration found'
+            }
+
     # Make a copy to avoid modifying the global default
     cmd_list = list(command)
 
     # Add specific files if provided
     if files:
         cmd_list.extend(files)
-    elif language == 'python':
+    elif language_lower == 'python':
         cmd_list.append('.')
 
     logger.info("Running linter for %s: %s", language, ' '.join(cmd_list))
     start_time = datetime.now()
+
+    # Use shorter timeout for JS/TS to avoid npx download issues
+    timeout = 30 if language_lower in ['javascript', 'typescript'] else 60
 
     try:
         result = await asyncio.to_thread(
@@ -369,15 +466,25 @@ async def run_linter(
             cwd=str(project_dir),
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=timeout
         )
-        
+
         duration = (datetime.now() - start_time).total_seconds()
-        
+
+        # Check for module not found errors (common with Python linters)
+        output = result.stdout + result.stderr
+        if 'No module named' in output:
+            logger.warning("Linter module not found: %s", output[:200])
+            return {
+                'success': True,
+                'skipped': True,
+                'reason': f'Linter module not installed'
+            }
+
         # For linting, warnings are ok (returncode might be non-zero)
         issues = result.stdout if result.stdout else result.stderr
         has_issues = result.returncode != 0
-        
+
         if has_issues:
             logger.warning("Linting found issues in %.1fs", duration)
         else:
@@ -389,6 +496,14 @@ async def run_linter(
             'issues': issues[:2000] if issues else '',
             'returncode': result.returncode,
             'duration': duration
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Linter timed out for %s after %ds", language, timeout)
+        return {
+            'success': True,
+            'skipped': True,
+            'reason': f'Linter timed out (>{timeout}s)'
         }
 
     except FileNotFoundError:

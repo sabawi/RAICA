@@ -11,6 +11,7 @@ import logging
 import json
 import re
 from typing import List, Dict, Any, Optional
+from ..config_accessor import get_success_threshold
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -105,14 +106,13 @@ class SuccessVerifier:
     - Blocking issue identification
     """
 
-    DEFAULT_THRESHOLD = 90.0
     VERIFICATION_MODEL = "glm-4.7:cloud"
     VERIFICATION_PROVIDER = "ollama"
 
     def __init__(
         self,
         llm_client: Optional[Any] = None,
-        success_threshold: float = DEFAULT_THRESHOLD,
+        success_threshold: Optional[float] = None,
         max_verification_iterations: int = 3
     ):
         """
@@ -124,7 +124,7 @@ class SuccessVerifier:
             max_verification_iterations: Maximum verification attempts
         """
         self.llm_client = llm_client
-        self.threshold = success_threshold
+        self.threshold = success_threshold if success_threshold is not None else get_success_threshold()
         self.max_iterations = max_verification_iterations
         self._verification_client = None
 
@@ -362,20 +362,9 @@ Content preview:
         return '\n'.join(summary_parts)
 
     def _extract_json(self, content: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from response content."""
-        try:
-            match = re.search(r'\{[\s\S]*\}', content)
-            if match:
-                return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
-
-        return None
+        """Extract JSON from response content using robust utility."""
+        from ..utils.json_utils import extract_json_from_llm_response
+        return extract_json_from_llm_response(content)
 
     def _error_result(self, error: str) -> VerificationResult:
         """Create an error result."""

@@ -96,9 +96,10 @@ class PromptPanel(Vertical):
     DEFAULT_CSS = """
     PromptPanel {
         height: auto;
-        max-height: 8;
-        border: solid $accent;
-        padding: 0 1;
+        /* max-height increased or removed for larger buffer */
+        max-height: 12; 
+        /* border: solid $accent; REMOVED */
+        padding: 0 0;
     }
 
     PromptPanel > #prompt-label {
@@ -110,10 +111,12 @@ class PromptPanel(Vertical):
         height: 1fr;
         min-height: 3;
         border: none;
+        padding: 0;
     }
 
     PromptPanel > #prompt-hint {
-        height: 1;
+        height: auto;
+        min-height: 0;
         color: $text-muted;
         padding: 0 1;
     }
@@ -173,7 +176,8 @@ class PromptPanel(Vertical):
         """Compose the prompt panel widgets."""
         yield Static(self._default_prompt, id="prompt-label")
         yield PromptInput(id="prompt-input")
-        yield Static("Ctrl+J=Newline | Enter=Submit | Alt+C=Copy | Alt+V=Paste", id="prompt-hint")
+        # Keep widget for logic (set_waiting, ask_question) but empty for minimalism
+        yield Static("", id="prompt-hint")
 
     @property
     def input_widget(self) -> PromptInput:

@@ -267,30 +267,88 @@ def create_output_directory(output_dir: str) -> Path:
     return path
 
 
+def extract_target_path(request: str) -> Optional[Path]:
+    """
+    Extract a user-specified target path from a request string.
+
+    Looks for patterns like:
+    - "in ~/Development/myproject"
+    - "to /home/user/project"
+    - "at ~/projects/chess"
+    - "save in ~/code/game"
+    - "create in /tmp/test"
+
+    Args:
+        request: The user's request string
+
+    Returns:
+        Resolved Path if found, None otherwise
+    """
+    import re
+
+    # Patterns to match directory specifications
+    # Match: "in/to/at/save in/create in" followed by a path
+    path_patterns = [
+        # "in ~/path" or "in /path" or "in ./path"
+        r'(?:^|\s)(?:in|to|at|into)\s+((?:~|/|\.)[^\s,]+)',
+        # "save in ~/path"
+        r'(?:save|create|put|store|generate|write)\s+(?:it\s+)?(?:in|to|at)\s+((?:~|/|\.)[^\s,]+)',
+        # "files in ~/path"
+        r'files?\s+(?:in|to|at)\s+((?:~|/|\.)[^\s,]+)',
+        # "directory ~/path" or "folder ~/path"
+        r'(?:directory|folder|dir)\s+((?:~|/|\.)[^\s,]+)',
+        # "path: ~/path" or "location: ~/path"
+        r'(?:path|location|output):\s*((?:~|/|\.)[^\s,]+)',
+    ]
+
+    for pattern in path_patterns:
+        match = re.search(pattern, request, re.IGNORECASE)
+        if match:
+            path_str = match.group(1).strip()
+
+            # Remove trailing punctuation
+            path_str = path_str.rstrip('.,;:!?)')
+
+            # Expand ~ to home directory
+            if path_str.startswith('~'):
+                path_str = str(Path.home()) + path_str[1:]
+
+            try:
+                path = Path(path_str).resolve()
+                # Validate it looks like a reasonable path
+                # (not just a word that happened to match)
+                if len(path.parts) > 1:  # Has at least one directory component
+                    return path
+            except Exception:
+                continue
+
+    return None
+
+
 def generate_semantic_name(request: str) -> str:
     """
     Generate a semantic project name from a request string.
-    
+
     Args:
         request: The user's request string
-        
+
     Returns:
         A snake_case project name with timestamp suffix
     """
     import re
     from datetime import datetime
     from .config_defaults import SEMANTIC_NAMING_STOP_WORDS
-    
+
     # Basic cleaning
     clean = re.sub(r'[^\w\s]', '', request).lower()
     words = clean.split()
-    
+
     # Remove common stop words
     keywords = [w for w in words if w not in SEMANTIC_NAMING_STOP_WORDS][:5]
-    
+
     if not keywords:
         keywords = ["project"]
-        
+
     name = "_".join(keywords)
     timestamp = datetime.now().strftime("%H%M")
     return f"{name}_{timestamp}"

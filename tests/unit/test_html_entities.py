@@ -1,15 +1,41 @@
 #!/usr/bin/env python3
 """
-Test script to demonstrate HTML entity escaping bug
+Test HTML entity escaping in SandboxedExecutorTool
 """
-import sys
+
+import unittest
 import os
-sys.path.append('/home/sabawi/Development/flaskserver/user_tools')
+import sys
+from pathlib import Path
 
-from sandboxed_executor import SandboxedExecutorTool
+# Add project root to path
+from tests.utilities.test_helpers import setup_test_paths
 
-# Test content with problematic HTML characters
-test_content = """# Test Report: HTML Characters
+setup_test_paths()
+
+from user_tools.sandboxed_executor import SandboxedExecutorTool
+
+class TestHTMLEntityEscaping(unittest.IsolatedAsyncioTestCase):
+    """Test suite for HTML entity escaping in SandboxedExecutorTool."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.tool = SandboxedExecutorTool()
+        self.test_filename = "test_entities_unit.html"
+
+    def tearDown(self):
+        """Clean up generated files."""
+        # Attempt to find and remove the file if it exists
+        # The tool might place it in specific directories, checking logic in tool if possible
+        # Assuming current dir or tool's logic.
+        # For safety, we'll try to clean up in the execution context if we knew where it landed.
+        pass 
+
+    async def test_html_entities_are_escaped(self):
+        """Verify that HTML special characters are properly escaped in generated HTML."""
+        
+        # Content with problematic HTML characters
+        test_content = """# Test Report: HTML Characters
 
 This content contains HTML characters that should be escaped:
 
@@ -19,64 +45,46 @@ This content contains HTML characters that should be escaped:
 - Double quotes: "quoted text" here
 - Single quotes: 'quoted text' here
 - Combined: <div class="test" id='example'>Content & More</div>
-
-## Code Example
-```javascript
-if (x < 5 && y > "test's value") {
-    console.log('Hello "World" & Universe');
-}
-```
-
-## List with entities:
-- Item with < and >
-- Item with & and "quotes"
-- Item with 'single quotes' and &amp; entity
 """
 
-async def test_html_entities():
-    """Test HTML entity escaping in HTML file generation"""
-    print("🧪 Testing HTML entity escaping bug...")
-    
-    tool = SandboxedExecutorTool()
-    
-    # Test HTML file creation
-    result = await tool._create_real_html_file("test_entities_bug.html", test_content)
-    
-    if result["success"]:
-        file_path = result["result"]["full_path"]
-        print(f"✅ Created HTML file: {file_path}")
+        # Execute the HTML creation
+        result = await self.tool._create_real_html_file(self.test_filename, test_content)
         
-        # Read the generated HTML to check for proper escaping
+        # Verify success
+        self.assertTrue(result["success"], f"File creation failed: {result.get('error')}")
+        
+        # Read the generated file
+        file_path = result["result"]["full_path"]
+        self.assertTrue(os.path.exists(file_path), f"File not found at {file_path}")
+        
         with open(file_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
-        print("\n🔍 Checking for HTML entity issues:")
-        issues_found = []
+        # Verify escaping: Check for the presence of escaped entities
+        # and ensure raw characters (where they shouldn't be) are handled.
+        # Note: HTML tags like <body> will contain '<' and '>', so we check the specific context strings.
         
-        # Check for unescaped HTML characters in content
-        if '< symbol' in html_content and '&lt; symbol' not in html_content:
-            issues_found.append("❌ Unescaped < character found")
-        if '> symbol' in html_content and '&gt; symbol' not in html_content:
-            issues_found.append("❌ Unescaped > character found") 
-        if '"quoted text"' in html_content and '&quot;quoted text&quot;' not in html_content:
-            issues_found.append("❌ Unescaped double quotes found")
-        if "'quoted text'" in html_content and '&#39;quoted text&#39;' not in html_content:
-            issues_found.append("❌ Unescaped single quotes found")
-        if 'Content & More' in html_content and 'Content &amp; More' not in html_content:
-            issues_found.append("❌ Unescaped ampersand found")
-            
-        if issues_found:
-            print("🚨 HTML Entity Escaping Issues Found:")
-            for issue in issues_found:
-                print(f"   {issue}")
-            print(f"\n📄 Generated HTML preview (first 500 chars):")
-            print(html_content[:500] + "..." if len(html_content) > 500 else html_content)
-        else:
-            print("✅ No HTML entity issues detected")
-            
-    else:
-        print(f"❌ Failed to create HTML file: {result['error']}")
+        self.assertIn("&lt; symbol", html_content, 
+                      "Less than symbol '<' should be escaped to &lt;")
+        self.assertIn("&gt; symbol", html_content, 
+                      "Greater than symbol '>' should be escaped to &gt;")
+        self.assertIn("&amp; symbol", html_content, 
+                      "Ampersand symbol '&' should be escaped to &amp;")
+        self.assertIn("&quot;quoted text&quot;", html_content, 
+                      "Double quotes should be escaped to &quot;")
+        
+        # Single quotes might be &#39; or &apos; depending on implementation
+        has_single_escape = "&#39;quoted text&#39;" in html_content or "&apos;quoted text&apos;" in html_content
+        self.assertTrue(has_single_escape, 
+                       "Single quotes should be escaped to &#39; or &apos;")
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_html_entities())
+        # Check for the combined example
+        self.assertIn("&lt;div class=&quot;test&quot; id='example'&gt;Content &amp; More&lt;/div>", html_content,
+                      "Combined tags and content should be properly escaped")
+
+        # Cleanup
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+if __name__ == '__main__':
+    unittest.main()

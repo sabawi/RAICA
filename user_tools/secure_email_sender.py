@@ -195,7 +195,8 @@ class SecureEmailSenderTool(BaseUserTool):
         
         # Check sandbox workspace for relative paths with retry mechanism
         if not path.is_absolute():
-            sandbox_path = Path.cwd() / "sandbox_workspace" / file_path
+            # CRITICAL: Use home directory sandbox, not cwd (server might run from different dir)
+            sandbox_path = Path.home() / "sandbox_workspace" / file_path
             
             # 🔧 ENHANCED: Advanced file creation waiting mechanism
             import time
@@ -264,7 +265,8 @@ class SecureEmailSenderTool(BaseUserTool):
     def _find_fuzzy_attachment_match(self, requested_file: str) -> Optional[Path]:
         """Find fuzzy matches for attachment files in sandbox workspace"""
         try:
-            sandbox_path = Path.cwd() / "sandbox_workspace"
+            # CRITICAL: Use home directory sandbox, not cwd (server might run from different dir)
+            sandbox_path = Path.home() / "sandbox_workspace"
             if not sandbox_path.exists():
                 return None
             
@@ -307,10 +309,32 @@ class SecureEmailSenderTool(BaseUserTool):
                         candidates.append((file_path, 70))
             
             # Return best match
-            # Sort by priority first (descending), then by modification time (newest first)
+            # ENHANCED: Prefer files modified in last 2 minutes (just created by server)
+            # This reduces wrong file selection when multiple similar files exist
             if candidates:
-                candidates.sort(key=lambda x: (x[1], x[0].stat().st_mtime), reverse=True)
-                return candidates[0][0]
+                import time
+                current_time = time.time()
+                two_minutes_ago = current_time - 120  # 2 minutes
+
+                # Boost priority for very recent files (created in last 2 minutes)
+                # This handles case where server just created a file for this request
+                enhanced_candidates = []
+                for file_path, priority in candidates:
+                    mtime = file_path.stat().st_mtime
+                    if mtime > two_minutes_ago:
+                        # Recent file - boost priority significantly
+                        enhanced_priority = priority + 50
+                        enhanced_candidates.append((file_path, enhanced_priority, mtime))
+                        print(f"   📌 Recent file (boosted): {file_path.name} (priority {priority} → {enhanced_priority})")
+                    else:
+                        enhanced_candidates.append((file_path, priority, mtime))
+
+                # Sort by: priority (descending), then modification time (newest first)
+                enhanced_candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+
+                best_match = enhanced_candidates[0][0]
+                print(f"   ✅ Fuzzy match selected: {best_match.name}")
+                return best_match
                 
         except Exception as e:
             print(f"Warning: Fuzzy matching failed: {e}")
@@ -400,7 +424,8 @@ class SecureEmailSenderTool(BaseUserTool):
     def _detect_recent_reports(self, max_age_minutes: int = 10) -> List[str]:
         """Detect recently created report files in sandbox workspace"""
         try:
-            sandbox_path = Path.cwd() / "sandbox_workspace"
+            # CRITICAL: Use home directory sandbox, not cwd (server might run from different dir)
+            sandbox_path = Path.home() / "sandbox_workspace"
             if not sandbox_path.exists():
                 return []
             
@@ -983,7 +1008,8 @@ class SecureEmailSenderTool(BaseUserTool):
         """
         try:
             import os
-            sandbox_base = str(Path.cwd() / "sandbox_workspace")
+            # CRITICAL: Use home directory sandbox, not cwd (consistent with other methods)
+            sandbox_base = str(Path.home() / "sandbox_workspace")
             files_cleaned = []
             files_preserved = []
 

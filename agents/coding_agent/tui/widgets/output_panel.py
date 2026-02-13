@@ -40,10 +40,11 @@ class OutputPanel(RichLog):
     DEFAULT_CSS = """
     OutputPanel {
         height: 1fr;
-        border: solid $primary;
-        padding: 0 1;
-        overflow-x: hidden;  /* Prevent horizontal scroll, rely on wrapping */
-        overflow-y: auto;    /* Allow vertical scroll */
+        /* border: none; remove border for minimalism */
+        padding: 0 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-size: 1 1;
     }
     """
 
@@ -98,17 +99,14 @@ class OutputPanel(RichLog):
         """
         self._current_phase = phase
 
+        self.write("")
         header = Text()
-        header.append("\n")
-        header.append("═" * 60, style="bold cyan")
-        header.append("\n")
-        header.append(f"  Phase: {phase}", style="bold white on blue")
+        # Minimal header: just the phase name in bold/color, no heavy borders
+        header.append(f"── {phase}", style="bold cyan")
         if iteration > 1:
-            header.append(f" (Iteration {iteration})", style="yellow")
-        header.append("\n")
-        header.append("═" * 60, style="bold cyan")
-        header.append("\n")
-
+            header.append(f" (Iter {iteration})", style="yellow")
+        header.append(" ──", style="bold cyan")
+        
         self.write(header)
 
     def add_phase_output(self, phase: str, content: RenderableType) -> None:

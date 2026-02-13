@@ -176,6 +176,7 @@ class RAICAKnowledgeClient:
                     "model": self.model,
                     "messages": messages,
                     "stream": False
+                    # max_tokens uses server default from llm_config.yaml
                 }
             )
 
@@ -195,37 +196,73 @@ class RAICAKnowledgeClient:
         """Parse search results from response content."""
         results = []
 
-        # Try to parse as JSON first
+        # Try to parse as pure JSON first
         try:
             data = json.loads(content)
-            if isinstance(data, list):
-                for item in data:
-                    results.append(SearchResult(
-                        title=item.get('title', 'Untitled'),
-                        content=item.get('content', item.get('snippet', '')),
-                        source=item.get('source', item.get('url', '')),
-                        relevance=item.get('relevance', 0.0)
-                    ))
-                return results
-            elif isinstance(data, dict) and 'results' in data:
-                for item in data['results']:
-                    results.append(SearchResult(
-                        title=item.get('title', 'Untitled'),
-                        content=item.get('content', item.get('snippet', '')),
-                        source=item.get('source', item.get('url', '')),
-                        relevance=item.get('relevance', 0.0)
-                    ))
-                return results
+            return self._extract_results_from_json(data)
         except json.JSONDecodeError:
             pass
 
-        # Fallback: treat as plain text result
+        # Try to extract JSON from markdown code blocks (```json ... ``` or ``` ... ```)
+        import re
+        json_block_pattern = r'```(?:json)?\s*\n?([\s\S]*?)\n?```'
+        matches = re.findall(json_block_pattern, content)
+        for match in matches:
+            try:
+                data = json.loads(match.strip())
+                extracted = self._extract_results_from_json(data)
+                if extracted:
+                    logger.debug(f"Extracted {len(extracted)} results from markdown JSON block")
+                    return extracted
+            except json.JSONDecodeError:
+                continue
+
+        # Try to find JSON array anywhere in content (starts with [ and ends with ])
+        json_array_pattern = r'\[\s*\{[\s\S]*?\}\s*\]'
+        matches = re.findall(json_array_pattern, content)
+        for match in matches:
+            try:
+                data = json.loads(match)
+                extracted = self._extract_results_from_json(data)
+                if extracted:
+                    logger.debug(f"Extracted {len(extracted)} results from inline JSON array")
+                    return extracted
+            except json.JSONDecodeError:
+                continue
+
+        # Fallback: treat as plain text result (but warn)
         if content:
+            logger.warning("Could not parse JSON from RAICA response, using raw text fallback")
             results.append(SearchResult(
                 title="Search Result",
                 content=content[:2000],
                 source="RAICA"
             ))
+
+        return results
+
+    def _extract_results_from_json(self, data) -> List[SearchResult]:
+        """Extract SearchResult objects from parsed JSON data."""
+        results = []
+
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    results.append(SearchResult(
+                        title=item.get('title', 'Untitled'),
+                        content=item.get('content', item.get('snippet', '')),
+                        source=item.get('source', item.get('url', '')),
+                        relevance=float(item.get('relevance', 0.0))
+                    ))
+        elif isinstance(data, dict) and 'results' in data:
+            for item in data['results']:
+                if isinstance(item, dict):
+                    results.append(SearchResult(
+                        title=item.get('title', 'Untitled'),
+                        content=item.get('content', item.get('snippet', '')),
+                        source=item.get('source', item.get('url', '')),
+                        relevance=float(item.get('relevance', 0.0))
+                    ))
 
         return results
 

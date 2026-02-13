@@ -41,6 +41,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Callable
 from collections import defaultdict
 
+from .language_detector import LANGUAGE_DEFINITIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -477,7 +479,20 @@ class PythonImportParser(ImportParser):
                             imports.append(resolved)
                     else:
                         # Absolute import (from module import X)
+                        # e.g., from src.game import GameWindow
                         module_path = module_name + '.py'
+                        
+                        # CRITICAL: When importing from a package, Python loads
+                        # each __init__.py in the package hierarchy first!
+                        # So "from src.game import X" loads: src/__init__.py, then src/game.py
+                        parts = module_name.split('/')
+                        for i in range(len(parts)):
+                            pkg_path = '/'.join(parts[:i+1])
+                            # Try the package's __init__.py
+                            init_path = pkg_path + '/__init__.py'
+                            resolved_init = resolve_path(init_path, '')
+                            if resolved_init and resolved_init not in imports:
+                                imports.append(resolved_init)
                         
                         # Try project root first
                         resolved = resolve_path(module_path, '')
@@ -489,9 +504,29 @@ class PythonImportParser(ImportParser):
                             
                 elif node.level > 0:
                     # from . import something (no module, just level)
-                    # This imports from __init__.py in parent dirs
-                    # For now, skip these as they're typically package inits
-                    pass
+                    # This imports from current package - look for the imported names as modules
+                    # e.g., "from . import save_load" should find save_load.py
+                    
+                    # Build the directory path based on level
+                    parts = base_dir.split('/') if base_dir else []
+                    levels_up = node.level - 1
+                    if levels_up > 0 and levels_up <= len(parts):
+                        parts = parts[:-levels_up]
+                    pkg_dir = '/'.join(parts) if parts else ''
+                    
+                    # Try to resolve each imported name as a module
+                    for alias in node.names:
+                        name = alias.name
+                        if pkg_dir:
+                            module_path = f"{pkg_dir}/{name}.py"
+                        else:
+                            module_path = f"{name}.py"
+                        
+                        resolved = resolve_path(module_path, '')
+                        if not resolved:
+                            resolved = resolve_path(f"{name}.py", base_dir)
+                        if resolved:
+                            imports.append(resolved)
 
         return ParseResult(imports=imports)
 
@@ -1038,8 +1073,10 @@ class CodePathTracer:
         if abs_path.exists():
             return abs_path
 
-        # Try common extensions
-        extensions = ['.js', '.ts', '.jsx', '.tsx', '.mjs', '.py', '.go', '.java', '.rb', '.php']
+        # Try common extensions (from language definitions)
+        extensions = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            extensions.update(lang_info.file_extensions)
         for ext in extensions:
             test_path = self.project_dir / (file_path + ext)
             if test_path.exists():

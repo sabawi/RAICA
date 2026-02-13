@@ -29,6 +29,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
+from .services.language_detector import LANGUAGE_DEFINITIONS
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,12 +211,18 @@ class BaselineManager:
     - File copy backup (fallback)
     """
 
-    # File extensions to include in baseline
-    SOURCE_EXTENSIONS = {
-        '.py', '.js', '.ts', '.jsx', '.tsx',
-        '.html', '.css', '.json', '.yaml', '.yml',
-        '.md', '.txt', '.sh', '.bat', '.sql'
-    }
+    # File extensions to include in baseline (dynamically from language definitions)
+    @classmethod
+    def _get_source_extensions(cls) -> Set[str]:
+        """Get all source extensions from language definitions plus common config files."""
+        extensions = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            extensions.update(lang_info.file_extensions)
+        # Add common config/doc extensions not in language definitions
+        extensions.update({'.json', '.yaml', '.yml', '.md', '.txt', '.sh', '.bat', '.sql', '.toml'})
+        return extensions
+
+    SOURCE_EXTENSIONS = None  # Will be set dynamically
 
     # Directories to exclude
     EXCLUDE_DIRS = {
@@ -309,8 +317,8 @@ class BaselineManager:
 
     def _should_include_file(self, file_path: Path) -> bool:
         """Check if file should be included in baseline."""
-        # Check extension
-        if file_path.suffix.lower() not in self.SOURCE_EXTENSIONS:
+        # Check extension (use dynamic source extensions)
+        if file_path.suffix.lower() not in self._get_source_extensions():
             return False
 
         # Check if in excluded directory

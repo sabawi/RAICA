@@ -748,6 +748,11 @@ What should we try next?
             last_error = None
             decision = None
 
+            # Comprehensive iteration tracking for LLM context
+            iteration_history = []  # Full record of each iteration
+            resources_discovered = {}  # Tools, data, schemas discovered during investigations
+            accomplishments = []  # Successful outcomes from each iteration
+
             # Use strategy's max_retries if retries enabled, otherwise use default
             max_iterations = strategy.retry_policy.max_retries if strategy.should_retry() else self.max_act_iterations
 
@@ -763,8 +768,22 @@ What should we try next?
                 await self._phase_start("DECIDE")
                 result.phases_completed.append(f"DECIDE_START_ITER{act_iteration}")
 
-                # Include last_error in context for retry
+                # Build comprehensive decision context with iteration history
                 decision_context = gathered_context
+
+                # Add comprehensive iteration history (for iterations 2+)
+                if iteration_history:
+                    history_context = self._format_iteration_history(
+                        iteration_history,
+                        accomplishments,
+                        resources_discovered,
+                        request,
+                        act_iteration,
+                        max_iterations
+                    )
+                    decision_context += "\n\n" + history_context
+
+                # Also include last_error for backwards compatibility with existing verification logic
                 if last_error:
                     decision_context += f"\n\n🚨 PREVIOUS ATTEMPT FAILED:\n{last_error}\n\nBased on this failure, choose a different approach."
 
@@ -811,6 +830,34 @@ What should we try next?
                 result.phases_completed.append(f"VERIFY_START_ITER{act_iteration}")
 
                 verification = await self._verify(request, decision, act_result)
+
+                # Record this iteration in history (before breaking on success)
+                iteration_record = {
+                    'number': act_iteration,
+                    'decision_type': decision.decision_type.name,
+                    'reasoning': decision.reasoning[:200],  # Limit to 200 chars
+                    'target': decision.target,
+                    'act_success': act_result.get('success', False),
+                    'act_output': act_result.get('output', '')[:800],  # First 800 chars
+                    'verification_success': verification['success'],
+                    'verification_error': verification.get('error', '') if not verification['success'] else None
+                }
+                iteration_history.append(iteration_record)
+
+                # If ACT succeeded, record accomplishment
+                if act_result.get('success', False):
+                    accomplishment = {
+                        'iteration': act_iteration,
+                        'decision_type': decision.decision_type.name,
+                        'what': decision.reasoning[:150],
+                        'result': act_result.get('output', '')[:500]
+                    }
+                    accomplishments.append(accomplishment)
+
+                    # If investigation succeeded, add to resources
+                    if decision.decision_type == DecisionType.INVESTIGATE:
+                        tool_name = decision.target or 'unknown'
+                        resources_discovered[tool_name] = act_result.get('output', '')[:800]
 
                 # CRITICAL: Verification result OVERRIDES act_result
                 if verification['success']:
@@ -1515,6 +1562,39 @@ Step 2: EXECUTE raica_research_agent to fetch news
 Step 3: INVESTIGATE to get secure_email_sender details
 Step 4: EXECUTE secure_email_sender to send email
 
+For EXECUTE (user tool - raica_research_agent after INVESTIGATE):
+{{
+    "decision_type": "EXECUTE",
+    "reasoning": "Got raica_research_agent details. Now calling it to fetch and summarize latest national news from past 24 hours.",
+    "target": "raica_research_agent",
+    "commands": ["call_user_tool raica_research_agent {{\\"query\\": \\"Find and summarize the latest national news from the past 24 hours\\"}}"],
+    "requires_approval": true
+}}
+
+For EXECUTE (user tool - secure_email_sender after getting news):
+{{
+    "decision_type": "EXECUTE",
+    "reasoning": "Got news summary from raica_research_agent. Now sending it as HTML email via secure_email_sender.",
+    "target": "secure_email_sender",
+    "commands": ["call_user_tool secure_email_sender {{\\"recipient\\": \\"sabawi@gmail.com\\", \\"subject\\": \\"Latest National News Summary\\", \\"body\\": \\"<news_summary_here>\\", \\"format\\": \\"html\\", \\"attachments\\": []}}"],
+    "requires_approval": true
+}}
+
+For EXECUTE (user tool - pdf_generator example):
+{{
+    "decision_type": "EXECUTE",
+    "reasoning": "User wants to generate PDF report. I got pdf_generator details via INVESTIGATE, now executing it.",
+    "target": "pdf_generator",
+    "commands": ["call_user_tool pdf_generator {{\\"content\\": \\"Report content here\\", \\"output_file\\": \\"report.pdf\\", \\"title\\": \\"Monthly Report\\"}}"],
+    "requires_approval": true
+}}
+
+🚨 CRITICAL: User tool command format:
+- Format: call_user_tool <tool_name> {{"param1": "value1", "param2": "value2"}}
+- Use valid JSON for parameters (double quotes, proper escaping)
+- Parameters must match the tool's schema from INVESTIGATE
+- Tool name must exactly match what you saw in RAICA USER TOOLS catalog
+
 For INVESTIGATE (diagnostic command to learn - RETRY Strategy 1):
 {{
     "decision_type": "INVESTIGATE",
@@ -1614,27 +1694,65 @@ Return ONLY the JSON object, no other text."""
                     # Check if reasoning mentions needing tool details
                     needs_tool_details = any(phrase in reasoning for phrase in [
                         'need the parameter schema',
+                        'need to retrieve',
                         'need to get',
                         'must first retrieve',
+                        'must retrieve',
                         'i need the',
                         'need its parameter',
                         'need full details',
+                        'parameter schema',  # Broader match
+                        'tool schema',
+                        'full parameter',
                     ])
 
+                    # CRITICAL: Extract tool name FIRST before checking if we have it!
+                    # We need to know WHICH tool the LLM is asking for
+                    tool_name = None
                     if investigate_commands or needs_tool_details:
-                        # Extract tool name from reasoning or commands
-                        tool_name = None
+                        # Extract from commands first (most reliable)
                         if commands:
                             for cmd in commands:
                                 if cmd.startswith('get_tool_details '):
                                     tool_name = cmd.split(' ', 1)[1].strip()
                                     break
 
+                        # If not in commands, try to extract from reasoning
                         if not tool_name:
-                            # Try to extract from reasoning
-                            match = re.search(r"'([a-z_]+)'", reasoning)
+                            # Look for quoted tool names like 'secure_email_sender' or "raica_research_agent"
+                            match = re.search(r"['\"]([a-z_]+)['\"]", reasoning)
                             if match:
                                 tool_name = match.group(1)
+
+                    # Now check if THAT SPECIFIC tool's details are already in context
+                    # Don't check for ANY tool details - check for THIS tool!
+                    context_lower = context.lower() if context else ''
+                    already_has_this_tool = False
+                    if tool_name:
+                        # Check if this specific tool's details are in context
+                        already_has_this_tool = (
+                            f"tool details for '{tool_name}'" in context_lower or
+                            f'tool details for "{tool_name}"' in context_lower or
+                            f"'{tool_name}':" in context_lower or
+                            f'"{tool_name}":' in context_lower
+                        )
+                    else:
+                        # If we couldn't extract tool name, fall back to broad check
+                        # (to avoid infinite loops if investigation already happened)
+                        already_has_this_tool = (
+                            'do not repeat investigation' in context_lower or
+                            'you already obtained' in context_lower
+                        )
+
+                    # Debug logging
+                    if investigate_commands or needs_tool_details:
+                        logger.info(f"🔍 Auto-correct check: tool_name={tool_name}, investigate_commands={investigate_commands}, needs_tool_details={needs_tool_details}, already_has_this_tool={already_has_this_tool}")
+                        if already_has_this_tool:
+                            logger.info(f"   Context already has '{tool_name}' details, NOT auto-correcting")
+                        else:
+                            logger.info(f"   Will auto-correct CANNOT_PROCEED → INVESTIGATE for '{tool_name}'")
+
+                    if (investigate_commands or needs_tool_details) and not already_has_this_tool:
 
                         if tool_name or investigate_commands:
                             logger.warning(
@@ -1706,21 +1824,34 @@ Return ONLY the JSON object, no other text."""
                 await self._output(f"Response: {decision.response_text}", "info")
 
             elif decision.decision_type == DecisionType.EXECUTE:
-                # Execute existing script/tool
+                # Execute existing script/tool or user tool
                 if decision.commands:
                     outputs = []
                     for cmd in decision.commands:
-                        await self._output(f"Executing: {cmd}", "info")
-                        if self.system_executor:
-                            exec_result = await self.system_executor.execute(cmd, timeout=exec_timeout)
-                            outputs.append(exec_result.stdout or exec_result.stderr)
-                            if not exec_result.success:
-                                result['output'] = f"Command failed: {exec_result.stderr}"
+                        # Check if this is a user tool call
+                        if cmd.startswith('call_user_tool '):
+                            # Execute user tool
+                            tool_output = await self._execute_user_tool(cmd)
+                            outputs.append(tool_output)
+
+                            # Check if tool execution failed
+                            if tool_output.startswith('❌'):
+                                result['output'] = tool_output
+                                result['success'] = False
                                 return result
                         else:
-                            import subprocess
-                            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=exec_timeout)
-                            outputs.append(proc.stdout or proc.stderr)
+                            # Regular shell command execution
+                            await self._output(f"Executing: {cmd}", "info")
+                            if self.system_executor:
+                                exec_result = await self.system_executor.execute(cmd, timeout=exec_timeout)
+                                outputs.append(exec_result.stdout or exec_result.stderr)
+                                if not exec_result.success:
+                                    result['output'] = f"Command failed: {exec_result.stderr}"
+                                    return result
+                            else:
+                                import subprocess
+                                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=exec_timeout)
+                                outputs.append(proc.stdout or proc.stderr)
 
                     result['success'] = True
                     result['output'] = "\n".join(outputs)
@@ -1891,6 +2022,74 @@ Return ONLY the JSON object, no other text."""
 
         return result
 
+    async def _execute_user_tool(self, command: str) -> str:
+        """
+        Execute a user tool command.
+
+        Args:
+            command: Command in format "call_user_tool <tool_name> {json_params}"
+
+        Returns:
+            String output from tool execution
+        """
+        try:
+            # Parse command: call_user_tool <tool_name> {"param": "value", ...}
+            parts = command.split(' ', 2)
+            if len(parts) < 2:
+                return f"❌ Invalid user tool command format: {command}"
+
+            tool_name = parts[1]
+
+            # Parse JSON parameters (if provided)
+            params = {}
+            if len(parts) == 3:
+                try:
+                    params = json.loads(parts[2])
+                except json.JSONDecodeError as e:
+                    return f"❌ Invalid JSON parameters for tool {tool_name}: {e}"
+
+            await self._output(f"📞 Calling user tool: {tool_name}", "info")
+            if params:
+                await self._output(f"   Parameters: {json.dumps(params, indent=2)}", "info")
+
+            # Discover and get the tool
+            from user_tools.tool_discovery import discover_user_tools, get_user_tool_by_name
+
+            tools = await discover_user_tools()
+            tool = get_user_tool_by_name(tools, tool_name)
+
+            if not tool:
+                available_tools = [t.name for t in tools]
+                return f"❌ Tool not found: {tool_name}\nAvailable tools: {', '.join(available_tools)}"
+
+            # Validate parameters
+            validation_error = tool.validate_parameters(params)
+            if validation_error:
+                return f"❌ Parameter validation failed for {tool_name}: {validation_error}"
+
+            # Execute the tool
+            await self._output(f"⚙️ Executing {tool_name}...", "info")
+            result = await tool.execute(**params)
+
+            # Format result
+            if isinstance(result, dict):
+                if result.get('success'):
+                    output = f"✅ Tool {tool_name} executed successfully\n"
+                    if 'result' in result:
+                        output += f"Result: {result['result']}"
+                    return output
+                else:
+                    error = result.get('error', 'Unknown error')
+                    return f"❌ Tool {tool_name} failed: {error}"
+            else:
+                return f"✅ Tool {tool_name} result: {result}"
+
+        except Exception as e:
+            logger.error(f"User tool execution failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"❌ Tool execution error: {e}"
+
     # =========================================================================
     # PHASE 5: VERIFY
     # =========================================================================
@@ -1981,12 +2180,11 @@ Return ONLY the JSON object, no other text."""
                 return {'success': False, 'error': act_result.get('output', 'Fix failed')}
 
         # ═══════════════════════════════════════════════════════════════════════
-        # EXECUTE VERIFICATION - Trust exit code (MINIMAL SCAFFOLDING)
+        # EXECUTE VERIFICATION - Trust exit code BUT check if task is complete
         # ═══════════════════════════════════════════════════════════════════════
         # ARCHITECTURE: System commands return error on failure, exit cleanly on success.
-        # Just capture stderr/stdout - that's all the verification needed!
-        # DON'T ask LLM - exit code 0 = SUCCESS, non-zero = FAILED (deterministic)
-        # This prevents retrying commands with side effects (send email 3 times!)
+        # Exit code tells us if THIS command succeeded, but for multi-step workflows
+        # (e.g., "fetch news AND email it"), we need to check if OVERALL task is done.
         # ═══════════════════════════════════════════════════════════════════════
         if decision.decision_type == DecisionType.EXECUTE:
             # Check exit code - this is DETERMINISTIC!
@@ -1996,10 +2194,85 @@ Return ONLY the JSON object, no other text."""
                 error_msg = act_result.get('output', 'Command execution failed')
                 return {'success': False, 'error': error_msg}
 
-            # ✅ Exit code 0 = SUCCESS
-            # Command executed successfully - TRUST IT, DONE!
-            # Don't ask LLM, don't retry - the action already happened!
-            return {'success': True}
+            # ✅ Command executed successfully
+            # But is the ORIGINAL REQUEST complete? (multi-step workflows!)
+            # Ask LLM to verify if we're done or need more steps
+            await self._output("Verification: Command succeeded, checking if task is complete...", "info")
+
+            # Build verification prompt
+            verification_prompt = f"""Analyze if the user's ORIGINAL request has been fully accomplished.
+
+ORIGINAL REQUEST: {request}
+
+WHAT WE JUST EXECUTED: {decision.reasoning}
+
+EXECUTION RESULT:
+{act_result.get('output', '')}
+
+QUESTION: Is the ORIGINAL request now FULLY COMPLETE?
+
+Examples:
+- Original: "Send email to John"
+  Just did: Executed mail command successfully
+  Answer: YES - Request complete ✅
+
+- Original: "Look up latest news and email it"
+  Just did: Executed raica_research_agent to fetch news
+  Answer: NO - Got the news, but still need to send the email ❌
+
+- Original: "Look up latest news and email it"
+  Just did: Executed secure_email_sender to send email with news
+  Answer: YES - Request complete (news fetched and emailed) ✅
+
+Return JSON:
+{{
+    "task_complete": true/false,
+    "reasoning": "Brief explanation of what's done and what remains"
+}}
+
+Return ONLY JSON, no other text."""
+
+            try:
+                response = await asyncio.to_thread(
+                    self.llm_client.generate_for_classification, verification_prompt, max_tokens=500
+                )
+                content = response.content if hasattr(response, 'content') else str(response)
+
+                # Parse JSON
+                import json as json_module
+                from ..utils.json_utils import sanitize_json
+
+                json_match = re.search(r'\{[\s\S]*\}', content)
+                if json_match:
+                    data = json_module.loads(sanitize_json(json_match.group()))
+                    task_complete = data.get('task_complete', False)
+                    reasoning = data.get('reasoning', '')
+
+                    if task_complete:
+                        await self._output(f"✅ Task complete: {reasoning}", "info")
+                        return {'success': True}
+                    else:
+                        await self._output(f"⏩ Continue: {reasoning}", "info")
+                        return {
+                            'success': False,
+                            'error': f"Task incomplete: {reasoning}\n\n🚨 CRITICAL - DO NOT REPEAT:\n- You already executed the command above successfully\n- The command output is: {act_result.get('output', '')}\n- NEXT ACTION: Continue with the remaining steps to complete the original request\n\nWhat should you do next to complete the original request?"
+                        }
+                else:
+                    # Failed to parse LLM response - assume not complete
+                    return {
+                        'success': False,
+                        'error': "Task verification unclear - assuming incomplete. Continue with next steps."
+                    }
+
+            except Exception as e:
+                logger.error(f"Execute verification failed: {e}")
+                import traceback
+                traceback.print_exc()
+                # On error, assume incomplete to be safe
+                return {
+                    'success': False,
+                    'error': f"Verification error: {e}. Continue with next steps."
+                }
 
         # ═══════════════════════════════════════════════════════════════════════
         # INVESTIGATE VERIFICATION - Check if task is complete
@@ -2025,7 +2298,7 @@ ORIGINAL REQUEST: {request}
 WHAT WE JUST DID: {decision.reasoning}
 
 INVESTIGATION RESULT:
-{act_result.get('output', '')[:1000]}
+{act_result.get('output', '')}
 
 QUESTION: Is the ORIGINAL request now FULLY COMPLETE?
 
@@ -2048,7 +2321,7 @@ Return ONLY JSON, no other text."""
 
             try:
                 response = await asyncio.to_thread(
-                    self.llm_client.generate_for_classification, verification_prompt, max_tokens=300
+                    self.llm_client.generate_for_classification, verification_prompt, max_tokens=500
                 )
                 content = response.content if hasattr(response, 'content') else str(response)
 
@@ -2066,7 +2339,19 @@ Return ONLY JSON, no other text."""
                     else:
                         await self._output(f"⏩ Continue: {reasoning}", "info")
                         # Investigation succeeded but task NOT complete - continue to next iteration
-                        return {'success': False, 'error': f'Task incomplete: {reasoning}'}
+                        # CRITICAL: Include the gathered information in error context so LLM knows what it has!
+                        return {
+                            'success': False,
+                            'error': f"""Task incomplete: {reasoning}
+
+🚨 CRITICAL - DO NOT REPEAT INVESTIGATION:
+- You already obtained the information from the investigation above
+- The investigation result was: {act_result.get('output', '')}
+- DO NOT investigate the same thing again
+- NEXT ACTION: Use the information you now have to proceed (e.g., EXECUTE the tool with the parameters you learned)
+
+What should you do next to complete the original request?"""
+                        }
 
             except Exception as e:
                 logger.warning(f"LLM verification failed, assuming task incomplete: {e}")
@@ -2172,6 +2457,148 @@ Format your response clearly with section headers."""
         logger.info(f"[{msg_type.upper()}] {message}")
         if self.callbacks.on_output:
             await self.callbacks.on_output(message, msg_type)
+
+    def _format_iteration_history(
+        self,
+        iteration_history: list,
+        accomplishments: list,
+        resources_discovered: dict,
+        original_request: str,
+        current_iteration: int,
+        max_iterations: int
+    ) -> str:
+        """
+        Format comprehensive iteration history into rich context for LLM.
+
+        This gives the LLM complete visibility into:
+        - What has been tried
+        - What succeeded vs failed
+        - What was accomplished
+        - What resources are available
+        - What's left to do
+        - How much iteration budget remains
+        """
+        context_parts = []
+
+        # Header with original request reminder
+        context_parts.append("═" * 70)
+        context_parts.append("📊 ITERATION HISTORY & PROGRESS")
+        context_parts.append("═" * 70)
+        context_parts.append(f"\n🎯 ORIGINAL REQUEST: {original_request}")
+        context_parts.append(f"\n⏱️ ITERATION BUDGET: Currently on iteration {current_iteration}/{max_iterations}")
+        context_parts.append(f"   ({max_iterations - current_iteration} attempts remaining)\n")
+
+        # Detailed iteration timeline
+        context_parts.append("━" * 70)
+        context_parts.append("🔄 DETAILED ITERATION TIMELINE:")
+        context_parts.append("━" * 70)
+
+        for iter_record in iteration_history:
+            iter_num = iter_record['number']
+            decision_type = iter_record['decision_type']
+            reasoning = iter_record['reasoning']
+            act_success = iter_record['act_success']
+            verify_success = iter_record['verification_success']
+            verify_error = iter_record['verification_error']
+
+            # Format iteration header
+            context_parts.append(f"\n📍 Iteration {iter_num}: {decision_type}")
+            context_parts.append(f"   Reasoning: {reasoning}")
+
+            # ACT result
+            if act_success:
+                output_preview = iter_record['act_output'][:300]
+                if len(iter_record['act_output']) > 300:
+                    output_preview += "..."
+                context_parts.append(f"   ✅ ACT succeeded")
+                if output_preview:
+                    context_parts.append(f"      Output: {output_preview}")
+            else:
+                context_parts.append(f"   ❌ ACT failed")
+
+            # VERIFY result
+            if verify_success:
+                context_parts.append(f"   ✅ VERIFY succeeded - Task complete!")
+            else:
+                context_parts.append(f"   ❌ VERIFY failed: {verify_error}")
+
+        # Accomplishments section
+        if accomplishments:
+            context_parts.append("\n" + "━" * 70)
+            context_parts.append("✅ ACCOMPLISHMENTS SO FAR:")
+            context_parts.append("━" * 70)
+
+            for acc in accomplishments:
+                iter_num = acc['iteration']
+                decision_type = acc['decision_type']
+                what = acc['what']
+                result_preview = acc['result'][:400]
+                if len(acc['result']) > 400:
+                    result_preview += "..."
+
+                context_parts.append(f"\n✅ [Iteration {iter_num}] {decision_type}: {what}")
+                if result_preview:
+                    context_parts.append(f"   Result: {result_preview}")
+
+        # Resources discovered section
+        if resources_discovered:
+            context_parts.append("\n" + "━" * 70)
+            context_parts.append("📚 RESOURCES AVAILABLE (from previous investigations):")
+            context_parts.append("━" * 70)
+            context_parts.append("\n🚨 CRITICAL: You already have these details - DO NOT investigate again!\n")
+
+            for tool_name, details in resources_discovered.items():
+                details_preview = details[:500]
+                if len(details) > 500:
+                    details_preview += "..."
+                context_parts.append(f"✓ {tool_name}:")
+                context_parts.append(f"  {details_preview}\n")
+
+        # Progress analysis - what's complete vs incomplete
+        context_parts.append("━" * 70)
+        context_parts.append("📋 PROGRESS ANALYSIS:")
+        context_parts.append("━" * 70)
+
+        # Check if we have failures vs successes
+        total_iterations = len(iteration_history)
+        successful_acts = sum(1 for ir in iteration_history if ir['act_success'])
+        failed_acts = total_iterations - successful_acts
+
+        context_parts.append(f"\nTotal iterations completed: {total_iterations}")
+        context_parts.append(f"Successful actions: {successful_acts}")
+        context_parts.append(f"Failed actions: {failed_acts}")
+
+        # Strategic guidance based on history
+        context_parts.append("\n" + "━" * 70)
+        context_parts.append("💡 STRATEGIC GUIDANCE:")
+        context_parts.append("━" * 70)
+
+        if resources_discovered:
+            context_parts.append("\n⚠️ You have already investigated tools and obtained their details.")
+            context_parts.append("   DO NOT INVESTIGATE again - use the resources listed above!")
+
+        if accomplishments:
+            context_parts.append("\n⚠️ You have already accomplished some work (see ACCOMPLISHMENTS).")
+            context_parts.append("   Build on these accomplishments to complete the original request!")
+            context_parts.append("   DO NOT repeat work that was already successful!")
+
+        # Check for repeated failures
+        decision_types = [ir['decision_type'] for ir in iteration_history]
+        if len(decision_types) > len(set(decision_types)):
+            # Found repeated decision types
+            from collections import Counter
+            decision_counts = Counter(decision_types)
+            repeated = [dt for dt, count in decision_counts.items() if count > 1]
+            if repeated:
+                context_parts.append(f"\n🚨 WARNING: You have repeated these decision types: {', '.join(repeated)}")
+                context_parts.append("   Repeating the same approach that already failed is wasteful!")
+                context_parts.append("   Try a DIFFERENT approach to make progress!")
+
+        context_parts.append("\n" + "═" * 70)
+        context_parts.append("Based on the above history, what should you do NEXT?")
+        context_parts.append("═" * 70)
+
+        return "\n".join(context_parts)
 
     def _estimate_token_savings(
         self,

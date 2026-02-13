@@ -9,30 +9,46 @@ Components:
 - RequestClassifier: Semantic classification of request types
 - TaskDecomposer: Break complex requests into atomic steps
 - SystemExecutor: Safe command execution with approval workflow
-- VerificationLoop: Verify and retry until success
+- UniversalHandler: Investigation-First pattern for ALL requests
 - Orchestrator: Main coordinator
 
-Example:
-    "Check my system and install LAMP stack, then create a PHP form"
+Architecture Evolution:
+~~~~~~~~~~~~~~~~~~~~~~~
+Traditional (OLD):
+    Request → Classify → Route to handler → Create plan → Execute → Skip logic
 
-    This gets decomposed into:
-    1. [SYSTEM_QUERY] Check current system (OS, installed packages)
-    2. [SYSTEM_TASK] Install Apache (with approval)
-    3. [SYSTEM_TASK] Install MySQL (with approval)
-    4. [SYSTEM_TASK] Install PHP (with approval)
-    5. [VERIFY] Test each component
-    6. [SYSTEM_TASK] Configure Apache for PHP
-    7. [CODE_GEN] Create index.php with form
-    8. [CODE_GEN] Create database schema
-    9. [VERIFY] Test complete integration
+Universal Investigation-First (NEW):
+    Request → TRIAGE → GATHER → DECIDE → ACT → VERIFY
+
+The Universal Handler eliminates speculative planning by:
+1. TRIAGE: Asking LLM what information it needs
+2. GATHER: Executing triage requests (file reads, commands, searches)
+3. DECIDE: LLM decides action WITH full context
+4. ACT: Execute the decided action (EXECUTE/FIX/CREATE/RESPOND)
+5. VERIFY: Confirm success
+
+Token Savings: ~40-60% by avoiding speculative CODE_GENERATE steps
+that would later be skipped.
+
+Example:
+    "Check my email for bills"
+
+    OLD: Classify → Create plan with CODE_GENERATE → Execute → Skip CODE_GENERATE
+    NEW: TRIAGE → "What scripts exist?" → GATHER → "find_bills.py found" → DECIDE → EXECUTE
 """
 
 from .request_classifier import RequestClassifier, RequestType, ClassificationResult
 from .task_decomposer import TaskDecomposer, TaskStep, StepType
 from .system_executor import SystemExecutor, CommandRisk, ExecutionResult
 from .orchestrator import Orchestrator, OrchestratorCallbacks, OrchestratorResult
+from .universal_handler import (
+    UniversalHandler, UniversalHandlerCallbacks, UniversalHandlerResult,
+    TriageActionType, TriageAction, TriageResult,
+    DecisionType, Decision
+)
 
 __all__ = [
+    # Traditional components (still used for some request types)
     'RequestClassifier',
     'RequestType',
     'ClassificationResult',
@@ -45,4 +61,13 @@ __all__ = [
     'Orchestrator',
     'OrchestratorCallbacks',
     'OrchestratorResult',
+    # Universal Handler (new architecture)
+    'UniversalHandler',
+    'UniversalHandlerCallbacks',
+    'UniversalHandlerResult',
+    'TriageActionType',
+    'TriageAction',
+    'TriageResult',
+    'DecisionType',
+    'Decision',
 ]

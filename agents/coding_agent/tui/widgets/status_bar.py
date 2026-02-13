@@ -42,11 +42,11 @@ class StatusBar(Static):
     DEFAULT_CSS = """
     StatusBar {
         height: auto;
-        min-height: 3;
-        max-height: 5;
+        min-height: 1;
+        max-height: 3;
         background: $surface;
-        border: solid $primary-darken-2;
-        padding: 0 1;
+        /* border: solid $primary-darken-2; REMOVED */
+        padding: 0 0;
     }
     """
 

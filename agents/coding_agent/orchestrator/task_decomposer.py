@@ -14,12 +14,14 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from .request_classifier import RequestType, ClassificationResult
+from ..utils.json_utils import sanitize_json
 
 logger = logging.getLogger(__name__)
 
 
 class StepType(Enum):
     """Types of execution steps."""
+    RESEARCH = auto()        # Research command/library/API before using it
     INVESTIGATE = auto()     # Gather information about system state
     INSTALL = auto()         # Install packages/software
     CONFIGURE = auto()       # Configure services/applications
@@ -29,6 +31,7 @@ class StepType(Enum):
     USER_INPUT = auto()      # Get input from user
     CONDITIONAL = auto()     # Conditional step based on previous results
     INFORM_USER = auto()     # Inform user about something (can't do X, need Y first)
+    WEB_SEARCH = auto()      # Search the web for information
 
 
 class StepStatus(Enum):
@@ -59,6 +62,9 @@ class TaskStep:
     status: StepStatus = StepStatus.PENDING
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    # Parameters extracted by LLM from user's request
+    target_directory: str = ""           # Target directory for code generation
+    code_prompt: str = ""                # Specific prompt for code generation
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -129,62 +135,10 @@ class TaskDecomposer:
     2. Identify all required sub-tasks
     3. Order tasks by dependencies
     4. Define verification criteria
-    """
 
-    # Common step templates for known patterns
-    LAMP_STACK_TEMPLATE = [
-        TaskStep(
-            id="step_1",
-            step_type=StepType.INVESTIGATE,
-            title="Check System",
-            description="Identify OS and current installed packages",
-            commands=["cat /etc/os-release", "which apache2 nginx", "which mysql mariadb", "which php"],
-            requires_sudo=False,
-            verification="Identify what's already installed"
-        ),
-        TaskStep(
-            id="step_2",
-            step_type=StepType.INSTALL,
-            title="Install Apache",
-            description="Install Apache web server",
-            commands=["apt update", "apt install -y apache2"],
-            requires_sudo=True,
-            requires_approval=True,
-            depends_on=["step_1"],
-            verification="systemctl status apache2"
-        ),
-        TaskStep(
-            id="step_3",
-            step_type=StepType.INSTALL,
-            title="Install MySQL",
-            description="Install MySQL database server",
-            commands=["apt install -y mysql-server"],
-            requires_sudo=True,
-            requires_approval=True,
-            depends_on=["step_1"],
-            verification="systemctl status mysql"
-        ),
-        TaskStep(
-            id="step_4",
-            step_type=StepType.INSTALL,
-            title="Install PHP",
-            description="Install PHP and Apache module",
-            commands=["apt install -y php libapache2-mod-php php-mysql"],
-            requires_sudo=True,
-            requires_approval=True,
-            depends_on=["step_2"],
-            verification="php -v"
-        ),
-        TaskStep(
-            id="step_5",
-            step_type=StepType.VERIFY,
-            title="Verify LAMP Stack",
-            description="Test all components are working",
-            commands=["systemctl status apache2", "systemctl status mysql", "php -v"],
-            depends_on=["step_2", "step_3", "step_4"],
-            verification="All services running"
-        ),
-    ]
+    ARCHITECTURE: LLM decides everything, RAICA executes blindly.
+    No hardcoded templates or keyword matching allowed.
+    """
 
     def __init__(self, llm_client: Optional[Any] = None):
         """
@@ -203,6 +157,9 @@ class TaskDecomposer:
         """
         Decompose a request into an execution plan.
 
+        ARCHITECTURE: Always uses LLM for decomposition.
+        No hardcoded templates or keyword matching.
+
         Args:
             request: User's request
             classification: How the request was classified
@@ -213,141 +170,27 @@ class TaskDecomposer:
         logger.info(f"Decomposing request: {request[:50]}...")
         logger.info(f"Classification: {classification.primary_type.name}")
 
-        # For simple requests, use quick decomposition
-        if classification.complexity == "simple":
-            plan = self._simple_decompose(request, classification)
-        else:
-            # For complex requests, use LLM
-            plan = self._llm_decompose(request, classification)
+        # ALWAYS use LLM for decomposition - no hardcoded paths
+        plan = self._llm_decompose(request, classification)
 
         plan.total_steps = len(plan.steps)
         return plan
-
-    def _simple_decompose(
-        self,
-        request: str,
-        classification: ClassificationResult
-    ) -> ExecutionPlan:
-        """Quick decomposition for simple requests."""
-        steps = []
-        request_lower = request.lower()
-
-        if classification.primary_type == RequestType.SYSTEM_QUERY:
-            # Single investigation step
-            steps.append(TaskStep(
-                id="step_1",
-                step_type=StepType.INVESTIGATE,
-                title="Check System",
-                description=f"Investigate: {classification.intent}",
-                commands=self._generate_query_commands(request),
-                requires_sudo=classification.requires_sudo,
-                verification="Report findings"
-            ))
-
-        elif classification.primary_type == RequestType.SYSTEM_TASK:
-            # Single execution step with verification
-            steps.append(TaskStep(
-                id="step_1",
-                step_type=StepType.EXECUTE,
-                title="Execute Task",
-                description=classification.intent,
-                commands=self._generate_task_commands(request),
-                requires_sudo=classification.requires_sudo,
-                requires_approval=True,
-                verification="Verify task completed"
-            ))
-            steps.append(TaskStep(
-                id="step_2",
-                step_type=StepType.VERIFY,
-                title="Verify Result",
-                description="Confirm task completed successfully",
-                depends_on=["step_1"],
-                verification="Check for success indicators"
-            ))
-
-        elif classification.primary_type == RequestType.CODE_GENERATION:
-            # Code generation step
-            steps.append(TaskStep(
-                id="step_1",
-                step_type=StepType.CODE_GENERATE,
-                title="Generate Code",
-                description=classification.intent,
-                verification="Code files created"
-            ))
-
-        elif classification.primary_type == RequestType.HYBRID:
-            # Use templates for known hybrid patterns
-            if 'lamp' in request_lower or ('apache' in request_lower and 'mysql' in request_lower and 'php' in request_lower):
-                # Use LAMP stack template
-                import copy
-                steps = [copy.deepcopy(step) for step in self.LAMP_STACK_TEMPLATE]
-
-                # Add code generation step if requested
-                if 'form' in request_lower or 'page' in request_lower or 'create' in request_lower:
-                    steps.append(TaskStep(
-                        id=f"step_{len(steps)+1}",
-                        step_type=StepType.CODE_GENERATE,
-                        title="Generate PHP Application",
-                        description="Create PHP form or application",
-                        depends_on=["step_5"],
-                        verification="PHP files created in /var/www/html"
-                    ))
-            else:
-                # Generic hybrid: system task first, then code gen
-                steps.append(TaskStep(
-                    id="step_1",
-                    step_type=StepType.INVESTIGATE,
-                    title="Check System",
-                    description="Determine current system state",
-                    commands=["uname -a", "cat /etc/os-release", "which apt yum dnf 2>/dev/null"],
-                    requires_sudo=False,
-                    verification="Identify system requirements"
-                ))
-                steps.append(TaskStep(
-                    id="step_2",
-                    step_type=StepType.EXECUTE,
-                    title="System Setup",
-                    description="Execute required system operations",
-                    commands=self._generate_task_commands(request),
-                    requires_sudo=classification.requires_sudo,
-                    requires_approval=True,
-                    depends_on=["step_1"],
-                    verification="System setup complete"
-                ))
-                steps.append(TaskStep(
-                    id="step_3",
-                    step_type=StepType.CODE_GENERATE,
-                    title="Generate Code",
-                    description="Generate requested code/application",
-                    depends_on=["step_2"],
-                    verification="Code files created"
-                ))
-                steps.append(TaskStep(
-                    id="step_4",
-                    step_type=StepType.VERIFY,
-                    title="Final Verification",
-                    description="Verify complete setup works",
-                    depends_on=["step_3"],
-                    verification="All components functioning"
-                ))
-
-        return ExecutionPlan(
-            request=request,
-            classification=classification,
-            steps=steps
-        )
 
     def _llm_decompose(
         self,
         request: str,
         classification: ClassificationResult
     ) -> ExecutionPlan:
-        """Use LLM for intelligent decomposition of complex requests."""
-        if not self.llm_client:
-            logger.warning("No LLM client, falling back to simple decomposition")
-            return self._simple_decompose(request, classification)
+        """Use LLM for intelligent decomposition of requests.
 
-        prompt = f"""Decompose this complex request into atomic execution steps.
+        ARCHITECTURE: LLM decides the execution plan, RAICA executes.
+        Fails explicitly if LLM is unavailable.
+        """
+        if not self.llm_client:
+            logger.error("LLM client required for task decomposition - cannot proceed without LLM")
+            raise RuntimeError("Task decomposition requires LLM client. Cannot decompose request without LLM.")
+
+        prompt = f"""Decompose this request into atomic execution steps with EXACT parameters extracted from the user's request.
 
 REQUEST: {request}
 
@@ -357,35 +200,145 @@ CLASSIFICATION:
 - Requires sudo: {classification.requires_sudo}
 - Complexity: {classification.complexity}
 
+⚠️ CRITICAL: Extract EXACT values from the user's request:
+- If user specifies a directory name, use THAT EXACT name (don't generate random names)
+- If user specifies a location, use THAT EXACT location
+- If user specifies file names, technology, features - extract and use them
+
 Create a step-by-step execution plan. For each step, specify:
 1. Type: INVESTIGATE, INSTALL, CONFIGURE, VERIFY, CODE_GENERATE, EXECUTE
-2. Commands to run (for system steps)
+2. Commands to run with EXACT parameters from user's request
 3. Dependencies (which steps must complete first)
 4. How to verify success
 
-Output as JSON array:
+STEP TYPES:
+- RESEARCH: Gather information before taking action (search docs, check APIs)
+- INVESTIGATE: Check current system/project state (what's installed, file structure)
+- EXECUTE: Run shell commands (e.g., mkdir, cp, mv)
+- CODE_GENERATE: Generate code files (extracts prompt and target directory from request)
+- INSTALL: Install packages (requires sudo and approval)
+- CONFIGURE: Configure services/apps after installation (edit config files, set env vars)
+- VERIFY: Check that everything works (run tests, check service status)
+
+EXAMPLE - INVESTIGATE (check system state first):
 [
     {{
         "id": "step_1",
         "step_type": "INVESTIGATE",
-        "title": "Check Current System",
-        "description": "Determine OS and installed packages",
-        "commands": ["cat /etc/os-release", "dpkg -l | grep -E 'apache|mysql|php'"],
+        "title": "Check Current State",
+        "description": "Check what's already installed and configured",
+        "commands": ["ls -la", "cat package.json 2>/dev/null || cat requirements.txt 2>/dev/null || echo 'No package file'"],
         "requires_sudo": false,
         "requires_approval": false,
         "depends_on": [],
-        "verification": "Identify missing components"
+        "verification": "Commands complete without error"
+    }}
+]
+NOTE: Adapt INVESTIGATE commands to the project type:
+- Python projects: which python3, pip list, cat requirements.txt
+- Node.js projects: which node, npm list, cat package.json
+- Web apps: ls *.html *.js *.css
+- System services: systemctl status, which <binary>
+
+EXAMPLE - CONFIGURE (after installation):
+[
+    {{
+        "id": "step_1",
+        "step_type": "CONFIGURE",
+        "title": "Configure Service",
+        "description": "Set up nginx configuration for the app",
+        "commands": ["cp app.conf /etc/nginx/sites-available/", "ln -s /etc/nginx/sites-available/app.conf /etc/nginx/sites-enabled/"],
+        "requires_sudo": true,
+        "requires_approval": true,
+        "depends_on": ["install_nginx"],
+        "verification": "nginx -t returns OK"
+    }}
+]
+
+EXAMPLE - VERIFY (test everything works):
+[
+    {{
+        "id": "step_final",
+        "step_type": "VERIFY",
+        "title": "Verify Installation",
+        "description": "Confirm everything is working correctly",
+        "commands": ["systemctl status nginx", "curl -s http://localhost"],
+        "requires_sudo": false,
+        "requires_approval": false,
+        "depends_on": ["configure_nginx"],
+        "verification": "Service is running and responds to requests"
+    }}
+]
+
+EXAMPLE - If user says "create game in directory my-game":
+[
+    {{
+        "id": "step_1",
+        "step_type": "EXECUTE",
+        "title": "Create Target Directory",
+        "description": "Create directory exactly as user specified: my-game",
+        "commands": ["mkdir -p ./my-game"],
+        "requires_sudo": false,
+        "requires_approval": false,
+        "depends_on": [],
+        "verification": "Directory ./my-game exists"
     }},
     {{
         "id": "step_2",
+        "step_type": "CODE_GENERATE",
+        "title": "Generate Game Code",
+        "description": "Generate game code in the user-specified directory",
+        "commands": [],
+        "target_directory": "./my-game",
+        "code_prompt": "Create the game as user requested (extract details from original request)",
+        "requires_sudo": false,
+        "requires_approval": false,
+        "depends_on": ["step_1"],
+        "verification": "Code files created in ./my-game"
+    }}
+]
+
+EXAMPLE - System package installation:
+[
+    {{
+        "id": "step_1",
         "step_type": "INSTALL",
-        "title": "Install Apache",
-        "description": "Install Apache web server",
-        "commands": ["apt update", "apt install -y apache2"],
+        "title": "Install Package",
+        "description": "Install the requested package",
+        "commands": ["apt update", "apt install -y nginx"],
         "requires_sudo": true,
         "requires_approval": true,
+        "depends_on": [],
+        "verification": "nginx --version works"
+    }}
+]
+
+EXAMPLE - Web search + file creation (HYBRID request):
+[
+    {{
+        "id": "step_1",
+        "step_type": "WEB_SEARCH",
+        "title": "Research Topic Online",
+        "description": "Search the web for the requested information",
+        "search_query": "top AI developers on Twitter/X with their handles",
+        "max_results": 20,
+        "requires_sudo": false,
+        "requires_approval": false,
+        "depends_on": [],
+        "verification": "Search results obtained"
+    }},
+    {{
+        "id": "step_2",
+        "step_type": "CODE_GENERATE",
+        "title": "Create Output File",
+        "description": "Create a file with the search results formatted as requested",
+        "commands": [],
+        "target_file": "output.txt",
+        "code_prompt": "Create a text file listing the search results in the format requested by user",
+        "requires_sudo": false,
+        "requires_approval": false,
         "depends_on": ["step_1"],
-        "verification": "systemctl status apache2 shows active"
+        "verification": "Output file created with results"
     }}
 ]
 
@@ -395,22 +348,104 @@ IMPORTANT RULES:
 3. CONFIGURE steps come after installation
 4. VERIFY steps should test that everything works
 5. CODE_GENERATE steps create files (no sudo needed)
-6. Each step should be atomic (one clear action)
-7. Include dependencies so steps run in correct order
+6. WEB_SEARCH steps search the internet for information (include search_query field)
+7. Each step should be atomic (one clear action)
+8. Include dependencies so steps run in correct order
+9. Always end with a VERIFY step to confirm success
+10. For HYBRID requests with web search + file creation, WEB_SEARCH step comes first, then CODE_GENERATE
 
-8. Always end with a VERIFY step to confirm success
-9. CRITICAL: For complex date math (e.g. ISO weeks loopups), use `python3 -c` instead of `date -d` (GNU date doesn't support week input).
-   Example: `python3 -c "import datetime; print(datetime.date.fromisocalendar(2026, 33, 1))"`
+🚨🚨🚨 CRITICAL RULE FOR SYSTEM_TASK - DO NOT GENERATE CODE UNLESS ABSOLUTELY NECESSARY 🚨🚨🚨
+
+For SYSTEM_TASK requests (like "check my email", "run the scanner", "execute the tool"):
+1. The user wants to EXECUTE something, NOT generate new code!
+2. INVESTIGATE step MUST check the PROJECT directory for existing scripts:
+   - "ls -la *.py" or "ls -la *.sh" to find existing scripts
+   - "ls -la find_bills.py" or similar to check if specific script exists
+   - Check the CURRENT DIRECTORY, not home directory!
+3. If existing scripts are found, create an EXECUTE step to RUN them
+4. DO NOT include CODE_GENERATE step unless INVESTIGATE confirms no usable scripts exist
+5. The correct flow is: INVESTIGATE → EXECUTE existing script → VERIFY
+
+EXAMPLE - SYSTEM_TASK (check email with existing script):
+[
+    {{
+        "id": "step_1",
+        "step_type": "INVESTIGATE",
+        "title": "Check for Existing Email Scripts",
+        "description": "Check if email checking scripts already exist in the project",
+        "commands": ["ls -la *.py 2>/dev/null || echo 'No Python scripts'", "ls -la find_bills.py 2>/dev/null || echo 'Script not found'"],
+        "requires_sudo": false,
+        "depends_on": [],
+        "verification": "List of available scripts"
+    }},
+    {{
+        "id": "step_2",
+        "step_type": "EXECUTE",
+        "title": "Run Email Checker",
+        "description": "Execute the existing email checking script",
+        "commands": ["python3 find_bills.py --gmail"],
+        "requires_sudo": false,
+        "requires_approval": true,
+        "depends_on": ["step_1"],
+        "verification": "Script executes and outputs results"
+    }},
+    {{
+        "id": "step_3",
+        "step_type": "VERIFY",
+        "title": "Verify Results",
+        "description": "Confirm script ran and displayed results",
+        "commands": ["echo 'Check complete'"],
+        "requires_sudo": false,
+        "depends_on": ["step_2"],
+        "verification": "User sees output from script"
+    }}
+]
+
+DO NOT create CODE_GENERATE steps for SYSTEM_TASK unless investigation proves no scripts exist!
+
+🔧 FIX vs CREATE DECISION:
+When existing scripts are found but may not work perfectly:
+1. INVESTIGATE the existing script (read it, check its capabilities)
+2. ESTIMATE EFFORT for each option:
+   - Option A: FIX the existing script (minor modifications, add missing feature)
+   - Option B: CREATE new script from scratch
+3. Choose the option with LOWER estimated effort
+4. If existing script is 70%+ of what's needed → FIX it (CODE_DEBUG path)
+5. If existing script is <30% useful or fundamentally broken → CREATE new (CODE_GENERATE)
+6. Default bias: PREFER FIXING over creating (reuse existing work!)
+
+EXAMPLE DECISION PROCESS:
+- Existing find_bills.py has local mailbox support but user wants Gmail → FIX (add Gmail support)
+- Existing script is completely unrelated to the task → CREATE new
+- Existing script has the right structure but wrong keywords → FIX (update keywords)
+- No existing scripts found → CREATE new
+
+ON_FAILURE OPTIONS (what to do if a step fails):
+- "abort": Stop execution immediately (use for critical steps)
+- "retry": Retry the step up to max_retries times (use for transient failures)
+- "skip": Skip this step and continue (use for optional steps)
+- "ask_user": Ask the user what to do (use when uncertain)
+
+CRITICAL NOTES:
+- For complex date calculations, choose the right tool for the environment:
+  - If Python available: `python3 -c "import datetime; print(datetime.date.fromisocalendar(2026, 33, 1))"`
+  - If Node.js available: `node -e "console.log(new Date('2026-08-10').toISOString())"`
+  - For simple dates: `date -d "2026-08-10" +%Y-%m-%d`
 """
 
         try:
-            response = self.llm_client.generate(prompt)
+            # Use classification model if available (better at JSON)
+            if hasattr(self.llm_client, 'generate_for_classification'):
+                response = self.llm_client.generate_for_classification(prompt, max_tokens=2000)
+            else:
+                response = self.llm_client.generate(prompt, max_tokens=2000)
             content = response.content if hasattr(response, 'content') else str(response)
 
-            # Extract JSON array from response
+            # Extract JSON array from response with sanitization
             json_match = re.search(r'\[[\s\S]*\]', content)
             if json_match:
-                steps_data = json.loads(json_match.group())
+                sanitized = sanitize_json(json_match.group())
+                steps_data = json.loads(sanitized)
 
                 steps = []
                 type_map = {
@@ -421,7 +456,9 @@ IMPORTANT RULES:
                     'CODE_GENERATE': StepType.CODE_GENERATE,
                     'EXECUTE': StepType.EXECUTE,
                     'USER_INPUT': StepType.USER_INPUT,
-                    'CONDITIONAL': StepType.CONDITIONAL
+                    'CONDITIONAL': StepType.CONDITIONAL,
+                    'WEB_SEARCH': StepType.WEB_SEARCH,
+                    'RESEARCH': StepType.RESEARCH
                 }
 
                 for data in steps_data:
@@ -439,7 +476,10 @@ IMPORTANT RULES:
                         verification=data.get('verification', ''),
                         on_failure=data.get('on_failure', 'ask_user'),
                         max_retries=data.get('max_retries', 2),
-                        timeout_seconds=data.get('timeout_seconds', 300)
+                        timeout_seconds=data.get('timeout_seconds', 300),
+                        # Parameters extracted by LLM from user's request
+                        target_directory=data.get('target_directory', ''),
+                        code_prompt=data.get('code_prompt', '')
                     ))
 
                 return ExecutionPlan(
@@ -450,117 +490,94 @@ IMPORTANT RULES:
 
         except Exception as e:
             logger.error(f"LLM decomposition failed: {e}")
-
-        # Fallback to simple
-        return self._simple_decompose(request, classification)
+            raise RuntimeError(f"LLM decomposition failed: {e}. Cannot proceed without valid execution plan.")
 
     def _generate_query_commands(self, request: str) -> List[str]:
-        """Generate commands for system queries using LLM when needed."""
-        request_lower = request.lower()
-        commands = []
+        """Generate commands for system queries using LLM.
 
-        # Check for common patterns first (fast path)
-        if 'nginx' in request_lower:
-            commands.extend(['which nginx', 'nginx -v 2>&1', 'systemctl status nginx 2>/dev/null || echo "not running"'])
-        elif 'apache' in request_lower:
-            commands.extend(['which apache2', 'apache2 -v 2>&1', 'systemctl status apache2 2>/dev/null || echo "not running"'])
-        elif 'mysql' in request_lower:
-            commands.extend(['which mysql', 'mysql --version 2>&1', 'systemctl status mysql 2>/dev/null || echo "not running"'])
-        elif 'php' in request_lower:
-            commands.extend(['which php', 'php -v 2>&1'])
-        elif 'python' in request_lower:
-            commands.extend(['which python3', 'python3 --version 2>&1'])
-        elif 'node' in request_lower or 'npm' in request_lower:
-            commands.extend(['which node', 'node --version 2>&1', 'npm --version 2>&1'])
-        elif 'docker' in request_lower:
-            commands.extend(['which docker', 'docker --version 2>&1', 'docker ps 2>/dev/null || echo "not running"'])
-        else:
-            # Use LLM to generate appropriate commands for this specific query
-            commands = self._llm_generate_query_commands(request)
+        ARCHITECTURE: LLM decides what commands to run, no hardcoded patterns.
+        """
+        return self._llm_generate_commands(request, read_only=True)
 
-        return commands
+    def _llm_generate_commands(self, request: str, read_only: bool = False) -> List[str]:
+        """Use LLM to generate appropriate shell commands.
 
-    def _llm_generate_query_commands(self, request: str) -> List[str]:
-        """Use LLM to generate appropriate shell commands for a query."""
+        ARCHITECTURE: LLM decides what commands to run based on the request.
+        Fails explicitly if LLM unavailable or returns invalid response.
+
+        Args:
+            request: User's request text
+            read_only: If True, commands must not modify the system
+
+        Returns:
+            List of shell commands from LLM
+
+        Raises:
+            RuntimeError: If LLM unavailable or fails to generate valid commands
+        """
         if not self.llm_client:
-            # Fallback to generic if no LLM
-            return ['echo "Query: ' + request[:50] + '"']
+            raise RuntimeError("LLM client required for command generation. Cannot proceed without LLM.")
 
-        prompt = f"""Generate Linux shell commands to answer this user query.
+        mode = "READ-ONLY (no modifications)" if read_only else "may include modifications"
 
-USER QUERY: {request}
+        prompt = f"""Generate Linux shell commands to accomplish this request.
+
+USER REQUEST: {request}
 
 Requirements:
-1. Generate 1-5 shell commands that will gather the information needed
-2. Commands must be READ-ONLY (no modifications to the system)
-3. Commands should be safe to run without sudo if possible
-4. Output should be informative and answer the user's question
+1. Generate 1-10 shell commands that accomplish the task
+2. Commands {mode} to the system
+3. Be specific and complete - the commands will be executed directly
+4. If sudo is needed, include sudo in the command
+5. Consider safety - include confirmation flags where appropriate
 
-Common patterns:
-- For directory listings: ls -lah /path, find /path -type f
-- For file ages: find /path -mtime +30 (files older than 30 days)
-- For disk usage: du -sh /path/*
-- For file counts: find /path -type f | wc -l
+Return your response as JSON:
+{{
+    "commands": [
+        "command1",
+        "command2"
+    ],
+    "requires_sudo": false,
+    "description": "Brief description of what these commands do"
+}}
 
-- For specific file types: find /path -name "*.ext"
-- For date math (weeks/ISO): python3 -c "import datetime; print(datetime.date.fromisocalendar(2026, 33, 1))" (GNU date fails on week input)
-
-Output ONLY the commands, one per line, no explanations:
+IMPORTANT: Return ONLY valid JSON, no other text.
 """
 
         try:
-            response = self.llm_client.generate(prompt)
+            # Use classification model if available (better at JSON)
+            if hasattr(self.llm_client, 'generate_for_classification'):
+                response = self.llm_client.generate_for_classification(prompt, max_tokens=1000)
+            else:
+                response = self.llm_client.generate(prompt, max_tokens=1000)
             content = response.content if hasattr(response, 'content') else str(response)
 
-            # Parse commands from response
-            commands = []
-            for line in content.strip().split('\n'):
-                line = line.strip()
-                # Skip empty lines and comments
-                if not line or line.startswith('#'):
-                    continue
-                # Skip lines that look like explanations
-                if any(line.lower().startswith(x) for x in ['this', 'the', 'to ', 'use ', 'note', 'here']):
-                    continue
-                # Remove markdown code block markers
-                if line.startswith('```') or line.endswith('```'):
-                    continue
-                # Remove leading $ or > prompts
-                if line.startswith('$ '):
-                    line = line[2:]
-                elif line.startswith('> '):
-                    line = line[2:]
+            # Parse JSON response
+            from ..utils.json_utils import extract_json_from_llm_response
+            data = extract_json_from_llm_response(content)
 
-                if line:
-                    commands.append(line)
+            if data and 'commands' in data:
+                commands = data['commands']
+                if commands and len(commands) > 0:
+                    # Limit to 10 commands max for safety
+                    return commands[:10]
 
-            # Limit to 5 commands max
-            return commands[:5] if commands else ['ls -la ~']
+            # LLM returned invalid or empty commands - fail explicitly
+            logger.error(f"LLM returned invalid commands response: {content[:200]}")
+            raise RuntimeError(f"LLM failed to generate valid commands for: {request[:50]}...")
 
+        except RuntimeError:
+            raise  # Re-raise RuntimeError as-is
         except Exception as e:
-            logger.warning(f"LLM command generation failed: {e}")
-            return ['ls -la ~']
+            logger.error(f"LLM command generation failed: {e}")
+            raise RuntimeError(f"LLM command generation failed: {e}")
 
     def _generate_task_commands(self, request: str) -> List[str]:
-        """Generate commands for system tasks."""
-        request_lower = request.lower()
-        commands = []
+        """Generate commands for system tasks using LLM.
 
-        if 'install' in request_lower:
-            if 'nginx' in request_lower:
-                commands = ['apt update', 'apt install -y nginx']
-            elif 'apache' in request_lower:
-                commands = ['apt update', 'apt install -y apache2']
-            elif 'mysql' in request_lower:
-                commands = ['apt update', 'apt install -y mysql-server']
-            elif 'php' in request_lower:
-                commands = ['apt update', 'apt install -y php']
-            elif 'docker' in request_lower:
-                commands = ['curl -fsSL https://get.docker.com | sh']
-            elif 'ollama' in request_lower:
-                commands = ['curl -fsSL https://ollama.com/install.sh | sh']
-
-        return commands
+        ARCHITECTURE: LLM decides what commands to run, no hardcoded patterns.
+        """
+        return self._llm_generate_commands(request, read_only=False)
 
     def get_plan_summary(self, plan: ExecutionPlan) -> str:
         """Get a human-readable summary of the plan."""

@@ -32,6 +32,7 @@ from .regression_detector import (
     RegressionDetector, RegressionReport, RegressionSeverity,
     FixStrategy, FixAttempt
 )
+from .config_accessor import get_max_iterations
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class DebugPhase(Enum):
     IMPLEMENTATION = auto()        # Apply fix with validation
     REGRESSION_TESTING = auto()    # Compare before/after, verify no breakage
     VERIFICATION = auto()          # Final check, user acceptance
+    DOCUMENTATION = auto()         # Update README.md to reflect changes
+    USER_INSTRUCTIONS = auto()     # Provide test instructions to user
     COMPLETE = auto()              # Done
 
 
@@ -90,9 +93,10 @@ class DebugContext:
     baseline: Optional[BaselineSnapshot] = None
     changes_made: List[Dict[str, Any]] = field(default_factory=list)
     regression_attempts: int = 0
-    max_regression_attempts: int = 3
+    max_regression_attempts: int = 2
     previous_failures: List[str] = field(default_factory=list)
     phase_history: List[str] = field(default_factory=list)
+    user_instructions: str = ""  # Generated test instructions for user
 
 
 @dataclass
@@ -110,6 +114,7 @@ class DebugResult:
     error: Optional[str] = None
     error_message: Optional[str] = None  # Alias for error
     summary: str = ""
+    user_instructions: str = ""  # Test instructions for user
 
     def __post_init__(self):
         """Ensure aliases are synchronized."""
@@ -162,12 +167,13 @@ class CodeDebugAgent:
         self,
         project_dir: Path,
         llm_client: Any,
-        max_regression_attempts: int = 10,
+        max_regression_attempts: int = get_max_iterations(),
         auto_rollback: bool = True,
         output_callback: Optional[Callable[[str, str], None]] = None,
         approval_callback: Optional[Callable[[str, List[str]], asyncio.Future]] = None,
         input_callback: Optional[Callable[[str], asyncio.Future]] = None,
-        callbacks: Any = None  # Generic callbacks object (TUI adapter)
+        callbacks: Any = None,  # Generic callbacks object (TUI adapter)
+        context_manager: Any = None  # ContextManager for file structure tracking
     ):
         """
         Initialize CodeDebugAgent.
@@ -181,12 +187,14 @@ class CodeDebugAgent:
             approval_callback: Callback for approvals (question, options) -> answer
             input_callback: Callback for user input (prompt) -> answer
             callbacks: Generic callbacks object with on_* methods
+            context_manager: Optional ContextManager for file structure tracking (prevents hallucination)
         """
         self.project_dir = Path(project_dir).resolve()
         self.llm_client = llm_client
         self.max_regression_attempts = max_regression_attempts
         self.auto_rollback = auto_rollback
         self.callbacks = callbacks
+        self.context_manager = context_manager
 
         # Callbacks for TUI integration
         self._output = output_callback or self._default_output
@@ -196,10 +204,22 @@ class CodeDebugAgent:
         # If callbacks object provided, use its methods
         if callbacks:
             if hasattr(callbacks, 'on_progress'):
-                self._output = lambda msg, t: asyncio.create_task(
-                    callbacks.on_progress(msg, 0.0) if asyncio.iscoroutinefunction(callbacks.on_progress)
-                    else asyncio.sleep(0)
-                )
+                # Create a wrapper that handles both sync and async callbacks
+                def make_output_wrapper(cb):
+                    def wrapper(msg, t="info"):
+                        if asyncio.iscoroutinefunction(cb):
+                            # Async callback - try to schedule it
+                            try:
+                                loop = asyncio.get_running_loop()
+                                loop.create_task(cb(msg, 0.0))
+                            except RuntimeError:
+                                # No running loop - can't await, just skip
+                                pass
+                        else:
+                            # Sync callback - call directly
+                            cb(msg, 0.0)
+                    return wrapper
+                self._output = make_output_wrapper(callbacks.on_progress)
             if hasattr(callbacks, 'on_user_input'):
                 self._get_input = callbacks.on_user_input
             if hasattr(callbacks, 'on_approval_needed'):
@@ -223,6 +243,8 @@ class CodeDebugAgent:
             DebugPhase.IMPLEMENTATION,
             DebugPhase.REGRESSION_TESTING,
             DebugPhase.VERIFICATION,
+            DebugPhase.DOCUMENTATION,
+            DebugPhase.USER_INSTRUCTIONS,
             DebugPhase.COMPLETE
         ]
 
@@ -239,76 +261,172 @@ class CodeDebugAgent:
 
     async def run(self, issue_description: str) -> DebugResult:
         """
-        Run the complete debug workflow.
-
-        Args:
-            issue_description: Description of the issue/enhancement
-
-        Returns:
-            DebugResult with outcome details
+        Run the complete debug/enhancement workflow.
+        
+        Now acts as a dispatcher to specialized autonomous controllers:
+        - AutonomousDebugController (for bugs)
+        - AutonomousEnhancementController (for features/enhancements)
         """
         self.context.issue_description = issue_description
-        result = DebugResult(success=False)
-
+        
         try:
-            self._output(f"Starting debug session for: {self.project_dir}", "info")
-            self._output(f"Issue: {issue_description[:100]}...", "info")
-
-            # Phase handlers
-            phase_handlers = {
-                DebugPhase.ANALYSIS: self._phase_analysis,
-                DebugPhase.ISSUE_IDENTIFICATION: self._phase_issue_identification,
-                DebugPhase.IMPACT_ANALYSIS: self._phase_impact_analysis,
-                DebugPhase.PLANNING_DECISION: self._phase_planning_decision,
-                DebugPhase.BASELINE_CAPTURE: self._phase_baseline_capture,
-                DebugPhase.IMPLEMENTATION: self._phase_implementation,
-                DebugPhase.REGRESSION_TESTING: self._phase_regression_testing,
-                DebugPhase.VERIFICATION: self._phase_verification,
-            }
-
-            # Execute phases
-            while self.current_phase != DebugPhase.COMPLETE:
-                self._output(f"Phase: {self.current_phase.name}", "phase")
-                self.context.phase_history.append(self.current_phase.name)
-
-                handler = phase_handlers.get(self.current_phase)
-                if handler:
-                    success = await handler()
-                    if not success:
-                        # Phase failed - check if we should rollback
-                        if self.auto_rollback and self.context.baseline:
-                            await self._rollback()
-                            result.rollback_performed = True
-                        result.error = f"Phase {self.current_phase.name} failed"
-                        break
-
-                self._next_phase()
-
-            # Build result
-            if self.current_phase == DebugPhase.COMPLETE:
-                result.success = True
-                result.issue_found = (
-                    self.context.issue_analysis.root_cause
-                    if self.context.issue_analysis else "Issue analyzed"
+            # Lazy import controllers to avoid circular deps and unused loads
+            from .autonomous.debug_controller import AutonomousDebugController
+            from .autonomous.enhancement_controller import AutonomousEnhancementController
+            
+            # [NEW] Phase 5: Initialize tool stack
+            from .services.debug_toolkit import DebugToolkit
+            from .services.tool_calling_client import ToolCallingClient
+            
+            toolkit = DebugToolkit(self.project_dir)
+            tool_client = ToolCallingClient(self.llm_client, toolkit)
+            
+            # Determine correct controller
+            task_type = await self._classify_task(issue_description)
+            self._output(f"Classified task as: {task_type.upper()}", "info")
+            
+            if task_type == "bug":
+                controller = AutonomousDebugController(
+                    self.llm_client,
+                    self.project_dir,
+                    output_callback=lambda msg: self._output(msg, "info"),
+                    max_iterations=self.max_regression_attempts,
+                    context_manager=self.context_manager,
+                    tool_client=tool_client, # [NEW]
+                    toolkit=toolkit          # [NEW]
                 )
-                result.fix_applied = "Fix applied successfully"
-                result.modified_files = [
-                    c.get('file', '') for c in self.context.changes_made
-                ]
+                
+                # specific to debug controller
+                debug_result = await controller.debug_until_fixed(issue_description)
+                
+                # Convert result
+                result = DebugResult(
+                    success=debug_result.success,
+                    issue_found=debug_result.root_cause or "Bug fix",
+                    fix_applied=debug_result.fix_summary or "Fixed",
+                    modified_files=debug_result.files_modified,
+                    regression_attempts=debug_result.iterations,
+                    summary=debug_result.fix_summary or "Bug fixed successfully"
+                )
+                if not result.success:
+                    result.error = debug_result.blocked_reason
+                    
+            else: # enhancement
+                controller = AutonomousEnhancementController(
+                    self.llm_client,
+                    self.project_dir,
+                    output_callback=lambda msg: self._output(msg, "info"),
+                    max_iterations=self.max_regression_attempts,
+                    context_manager=self.context_manager
+                )
+                
+                # specific to enhancement controller
+                enh_result = await controller.run_enhancement(issue_description)
+                
+                # Convert result to generic DebugResult
+                result = DebugResult(
+                    success=enh_result.success,
+                    issue_found="New Feature Request",
+                    fix_applied=enh_result.summary or "Feature Implemented",
+                    modified_files=enh_result.files_modified,
+                    regression_attempts=enh_result.iterations,
+                    summary=enh_result.summary or "Feature implemented successfully"
+                )
+                if not result.success:
+                    result.error = enh_result.error
 
-            result.phases_completed = self.context.phase_history
-            result.regression_attempts = self.context.regression_attempts
+            # Don't print summary again - it's already shown by the controller
+            return result
 
         except Exception as e:
-            logger.exception("Debug session failed")
-            result.error = str(e)
-            if self.auto_rollback and self.context.baseline:
-                await self._rollback()
-                result.rollback_performed = True
+            logger.exception("Agent session failed")
+            return DebugResult(
+                success=False,
+                error=str(e),
+                summary=f"Agent failed: {str(e)}"
+            )
 
-        result.get_summary()
-        self._output(result.summary, "success" if result.success else "error")
-        return result
+    async def _classify_task(self, description: str, max_retries: int = 3) -> str:
+        """Determine if task is 'bug' or 'enhancement' using LLM.
+
+        ARCHITECTURE: LLM decides classification semantically - NO hardcoded fallbacks.
+        Retries with progressively more explicit prompts if LLM fails.
+        """
+        for attempt in range(max_retries):
+            prompt = f"""YOU ARE A CLASSIFICATION AGENT. OUTPUT JSON ONLY. NO PROSE.
+
+Classify this task as "bug" or "enhancement".
+
+TASK: {description}
+
+BUG = broken/error/crash/blank/debug
+ENHANCEMENT = new feature/improve/optimize/refactor
+
+RESPOND WITH EXACTLY ONE OF THESE (NO OTHER TEXT):
+{{"classification": "bug"}}
+{{"classification": "enhancement"}}
+"""
+            # Make prompt even more forceful on retries
+            if attempt > 0:
+                prompt = f"""OUTPUT JSON ONLY. ONE LINE. NO EXPLANATION.
+
+Task: {description[:200]}
+
+Reply EXACTLY: {{"classification": "bug"}} OR {{"classification": "enhancement"}}"""
+
+            try:
+                response = await self._call_llm(prompt, max_tokens=50)
+
+                # Handle empty response - retry
+                if not response or not response.strip():
+                    self._output(f"LLM returned empty response (attempt {attempt + 1}/{max_retries})", "warning")
+                    continue
+
+                clean = response.strip().lower()
+
+                # Try to parse JSON using robust utility
+                from .utils.json_utils import extract_json_from_llm_response
+                data = extract_json_from_llm_response(response)
+                if data and 'classification' in data:
+                    classification = data['classification']
+                    if classification in ('bug', 'enhancement'):
+                        return classification
+
+                # Fallback: look for the word in response
+                if "enhancement" in clean:
+                    return "enhancement"
+                if "bug" in clean:
+                    return "bug"
+
+                # LLM response unclear - retry
+                self._output(f"LLM classification unclear (attempt {attempt + 1}/{max_retries}): '{clean[:50]}...'", "warning")
+
+            except Exception as e:
+                self._output(f"Task classification error (attempt {attempt + 1}/{max_retries}): {e}", "warning")
+
+        # All retries failed - ask user instead of guessing
+        self._output("LLM couldn't classify task. Asking user...", "warning")
+
+        # Try to get user input
+        try:
+            print("\n" + "=" * 60)
+            print("CLASSIFICATION NEEDED")
+            print("=" * 60)
+            print(f"\nTask: {description[:200]}...")
+            print("\nIs this a BUG fix or an ENHANCEMENT?")
+            print("  1. BUG - Something is broken/not working")
+            print("  2. ENHANCEMENT - Adding new feature/improvement")
+            user_input = input("\nEnter 1 or 2: ").strip()
+
+            if user_input == "1" or "bug" in user_input.lower():
+                return "bug"
+            elif user_input == "2" or "enh" in user_input.lower():
+                return "enhancement"
+            else:
+                raise RuntimeError("Invalid input. Please enter 1 (bug) or 2 (enhancement).")
+        except EOFError:
+            # Non-interactive mode
+            raise RuntimeError(f"LLM failed to classify task after {max_retries} attempts and running in non-interactive mode.")
 
     def _next_phase(self):
         """Advance to the next phase."""
@@ -485,10 +603,12 @@ Be concise (3-5 sentences)."""
         IMPORTANT: Asks for clarification if confidence is low.
         """
         self._output("Identifying issue root cause...", "info")
+        logger.info(f"ISSUE_IDENTIFICATION: Starting for issue: {self.context.issue_description[:100]}...")
 
         try:
             # Get relevant file contents
             source_files = self.baseline_manager._get_source_files()
+            logger.info(f"ISSUE_IDENTIFICATION: Found {len(source_files)} source files")
             file_contents = {}
             total_size = 0
             max_size = 50000  # 50KB limit for context
@@ -535,16 +655,32 @@ Provide:
 Format as JSON:
 {{
     "root_cause": "...",
-    "affected_files": ["file1.py", "file2.py"],
+    "affected_files": ["file1.ext", "file2.ext"],
     "issue_type": "bug|enhancement|refactor|feature",
     "confidence": 85,
     "clarification_needed": null or "..."
-}}"""
+}}
+NOTE: Use actual file extensions from the project (.py, .js, .ts, .html, .jsx, etc.)"""
 
-            response = await self._call_llm(prompt, max_tokens=1000)
+            logger.info(f"ISSUE_IDENTIFICATION: Calling LLM with {len(files_context)} chars of code context...")
+            self._output("Calling LLM for root cause analysis...", "info")
+            response = await self._call_llm(prompt, max_tokens=4000)
+            logger.info(f"ISSUE_IDENTIFICATION: LLM response received ({len(response) if response else 0} chars)")
             if response:
+                logger.debug(f"ISSUE_IDENTIFICATION: Raw response: {response[:500]}...")
                 # Parse JSON response
                 analysis = self._extract_json(response)
+                logger.info(f"ISSUE_IDENTIFICATION: Parsed analysis: {analysis}")
+                if not analysis:
+                    # If JSON extraction failed, try to create a basic analysis from the text
+                    self._output("JSON parsing failed, using text analysis fallback...", "warning")
+                    analysis = {
+                        'root_cause': response[:500] if response else "Unable to determine",
+                        'affected_files': self._guess_affected_files(response),
+                        'issue_type': 'enhancement',
+                        'confidence': 50
+                    }
+                    logger.info(f"ISSUE_IDENTIFICATION: Fallback analysis: {analysis}")
                 if analysis:
                     confidence = analysis.get('confidence', 0) / 100
                     clarification_needed = analysis.get('clarification_needed')
@@ -578,10 +714,23 @@ Format as JSON:
                     )
                     return True
 
-            self._output("Could not identify root cause", "warning")
-            return True  # Continue anyway
+            # No response from LLM - create a minimal fallback analysis
+            self._output("LLM returned no response - using minimal fallback analysis", "warning")
+            logger.warning("ISSUE_IDENTIFICATION: LLM returned no response, creating fallback")
+
+            # Create minimal issue analysis so subsequent phases can continue
+            self.context.issue_analysis = IssueAnalysis(
+                description=self.context.issue_description,
+                root_cause="Unable to determine automatically - manual review needed",
+                affected_files=self._guess_affected_files(self.context.issue_description),
+                issue_type="unknown",
+                confidence=0.1  # Very low confidence
+            )
+            self._output(f"Fallback analysis created with {len(self.context.issue_analysis.affected_files)} guessed files", "info")
+            return True
 
         except Exception as e:
+            logger.exception(f"ISSUE_IDENTIFICATION: Failed with exception: {e}")
             self._output(f"Issue identification failed: {e}", "error")
             return False
 
@@ -808,12 +957,26 @@ Format as JSON:
         self._output("Implementing fix...", "info")
 
         try:
-            if not self.context.issue_analysis:
-                self._output("No issue analysis available", "error")
-                return False
+            # Handle missing or incomplete issue analysis
+            affected_files = []
+            root_cause = "Issue needs to be fixed based on user description"
 
-            # Get affected files content
-            affected_files = self.context.issue_analysis.affected_files
+            if self.context.issue_analysis:
+                affected_files = self.context.issue_analysis.affected_files or []
+                root_cause = self.context.issue_analysis.root_cause or root_cause
+            else:
+                self._output("No issue analysis available - attempting to identify files automatically", "warning")
+
+            # If no affected files, try to find relevant files
+            if not affected_files:
+                self._output("No affected files specified - scanning project for relevant files...", "info")
+                affected_files = self._guess_affected_files(self.context.issue_description)
+                if not affected_files:
+                    # Get all source files as fallback (limit to 5)
+                    source_files = self.baseline_manager._get_source_files()[:5]
+                    affected_files = [str(f.relative_to(self.project_dir)) for f in source_files]
+                self._output(f"Auto-detected {len(affected_files)} potentially relevant files", "info")
+
             file_contents = {}
 
             for file_path in affected_files:
@@ -830,22 +993,23 @@ Format as JSON:
             prompt = f"""Fix the following issue in the code:
 
 ISSUE: {self.context.issue_description}
-ROOT CAUSE: {self.context.issue_analysis.root_cause}
+ROOT CAUSE: {root_cause}
 
 CURRENT CODE:
 {files_context}
 
 Provide the COMPLETE fixed file content for each file that needs changes.
 Format as:
-```filename.py
+```filename.ext
 <complete file content>
 ```
+(Use actual extensions: .py, .js, .ts, .html, .jsx, .css, etc.)
 
 Important:
 - Provide COMPLETE file contents, not just the changed parts
 - Make minimal changes to fix the issue
 - Preserve all existing functionality
-- Add comments explaining the fix"""
+- Add comments explaining the fix (use appropriate syntax for the language)"""
 
             response = await self._call_llm(prompt, max_tokens=4000)
             if not response:
@@ -855,9 +1019,10 @@ Important:
             # Extract code blocks and apply changes
             code_blocks = self._extract_code_blocks(response)
             if not code_blocks:
-                self._output("No code changes in response", "warning")
-                return True  # Continue anyway
+                self._output("No valid code changes in response - LLM may have refused or provided invalid content", "error")
+                return False  # FAIL - no valid code to apply
 
+            files_modified = 0
             for filename, content in code_blocks:
                 # Find matching file
                 target_path = None
@@ -867,14 +1032,32 @@ Important:
                         break
 
                 if target_path and target_path.exists():
+                    # Backup before modifying
+                    backup_content = target_path.read_text()
+
                     # Apply change
                     target_path.write_text(content)
+
+                    # Verify the content was written correctly
+                    written_content = target_path.read_text()
+                    if written_content != content:
+                        self._output(f"Write verification failed for {target_path.name}", "error")
+                        target_path.write_text(backup_content)  # Restore
+                        continue
+
                     self.context.changes_made.append({
                         'file': str(target_path.relative_to(self.project_dir)),
                         'action': 'modified',
                         'timestamp': datetime.now().isoformat()
                     })
                     self._output(f"Modified: {target_path.name}", "success")
+                    files_modified += 1
+                else:
+                    self._output(f"Could not find target file for: {filename}", "warning")
+
+            if files_modified == 0:
+                self._output("No files were successfully modified", "error")
+                return False
 
             return True
 
@@ -1016,9 +1199,10 @@ CURRENT CODE STATE:
 {files_context}
 
 Provide fixed file contents using the format:
-```filename.py
+```filename.ext
 <complete fixed content>
-```"""
+```
+(Use actual file extensions: .py, .js, .ts, .html, .jsx, etc.)"""
 
             response = await self._call_llm(full_prompt, max_tokens=4000)
             if not response:
@@ -1083,6 +1267,181 @@ Provide fixed file contents using the format:
             self._output(f"Verification failed: {e}", "error")
             return False
 
+    async def _phase_documentation(self) -> bool:
+        """
+        Phase 9: Update README.md to reflect the changes.
+
+        Updates or creates README.md with:
+        - Description of the fix/enhancement
+        - What was changed
+        - Any new dependencies or requirements
+        """
+        self._output("Updating documentation...", "info")
+
+        try:
+            readme_path = self.project_dir / "README.md"
+            existing_readme = ""
+
+            # Read existing README if it exists
+            if readme_path.exists():
+                existing_readme = readme_path.read_text(errors='replace')
+                self._output("Found existing README.md", "info")
+            else:
+                self._output("No README.md found - will create one", "info")
+
+            # Build context for LLM
+            changes_summary = "\n".join([
+                f"- {c['file']}: {c['action']}"
+                for c in self.context.changes_made
+            ]) if self.context.changes_made else "No files modified"
+
+            issue_description = self.context.issue_description
+            root_cause = ""
+            if self.context.issue_analysis:
+                root_cause = self.context.issue_analysis.root_cause or ""
+
+            # Generate README update using LLM
+            prompt = f"""Update the README.md for this project to document a recent fix/change.
+
+EXISTING README:
+{existing_readme[:3000] if existing_readme else "(No existing README)"}
+
+ISSUE FIXED:
+{issue_description}
+
+ROOT CAUSE:
+{root_cause}
+
+FILES CHANGED:
+{changes_summary}
+
+Instructions:
+1. If README exists, ADD a new section called "## Recent Changes" or "## Changelog" at an appropriate place
+2. Document what was fixed/changed in a clear, user-friendly way
+3. If no README exists, create a basic one with project name, description, and the change documentation
+4. Keep the existing content intact - only ADD the change documentation
+5. Use markdown formatting
+
+Return the COMPLETE updated README.md content."""
+
+            logger.info("DOCUMENTATION: Calling LLM to update README...")
+            response = await self._call_llm(prompt, max_tokens=2000)
+            logger.info(f"DOCUMENTATION: LLM response received ({len(response) if response else 0} chars)")
+            if response:
+                # Extract content (remove any markdown code block wrapper)
+                content = response.strip()
+                if content.startswith("```"):
+                    lines = content.split("\n")
+                    content = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+
+                # Strip LLM thinking tags (<thinking>, <details>, <think>, etc.)
+                from .llm_client import strip_thinking_content
+                content = strip_thinking_content(content)
+
+                # Write the README
+                readme_path.write_text(content)
+                self._output(f"Updated README.md ({len(content)} bytes)", "success")
+
+                # Track as a change
+                self.context.changes_made.append({
+                    'file': 'README.md',
+                    'action': 'updated' if existing_readme else 'created',
+                    'timestamp': datetime.now().isoformat()
+                })
+
+                return True
+            else:
+                self._output("Could not generate README update", "warning")
+                return True  # Continue anyway - not a critical failure
+
+        except Exception as e:
+            self._output(f"Documentation update failed: {e}", "warning")
+            return True  # Continue anyway - not a critical failure
+
+    async def _phase_user_instructions(self) -> bool:
+        """
+        Phase 10: Provide test instructions to the user.
+
+        Generates step-by-step instructions for the user to:
+        - Test the fix
+        - Verify the expected behavior
+        - Run any relevant commands
+        """
+        self._output("Generating test instructions...", "info")
+
+        try:
+            # Build context
+            changes_summary = "\n".join([
+                f"- {c['file']}: {c['action']}"
+                for c in self.context.changes_made
+            ]) if self.context.changes_made else "No files modified"
+
+            issue_description = self.context.issue_description
+            issue_type = "unknown"
+            if self.context.issue_analysis:
+                issue_type = self.context.issue_analysis.issue_type
+
+            # Detect project type for appropriate instructions
+            project_files = list(self.project_dir.glob("*"))
+            project_indicators = {
+                'python': any(f.suffix == '.py' for f in project_files),
+                'javascript': any(f.suffix in ['.js', '.ts', '.jsx', '.tsx'] for f in project_files),
+                'package_json': (self.project_dir / 'package.json').exists(),
+                'requirements': (self.project_dir / 'requirements.txt').exists(),
+                'dockerfile': (self.project_dir / 'Dockerfile').exists(),
+                'html': any(f.suffix == '.html' for f in project_files),
+            }
+
+            # Generate instructions using LLM
+            prompt = f"""Generate clear, step-by-step instructions for the user to test this fix.
+
+ISSUE THAT WAS FIXED:
+{issue_description}
+
+ISSUE TYPE: {issue_type}
+
+FILES CHANGED:
+{changes_summary}
+
+PROJECT INDICATORS:
+{', '.join(k for k, v in project_indicators.items() if v)}
+
+Generate instructions that:
+1. Explain what was fixed in simple terms
+2. Provide exact commands to run (if applicable)
+3. Describe the expected behavior after the fix
+4. Include any setup steps needed (e.g., install dependencies)
+5. Suggest how to verify the fix is working
+
+Format as a numbered list with clear, actionable steps.
+Use code blocks for any commands.
+Be specific to this project type."""
+
+            response = await self._call_llm(prompt, max_tokens=1500)
+            if response:
+                self._output("\n" + "=" * 60, "info")
+                self._output("📋 TEST INSTRUCTIONS FOR USER", "success")
+                self._output("=" * 60, "info")
+                self._output(response, "info")
+                self._output("=" * 60 + "\n", "info")
+
+                # Store instructions in context for result
+                self.context.user_instructions = response
+
+                return True
+            else:
+                self._output("Could not generate test instructions", "warning")
+                # Provide basic fallback instructions
+                self._output("\n📋 BASIC TEST INSTRUCTIONS:", "info")
+                self._output(f"1. The issue '{issue_description[:50]}...' has been fixed", "info")
+                self._output(f"2. Files modified: {len(self.context.changes_made)}", "info")
+                self._output("3. Please test the affected functionality manually", "info")
+                return True
+
+        except Exception as e:
+            self._output(f"Instruction generation failed: {e}", "warning")
+            return True  # Continue anyway - not a critical failure
+
     async def _rollback(self) -> bool:
         """Rollback to baseline state."""
         self._output("Rolling back to baseline...", "warning")
@@ -1100,12 +1459,21 @@ Provide fixed file contents using the format:
         return success
 
     async def _call_llm(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
-        """Call LLM and return response."""
+        """Call LLM and return response text."""
         try:
             if hasattr(self.llm_client, 'generate'):
-                # Ollama-style client
+                # CodeGenLLMClient - returns LLMResponse with .content attribute
                 response = self.llm_client.generate(prompt, max_tokens=max_tokens)
-                return response
+                # Extract text from LLMResponse object
+                if hasattr(response, 'content'):
+                    return response.content
+                elif hasattr(response, 'text'):
+                    return response.text
+                elif isinstance(response, str):
+                    return response
+                else:
+                    logger.warning(f"Unknown response type: {type(response)}")
+                    return str(response)
             elif hasattr(self.llm_client, 'chat'):
                 # OpenAI-style client
                 response = self.llm_client.chat.completions.create(
@@ -1118,30 +1486,94 @@ Provide fixed file contents using the format:
                 logger.warning("Unknown LLM client type")
                 return None
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
+            logger.exception(f"LLM call failed: {e}")
             return None
+
+    def _guess_affected_files(self, response: str) -> List[str]:
+        """Guess affected files from LLM response text."""
+        import re
+
+        # Look for file paths mentioned in the response
+        file_patterns = [
+            r'[\w/]+\.(?:py|js|ts|jsx|tsx|html|css|json)',  # Common extensions
+            r'src/[\w/]+\.\w+',  # src/ paths
+            r'api/[\w/]+\.\w+',  # api/ paths
+        ]
+
+        files = set()
+        for pattern in file_patterns:
+            matches = re.findall(pattern, response)
+            files.update(matches)
+
+        # If no files found, look for the main entry files
+        if not files:
+            # Check what exists in project
+            common_files = ['index.html', 'main.py', 'app.py', 'main.js', 'App.js']
+            for f in common_files:
+                if (self.project_dir / f).exists():
+                    files.add(f)
+
+        return list(files)[:10]  # Limit to 10 files
 
     def _extract_json(self, content: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from LLM response."""
-        import re
+        """Extract JSON from LLM response using robust utility."""
+        from .utils.json_utils import extract_json_from_llm_response
+        return extract_json_from_llm_response(content)
 
-        # Try to find JSON block
-        json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
-        if json_match:
+    def _validate_code_content(self, code: str, filename: str) -> Tuple[bool, str]:
+        """
+        Validate that code content doesn't contain LLM artifacts.
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # Check for LLM reasoning markers
+        llm_artifacts = [
+            ('<details>', 'Contains <details> tag - LLM reasoning leaked into code'),
+            ('</details>', 'Contains </details> tag - LLM reasoning leaked into code'),
+            ("I'm sorry, but I can't", 'Contains LLM refusal text'),
+            ("I cannot provide", 'Contains LLM refusal text'),
+            ("I can't generate", 'Contains LLM refusal text'),
+            ('<<<<<<< SEARCH', 'Contains raw SEARCH/REPLACE markers - should be parsed, not written'),
+            ('>>>>>>> REPLACE', 'Contains raw SEARCH/REPLACE markers - should be parsed, not written'),
+            ('=======\n', 'Contains raw patch separator - should be parsed, not written'),
+        ]
+
+        for marker, error in llm_artifacts:
+            if marker in code:
+                return False, error
+
+        # Check for nested markdown code blocks (indicates LLM wrapped code incorrectly)
+        if '```' in code:
+            return False, 'Contains nested markdown code blocks'
+
+        # Basic syntax validation for common file types
+        if filename.endswith('.py'):
             try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+                import ast
+                ast.parse(code)
+            except SyntaxError as e:
+                return False, f'Python syntax error: {e}'
+        elif filename.endswith('.js'):
+            # Basic JS validation - check for obvious issues
+            if code.strip().startswith('<') and not code.strip().startswith('<!'):
+                return False, 'JavaScript file starts with < - likely HTML or XML content'
+        elif filename.endswith('.json'):
+            try:
+                import json
+                json.loads(code)
+            except json.JSONDecodeError as e:
+                return False, f'Invalid JSON: {e}'
 
-        # Try full content
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return None
+        return True, ''
 
     def _extract_code_blocks(self, content: str) -> List[Tuple[str, str]]:
-        """Extract code blocks from LLM response."""
+        """Extract code blocks from LLM response with validation."""
         import re
+        from .llm_client import strip_thinking_content
+
+        # First strip any thinking/reasoning content from the response
+        content = strip_thinking_content(content)
 
         blocks = []
         # Pattern: ```filename.ext or ```language filename
@@ -1165,6 +1597,12 @@ Provide fixed file contents using the format:
                             break
 
             if filename and '.' in filename:
-                blocks.append((filename, code))
+                # CRITICAL: Validate content before accepting
+                is_valid, error = self._validate_code_content(code, filename)
+                if is_valid:
+                    blocks.append((filename, code))
+                else:
+                    logger.warning(f"Rejected code block for {filename}: {error}")
+                    self._output(f"Rejected invalid code for {filename}: {error}", "warning")
 
         return blocks

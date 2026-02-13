@@ -3052,10 +3052,14 @@ END OF CONTEXT DATA"""
     return context_block
 
 
-def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=False, tools_results_summary=""):
+def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=False, tools_results_summary="", tools_called: List[str] = None):
     """
     Build enhanced system prompt for primary LLM when tools have been executed.
     This prevents the primary LLM from redoing work already completed by tool calling model.
+
+    🔧 FIX v1.0.0.32: System prompt now contains ONLY instructions, not full tool results.
+    Tool results are provided in the CONTEXT block (prompt field) to avoid duplication
+    which was causing "prompt too long" errors for large tool outputs like email retrieval.
     """
     # Load base system prompt from external file
     base_system = load_primary_model_system_prompt()
@@ -3069,9 +3073,13 @@ def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=F
     # 🔧 FIX v1.0.3.10: Detect if tools are DEFERRED vs COMPLETED
     tools_are_deferred = "deferred" in tools_results_summary.lower()
 
+    # 🔧 FIX v1.0.0.32: Create a brief tools summary (list of tools only, NOT the data)
+    # This prevents massive system prompts when tool results are large (e.g., email retrieval)
+    tools_list = ", ".join(tools_called) if tools_called else "various tools"
+
     if tools_are_deferred:
         # Tools are waiting for Primary LLM to generate content
-        enhanced_instructions = """
+        enhanced_instructions = f"""
 
 CRITICAL WORKFLOW INSTRUCTIONS:
 - Tools are ready to execute but are waiting for YOU to generate the content first
@@ -3080,28 +3088,28 @@ CRITICAL WORKFLOW INSTRUCTIONS:
 - File creation and email sending will happen automatically AFTER you generate the content
 - Your response will be used as the file content and email attachment
 
-TOOLS WAITING FOR YOUR CONTENT:
-""" + tools_results_summary + """
+TOOLS WAITING: {tools_list}
 
+Note: Tool results and context data are provided in the CONTEXT block below. Use them to fulfill the request.
 Remember: Generate the FULL, COMPLETE content now. Do not just say "I'll create..." - ACTUALLY CREATE IT in your response.
 """
     else:
         # Tools already completed their work
-        enhanced_instructions = """
+        enhanced_instructions = f"""
 
 CRITICAL WORKFLOW INSTRUCTIONS:
 - Tools have already been executed and their work is complete
 - **YOU executed these tools and MUST report their results as YOUR actions**
 - When social_media tools return 'tweet_url', 'tweet_id', or 'post_url': Report as "✅ Posted successfully! Tweet URL: [url], Tweet ID: [id]"
 - Always and in every agentic operation processed in the context, acknowledge its results and report the returned parameters
-- For DATA-GATHERING tools (search, news, research, wikipedia, etc.): USE the tool results to comprehensively fulfill the user's original request with all details they asked for
+- For DATA-GATHERING tools (search, news, research, wikipedia, etc.): USE the tool results from the CONTEXT block to comprehensively fulfill the user's original request with all details they asked for
 - For ACTION tools (email sending, chart creation, file operations, social media posting): Report completion with all returned parameters
 - Be thorough and detailed when presenting information from data-gathering tools
 - Organize and analyze the data to directly address what the user requested
 
-TOOLS EXECUTION SUMMARY:
-""" + tools_results_summary + """
+TOOLS EXECUTED: {tools_list}
 
+Note: Full tool results are provided in the CONTEXT block below (not duplicated here).
 Remember: Use data from search/research tools to create comprehensive responses. Action tools require reporting all returned parameters.
 """
 
@@ -5600,6 +5608,15 @@ async def _verify_task_completion(user_prompt: str, tools_called: List[str], too
     """
     user_prompt_lower = user_prompt.lower()
 
+    # 🔧 FIX: Strip embedded chat history before checking for publishing keywords
+    # Meta-tasks from Open-WebUI contain <chat_history>...</chat_history> with original user messages
+    # We must NOT detect publishing keywords from embedded chat history content
+    prompt_for_keyword_check = user_prompt_lower
+    if "<chat_history>" in user_prompt_lower:
+        # Extract only the part BEFORE chat_history for keyword detection
+        prompt_for_keyword_check = user_prompt_lower.split("<chat_history>")[0]
+        logger.debug(f"🔧 Stripped chat_history for keyword check: {len(user_prompt_lower)} -> {len(prompt_for_keyword_check)} chars")
+
     # 🎯 DEFINE POST-GENERATION KEYWORDS FIRST - Used by multiple patterns below
     # This is extensible - add new categories when new post-LLM tools are added
     explicit_post_generation_requests = {
@@ -5643,13 +5660,15 @@ async def _verify_task_completion(user_prompt: str, tools_called: List[str], too
     ]
 
     # Check if user has publishing/email/file creation keywords - these override meta-task detection
-    has_post_generation_request = any(keyword in user_prompt_lower for keyword in all_post_generation_keywords)
+    # IMPORTANT: Use prompt_for_keyword_check to avoid false positives from embedded chat history
+    has_post_generation_request = any(keyword in prompt_for_keyword_check for keyword in all_post_generation_keywords)
 
     if any(meta_indicator in user_prompt_lower for meta_indicator in meta_task_indicators):
-        # If publishing keywords present, this is a REAL user request, not a meta-task
+        # If publishing keywords present IN THE TASK ITSELF (not chat history), this is a REAL user request
         if has_post_generation_request:
-            logger.info(f"🎯 META-TASK PATTERN DETECTED but PUBLISHING KEYWORDS PRESENT - treating as real user request")
+            logger.info(f"🎯 META-TASK PATTERN DETECTED but PUBLISHING KEYWORDS PRESENT in task - treating as real user request")
         else:
+            logger.info(f"🎯 META-TASK DETECTED: Returning complete (title/tag generation from Open-WebUI)")
             return {"complete": True, "pattern": "meta_task"}
     
     
@@ -5657,13 +5676,14 @@ async def _verify_task_completion(user_prompt: str, tools_called: List[str], too
     # Any mention of email/send requires secure_email_sender tool
     email_keywords = [
         "email", "send", "mail", "attach", "attachment", "send to", "email to",
-        "send an email", "send email", "email it", "mail it", "send it", 
+        "send an email", "send email", "email it", "mail it", "send it",
         "email me", "send me", "mail me", "email with", "send with",
         "email them", "send them", "mail them", "email all", "send all",
         "in one email", "all in one email", "send them all", "email the files"
     ]
-    
-    has_email_request = any(keyword in user_prompt_lower for keyword in email_keywords)
+
+    # IMPORTANT: Use prompt_for_keyword_check to avoid false positives from embedded chat history
+    has_email_request = any(keyword in prompt_for_keyword_check for keyword in email_keywords)
     
     # Define task patterns and their required tool sequences
     task_patterns = {
@@ -5864,8 +5884,9 @@ async def _verify_task_completion(user_prompt: str, tools_called: List[str], too
     # If no tools were called at all, check if any were actually needed
     if not tools_called:
         # If user requested email or file creation, tools were required
+        # Use stripped prompt to avoid false positives from embedded chat history
         file_creation_keywords = ["create", "generate", "write", "make", "build", "save"]
-        needs_tools = has_email_request or any(keyword in user_prompt_lower for keyword in file_creation_keywords)
+        needs_tools = has_email_request or any(keyword in prompt_for_keyword_check for keyword in file_creation_keywords)
         
         if needs_tools:
             return {
@@ -7999,6 +8020,7 @@ async def llama_stream(request: Request):
                 
                 # 🖼️ FORCED IMAGE PROCESSING: When images are present, automatically call image_to_text
                 forced_image_processing_result = ""
+                images_available = False  # Will be set to True if images exist (survives image_exists reset)
 
                 # 🚨 USER ERROR REPORTING: Report image validation failures to user
                 if image_errors:
@@ -8110,11 +8132,15 @@ The above image analysis was automatically performed on newly uploaded images. T
                         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
                         forced_image_processing_result = f"\n🖼️ IMAGE PROCESSING ERROR [{timestamp}]: {str(e)}\nImages were detected but processing setup failed.\n"
                     
+                    # 🖼️ Preserve original image availability for tool-calling LLM
+                    # Even if forced processing fails, the tool-calling LLM needs to know images exist
+                    images_available = True
+                    
                     # 🔄 CRITICAL: Reset image_exists flag after processing (success or failure)
                     # This prevents re-triggering image processing on subsequent conversation turns
                     # The image processing results remain in context as reference for the conversation
                     image_exists = False
-                    logger.info("🔄 FORCED IMAGE PROCESSING: Reset image_exists flag to False - processing complete")
+                    logger.info("🔄 FORCED IMAGE PROCESSING: Reset image_exists flag to False - processing complete (images_available=True preserved)")
                 
                 # STAGE 1: Call tool calling model to generate JSON function calls
                 # Load system prompt from external file
@@ -8127,7 +8153,8 @@ The above image analysis was automatically performed on newly uploaded images. T
                 user_message_content = f"""Examine the intent of the user's prompt and apply the system directives to make the appropriate calls to the tools' functions."""
 
                 # 🖼️ CRITICAL: Explicitly indicate when images are present
-                if image_exists:
+                # Use images_available (survives forced processing reset) OR image_exists
+                if image_exists or images_available:
                     image_count = len([img for img in data.get("images", []) if img != "noimage"])
                     user_message_content += f"""\n\n🖼️ IMPORTANT: User has provided {image_count} image(s). You MUST call image_to_text() with image="user_provided_image_data" to analyze the image(s)."""
 
@@ -8141,7 +8168,7 @@ The above image analysis was automatically performed on newly uploaded images. T
                     {
                         "role": "user",
                         "content": user_message_content,
-                        "images": data.get("images") if image_exists else None
+                        "images": data.get("images") if (image_exists or images_available) else None
                     }
                 ]
                 
@@ -8832,19 +8859,21 @@ The above image analysis was automatically performed on newly uploaded images. T
                                             logger.error(f"❌ Invalid JSON in function arguments for {function_name}: {function_args}")
                                             function_args = {}
                                     
-                                    # Add image if applicable
-                                    if "image" in function_args and image_exists:
+                                    # Add image if applicable (use images_available to survive forced processing reset)
+                                    if "image" in function_args and (image_exists or images_available):
                                         function_args["image"] = data.get("images", [None])[0]
                                     
-                                    # 🖼️ INTERCEPT IMAGE_TO_TEXT CALLS - Replace placeholder with actual image data
+                                    # 🖼️ INTERCEPT IMAGE_TO_TEXT CALLS - ALWAYS replace with actual image data
+                                    # Don't rely on matching specific placeholder strings - the LLM may generate
+                                    # any arbitrary placeholder. Always inject real base64 when images exist.
                                     if function_name == "image_to_text" and data.get("images") and data.get("images")[0] != "noimage":
-                                        # Handle both "image" (singular) and "images" (plural) parameters
-                                        if "image" in function_args and function_args["image"] in ["user_provided_image_data", "<user_provided_image_data>", "<actual_base64_image_data>", "<base64_image_data>"]:
-                                            # Replace placeholder with actual base64 image data for singular parameter
+                                        # Handle "image" (singular) parameter - always inject real data
+                                        if "image" in function_args:
                                             actual_images = data.get("images", [])
                                             if actual_images and actual_images[0] != "noimage":
+                                                old_value = function_args["image"]
                                                 function_args["image"] = actual_images[0]  # Use first image for singular parameter
-                                                logger.info(f"🖼️ REPLACED singular image placeholder with actual base64 data ({len(actual_images[0])} chars)")
+                                                logger.info(f"🖼️ REPLACED image arg (was: '{str(old_value)[:80]}...') with actual base64 data ({len(actual_images[0])} chars)")
                                             else:
                                                 logger.warning(f"🖼️ No image data available for singular image parameter")
                                         elif "images" in function_args:
@@ -9412,10 +9441,12 @@ END OF CONTEXT
                 logger.info(f"📋 Using USER-PROVIDED system prompt ({len(user_system_prompt)} chars)")
             else:
                 # Fallback to enhanced default system prompt
+                # 🔧 FIX v1.0.0.32: Pass tools_called list (not full results) to prevent context overflow
                 enhanced_system = _build_enhanced_primary_system_prompt(
-                    user_system_prompt, 
+                    user_system_prompt,
                     tools_were_executed=(len(tools_results.strip()) > 0),
-                    tools_results_summary=cleaned_tools_results_summary
+                    tools_results_summary=cleaned_tools_results_summary,
+                    tools_called=tools_called
                 )
                 logger.info(f"📋 Using DEFAULT enhanced system prompt ({len(enhanced_system)} chars)")
             

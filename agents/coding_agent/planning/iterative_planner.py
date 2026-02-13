@@ -14,6 +14,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
+from ..utils.json_utils import sanitize_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -236,13 +238,14 @@ Output as JSON array:
   {{
     "id": "step_1",
     "action": "Create main entry point",
-    "description": "Create main.py with application entry point",
+    "description": "Create main entry file (e.g., main.py, index.js, index.html)",
     "complexity": "simple",
     "dependencies": [],
-    "estimated_files": ["main.py"]
+    "estimated_files": ["main.ext"]
   }},
   ...
 ]
+NOTE: Use appropriate file extensions based on the project type (.py, .js, .ts, .html, etc.)
 
 Focus on:
 - Logical order of implementation
@@ -251,7 +254,7 @@ Focus on:
 - Proper error handling steps"""
 
         try:
-            response = await self.llm_client.generate(prompt)
+            response = await self.llm_client.generate(prompt, max_tokens=4000)
             content = response.content if hasattr(response, 'content') else str(response)
 
             # Parse JSON from response
@@ -296,7 +299,7 @@ Output as JSON array of strings (max {self.max_edge_cases}):
 ["edge case 1", "edge case 2", ...]"""
 
         try:
-            response = await self.llm_client.generate(prompt)
+            response = await self.llm_client.generate(prompt, max_tokens=1000)
             content = response.content if hasattr(response, 'content') else str(response)
 
             edge_cases = self._extract_json_array(content)
@@ -330,7 +333,7 @@ Output as JSON array of strings:
 ["Files compile without errors", "All imports resolve correctly", ...]"""
 
         try:
-            response = await self.llm_client.generate(prompt)
+            response = await self.llm_client.generate(prompt, max_tokens=1000)
             content = response.content if hasattr(response, 'content') else str(response)
 
             criteria = self._extract_json_array(content)
@@ -396,19 +399,21 @@ Output as JSON array of strings:
         return warnings
 
     def _extract_json_array(self, content: str) -> List[Any]:
-        """Extract JSON array from LLM response."""
+        """Extract JSON array from LLM response with sanitization."""
         # Try to find JSON array in content
         try:
             # Look for array pattern
             match = re.search(r'\[[\s\S]*\]', content)
             if match:
-                return json.loads(match.group())
+                sanitized = sanitize_json(match.group())
+                return json.loads(sanitized)
         except json.JSONDecodeError:
             pass
 
-        # Try parsing entire content
+        # Try parsing entire content with sanitization
         try:
-            data = json.loads(content)
+            sanitized = sanitize_json(content)
+            data = json.loads(sanitized)
             if isinstance(data, list):
                 return data
         except json.JSONDecodeError:

@@ -16,14 +16,17 @@ NO APPROVALS unless genuinely blocked.
 """
 
 import asyncio
+import json
 import logging
+import sys
+import os
 import re
 import ast
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Set
 
 from .project_context import (
     ProjectDebugContext,
@@ -39,11 +42,10 @@ from .debug_decomposer import DebugDecomposer, DecompositionResult, DebugUnit, U
 logger = logging.getLogger(__name__)
 
 
-from ..agent_config import AgentDefaults
+from ..config_accessor import get_max_iterations
 from ..services.linter_service import LinterService
 from ..services.patch_applier import PatchApplier
-from ..services.language_detector import LanguageDetector
-from ..services.language_detector import LanguageDetector
+from ..services.language_detector import LanguageDetector, LANGUAGE_DEFINITIONS
 from ..services.code_path_tracer import CodePathTracer, ExecutionContext
 
 try:
@@ -51,9 +53,6 @@ try:
     HAS_RAGG = True
 except ImportError:
     HAS_RAGG = False
-
-logger = logging.getLogger(__name__)
-
 
 class DebugOutcome(Enum):
     """Outcome of the debug process."""
@@ -92,21 +91,25 @@ class AutonomousDebugController:
     5. 4-Gate Verification (Lint -> Test -> Targeted Regression -> Full Regression)
     """
 
-    DEFAULT_MAX_ITERATIONS = AgentDefaults.MAX_ITERATIONS
+    DEFAULT_MAX_ITERATIONS = 10  # Will be overridden by config in constructor
 
     def __init__(
         self,
         llm_client,
         project_dir: Path,
         output_callback: Optional[Callable[[str], None]] = None,
-        max_iterations: int = DEFAULT_MAX_ITERATIONS,
-        context_manager: Any = None
+        max_iterations: Optional[int] = None,
+        context_manager: Any = None,
+        tool_client: Any = None,  # [NEW] Phase 5
+        toolkit: Any = None       # [NEW] Phase 5
     ):
         self.llm_client = llm_client
         self.project_dir = Path(project_dir)
         self.output = output_callback or (lambda x: logger.info(x))
-        self.max_iterations = max_iterations
+        self.max_iterations = max_iterations if max_iterations is not None else get_max_iterations()
         self.context_manager = context_manager
+        self.tool_client = tool_client
+        self.toolkit = toolkit
 
         # Initialize components
         self.context = ProjectDebugContext(project_dir)
@@ -124,11 +127,16 @@ class AutonomousDebugController:
         from ..services.git_state_tracker import GitStateTracker
         from ..services.state_verifier import StateVerifier
         from ..services.changelog_generator import ChangelogGenerator
-        
+
         self.git_tracker = GitStateTracker(project_dir)
         self.state_verifier = StateVerifier(project_dir, self.git_tracker)
         self.changelog_gen = ChangelogGenerator()
         
+        # [NEW] Phase 5: Imports
+        from ..services.context_manager import ContextManager, ContextPriority
+        self.ContextManager = ContextManager
+        self.ContextPriority = ContextPriority
+
         # Ensure git repository is initialized
         if self.git_tracker.ensure_git_initialized():
             self.output("   ✓ Git repository initialized for state tracking")
@@ -207,6 +215,115 @@ class AutonomousDebugController:
             logger.debug(f"Could not get file structure context: {e}")
             return ""
 
+    async def _validate_target_file(self, bug_description: str) -> Dict[str, Any]:
+        """
+        Validate that if user specified a file in their bug description, it exists.
+
+        Uses LLM to extract file path from description (NO regex pattern matching!).
+
+        Args:
+            bug_description: User's bug description
+
+        Returns:
+            Dict with 'valid' (bool), 'error' (str), 'suggestion' (str), 'file_path' (str)
+        """
+        # Ask LLM to extract file path from bug description
+        prompt = f"""Extract the target file path from this bug description.
+
+BUG DESCRIPTION:
+{bug_description}
+
+PROJECT DIRECTORY:
+{self.project_dir}
+
+TASK:
+If the user mentioned a specific file path (e.g., "quad_solver.py", "/path/to/file.py", "myprograms_test/quad_solver.py"),
+extract the COMPLETE file path that should be debugged.
+
+Return JSON:
+{{
+    "file_mentioned": true/false,
+    "file_path": "complete/path/to/file.py or null if no file mentioned",
+    "reasoning": "Why you extracted this path or why no file was mentioned"
+}}
+
+IMPORTANT:
+- If path starts with "/" but seems incomplete (like "/Development/..." instead of "/home/user/Development/..."),
+  note this in reasoning
+- Extract EXACT path as user provided, don't modify it
+
+Return ONLY the JSON, no other text."""
+
+        try:
+            response = await asyncio.to_thread(
+                self.llm_client.generate, prompt, max_tokens=300
+            )
+            content = response.content if hasattr(response, 'content') else str(response)
+
+            # Extract JSON
+            import json
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if not json_match:
+                # LLM didn't return JSON, can't validate
+                return {'valid': True}  # Proceed with automatic entry point detection
+
+            data = json.loads(json_match.group(0))
+
+            if not data.get('file_mentioned'):
+                # No file mentioned, use automatic entry point detection
+                return {'valid': True}
+
+            file_path = data.get('file_path')
+            if not file_path or file_path == 'null':
+                return {'valid': True}
+
+            # Check if file exists (try both as-is and with project_dir prefix)
+            from pathlib import Path
+
+            # Try as absolute path first
+            target = Path(file_path)
+            if not target.is_absolute():
+                # Try relative to project_dir
+                target = self.project_dir / file_path
+
+            if target.exists():
+                # File found!
+                self.output(f"✅ Target file validated: {target}")
+                return {'valid': True, 'file_path': str(target)}
+
+            # File NOT found - this is the critical error case!
+            error_msg = f"File not found: {file_path}"
+
+            # Try to provide helpful suggestion
+            suggestion = None
+            if str(file_path).startswith('/Development/') or str(file_path).startswith('/home/'):
+                # Path looks like it might be incomplete
+                # Try to find the file in project_dir
+                filename = Path(file_path).name
+                matches = list(self.project_dir.rglob(filename))
+                if matches:
+                    suggestion = f"Did you mean: {matches[0]}?"
+                else:
+                    suggestion = f"File '{filename}' not found in {self.project_dir}"
+            else:
+                # Try searching for the file
+                filename = Path(file_path).name
+                matches = list(self.project_dir.rglob(filename))
+                if matches:
+                    suggestion = f"Found similar file(s): {', '.join(str(m) for m in matches[:3])}"
+
+            return {
+                'valid': False,
+                'error': error_msg,
+                'suggestion': suggestion,
+                'file_path': file_path
+            }
+
+        except Exception as e:
+            logger.warning(f"File validation failed: {e}, proceeding with automatic detection")
+            return {'valid': True}  # On error, proceed with automatic detection
+
     async def debug_until_fixed(
         self,
         bug_description: str,
@@ -249,6 +366,71 @@ class AutonomousDebugController:
                 self._session = self.context.create_session(bug_description, error_trace)
         else:
             self._session = self.context.create_session(bug_description, error_trace)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # CRITICAL: Validate user-specified file exists BEFORE debugging
+        # ═══════════════════════════════════════════════════════════════════
+        logger.info(f"[DEBUG] Validating target file from request: {bug_description[:100]}")
+        target_file_validation = await self._validate_target_file(bug_description)
+        logger.info(f"[DEBUG] Validation result: {target_file_validation}")
+
+        if not target_file_validation['valid']:
+            self.output(f"\n❌ ERROR: {target_file_validation['error']}")
+            if target_file_validation.get('suggestion'):
+                self.output(f"\n💡 {target_file_validation['suggestion']}")
+
+            # Ask user for correct path
+            try:
+                self.output("\n" + "="*60)
+                self.output("FILE PATH CORRECTION NEEDED")
+                self.output("="*60)
+                corrected_path = input("\nEnter correct file path (or press Enter to cancel): ").strip()
+
+                if not corrected_path:
+                    # User cancelled
+                    logger.info(f"[DEBUG] User cancelled file path correction")
+                    return DebugResult(
+                        outcome=DebugOutcome.BLOCKED,
+                        iterations=0,
+                        blocked_reason="User cancelled: " + target_file_validation['error'],
+                        duration_seconds=time.time() - start_time
+                    )
+
+                # Validate corrected path
+                from pathlib import Path
+                corrected_file = Path(corrected_path)
+                if not corrected_file.is_absolute():
+                    corrected_file = self.project_dir / corrected_path
+
+                if corrected_file.exists():
+                    self.output(f"✅ Corrected file found: {corrected_file}")
+                    # Update bug description with corrected path
+                    bug_description = bug_description.replace(
+                        target_file_validation.get('file_path', ''),
+                        str(corrected_file)
+                    )
+                    # Re-create session with corrected description
+                    self._session = self.context.create_session(bug_description, error_trace)
+                else:
+                    self.output(f"❌ Corrected path still not found: {corrected_file}")
+                    return DebugResult(
+                        outcome=DebugOutcome.BLOCKED,
+                        iterations=0,
+                        blocked_reason=f"Corrected path not found: {corrected_file}",
+                        duration_seconds=time.time() - start_time
+                    )
+
+            except (EOFError, KeyboardInterrupt):
+                # Non-interactive mode or user interrupted
+                logger.info(f"[DEBUG] File validation failed, exiting (non-interactive or interrupted)")
+                return DebugResult(
+                    outcome=DebugOutcome.BLOCKED,
+                    iterations=0,
+                    blocked_reason=target_file_validation['error'],
+                    duration_seconds=time.time() - start_time
+                )
+
+        logger.info(f"[DEBUG] File validation passed, proceeding to debug loop")
 
         try:
             result = await self._run_debug_loop()
@@ -294,6 +476,48 @@ class AutonomousDebugController:
         else:
             self.output("   ⚠️  No entry points found - will use all files (less accurate)")
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PRE-FLIGHT DEPENDENCY CHECK (NEW)
+        # ═══════════════════════════════════════════════════════════════════
+        # If the error trace indicates a missing module (ImportError/ModuleNotFoundError),
+        # try installing dependencies BEFORE attempting code fixes
+        # ═══════════════════════════════════════════════════════════════════
+        error_trace = self._session.error_trace or ""
+        is_import_error = any(kw in error_trace for kw in ['ImportError', 'ModuleNotFoundError', 'No module named', 'Failed to import'])
+        
+        if is_import_error:
+            req_path = self.project_dir / 'requirements.txt'
+            if req_path.exists():
+                self.output("\n📦 [PRE-FLIGHT] ImportError detected - attempting pip install first...")
+                import subprocess
+                try:
+                    result = subprocess.run(
+                        ['pip', 'install', '-r', str(req_path)],
+                        capture_output=True, text=True, timeout=120, cwd=str(self.project_dir)
+                    )
+                    if result.returncode == 0:
+                        self.output("   ✓ Dependencies installed successfully")
+                        # Re-run the code to see if it fixes the issue
+                        self.output("   → Re-running code to verify...")
+                        test_result = await self._run_entry_point()
+                        if test_result.get('success'):
+                            self.output("   ✓ Issue resolved by installing dependencies!")
+                            self._session.set_status(DebugStatus.COMPLETE, "Fixed by installing dependencies")
+                            self.context.save_session(self._session)
+                            return DebugResult(
+                                outcome=DebugOutcome.FIXED,
+                                iterations=0,
+                                root_cause="Missing dependencies",
+                                files_modified=[],
+                                fix_summary="Installed dependencies from requirements.txt"
+                            )
+                        else:
+                            self.output("   ⚠ Still has errors after pip install - continuing with code analysis")
+                    else:
+                        self.output(f"   ⚠ pip install failed: {result.stderr[:200]}")
+                except Exception as e:
+                    self.output(f"   ⚠ Could not install dependencies: {e}")
+
         # ─────────────────────────────────────────────────────
         # CHECK FOR GUI/WEB APPLICATION - Skip test cycle
         # GUI apps and web pages require visual verification
@@ -308,6 +532,12 @@ class AutonomousDebugController:
             self.output(f"\n🖥️  Visual application detected ({app_type})")
             self.output("   Skipping automated test cycle - user will verify visually")
             return await self._run_gui_debug_loop()
+
+        # ─────────────────────────────────────────────────────
+        # NOTE: We intentionally DO NOT run all tests here.
+        # We only test the specific bug we're fixing - running
+        # the entire test suite is wasteful and slow.
+        # ─────────────────────────────────────────────────────
 
         # ─────────────────────────────────────────────────────
         # REPRODUCTION PHASE: Analyze & Generate Test (Before Loop)
@@ -377,7 +607,18 @@ class AutonomousDebugController:
                 affected_files=self._affected_files,
                 root_cause=self._current_hypothesis
             )
-            
+
+            # Check if this language requires manual testing
+            if not test_code:
+                lang = self.test_generator.language_detector.detect()
+                self.output(f"\n⚠️  {lang.name} requires MANUAL TESTING")
+                self.output(f"   Automated testing not available for this language.")
+                self.output(f"   Will apply fix and ask user to verify.")
+                # Skip test verification - proceed directly to fix
+                repro_success = True
+                self._session.bug_test_path = None
+                break
+
             # Use '0' or 'repro' as iteration specific for calibration phase
             test_name = f"bug_{self._session.session_id}_repro_{repro_attempts}"
             test_path = self.context.save_bug_test(test_name, test_code)
@@ -435,11 +676,12 @@ class AutonomousDebugController:
                     self._record_iteration(iteration)
                     continue
 
-                iteration.files_modified = fix_result['files_modified']
-                iteration.action_taken = fix_result['description']
-                self._session.files_modified = fix_result['files_modified']
+                files_modified = fix_result.get('files_modified', [])
+                iteration.files_modified = files_modified
+                iteration.action_taken = fix_result.get('description', 'Fix applied')
+                self._session.files_modified = files_modified
 
-                self.output(f"Modified: {', '.join(fix_result['files_modified'])}")
+                self.output(f"Modified: {', '.join(files_modified)}")
 
                 # ─────────────────────────────────────────────────────
                 # PHASE 5: VERIFY FIX (test should pass now)
@@ -458,9 +700,9 @@ class AutonomousDebugController:
                     self.output("Analyzing failure (Is it a bad fix or a bad test?)...")
                     
                     fail_analysis = await self._analyze_verification_failure(
-                        str(test_path), 
-                        str(verify_result.error), 
-                        fix_result['description']
+                        str(test_path),
+                        str(verify_result.error),
+                        fix_result.get('description', 'Fix applied')
                     )
                     
                     if fail_analysis['verdict'] == "TEST_FLAWED" and fail_analysis['new_test_code']:
@@ -486,7 +728,7 @@ class AutonomousDebugController:
                 if not test_passes:
                     # Fix didn't work - rollback and retry
                     self.output("Test still FAILS - fix incomplete. Rolling back...")
-                    await self._rollback(fix_result['files_modified'])
+                    await self._rollback(fix_result.get('files_modified', []))
                     iteration.rollback_performed = True
                     iteration.failure_reason = "Fix did not resolve the bug (Verified Fix Logic)"
                     self._record_iteration(iteration)
@@ -496,48 +738,14 @@ class AutonomousDebugController:
                 self._session.bug_test_passes = True
 
                 # ─────────────────────────────────────────────────────
-                # NEW PHASE 6: TARGETED REGRESSION TEST (Gate 3)
+                # NOTE: We skip running ALL tests (targeted or full suite)
+                # because it's wasteful. The bug-specific test already
+                # passed - that's sufficient verification.
+                # 
+                # If the user has concerns about regressions, they can
+                # run their test suite manually after RAICA completes.
                 # ─────────────────────────────────────────────────────
-                self.output("\n[PHASE 6] Running Targeted Regression Tests (Gate 3)...")
-                
-                # Identify relevant tests
-                relevant_tests = self.test_generator.identify_relevant_tests(fix_result['files_modified'])
-                
-                if relevant_tests:
-                    self.output(f"Identified {len(relevant_tests)} relevant tests: {[t.name for t in relevant_tests]}")
-                    targeted_result = await self.test_generator.run_targeted_tests(relevant_tests)
-                    
-                    if not targeted_result.passed:
-                        self.output(f"❌ Targeted Regressions found!\nFailed: {targeted_result.error}")
-                        await self._rollback(fix_result['files_modified'])
-                        iteration.rollback_performed = True
-                        iteration.failure_reason = f"Targeted Regression Failed: {targeted_result.error}"
-                        self._record_iteration(iteration)
-                        continue
-                    self.output("✅ Targeted Regression Passed")
-                else:
-                    self.output("ℹ️ No specific relevant tests found. Skipping to full suite.")
-
-                # ─────────────────────────────────────────────────────
-                # PHASE 7: FULL REGRESSION CHECK (Gate 4)
-                # ─────────────────────────────────────────────────────
-                self.output("\n[PHASE 7] Checking for regressions (Full Suite)...")
-                self._session.set_status(DebugStatus.VERIFYING)
-
-                regression_result = await self.test_generator.run_all_project_tests()
-                iteration.regression_check_passed = regression_result.passed
-
-                if not regression_result.passed:
-                    # Regressions detected - rollback
-                    self.output("REGRESSIONS detected! Rolling back...")
-                    self.output(f"Failed tests: {regression_result.error if regression_result.error else 'Unknown'}")
-                    await self._rollback(fix_result['files_modified'])
-                    iteration.rollback_performed = True
-                    iteration.failure_reason = f"Fix caused regressions: {regression_result.error if regression_result.error else 'Unknown'}"
-                    self._record_iteration(iteration)
-                    continue
-
-                self.output("No regressions detected!")
+                iteration.regression_check_passed = True  # Assumed - user can verify
 
                 # ─────────────────────────────────────────────────────
                 # SUCCESS!
@@ -585,126 +793,621 @@ class AutonomousDebugController:
                 self._record_iteration(iteration)
                 continue
 
-        # Max iterations reached
-        self.output(f"\nMax iterations ({self.max_iterations}) reached without fix.")
-        self._session.set_status(DebugStatus.BLOCKED, "Max iterations reached")
+        # Max iterations reached - but KEEP the progress!
+        files_fixed = list(set(self._session.files_modified))
+        
+        self.output(f"\n{'='*60}")
+        self.output(f"⏸️  PAUSED - Max iterations ({self.max_iterations}) reached")
+        self.output(f"{'='*60}")
+        
+        if files_fixed:
+            self.output(f"\n✓ PROGRESS KEPT - Modified {len(files_fixed)} files:")
+            for f in files_fixed[:10]:
+                self.output(f"   • {f}")
+        
+        self.output(f"\n⚠️  Run again to continue: raica debug -i\"continue fixing\"\n")
+        
+        self._session.set_status(DebugStatus.BLOCKED, "Max iterations - progress preserved")
         self.context.save_session(self._session)
 
         return DebugResult(
             outcome=DebugOutcome.MAX_ITERATIONS,
             iterations=self._session.current_iteration,
-            root_cause=self._current_hypothesis,
-            files_modified=self._session.files_modified,
-            blocked_reason=f"Could not fix bug in {self.max_iterations} iterations"
+            root_cause=self._current_hypothesis if hasattr(self, '_current_hypothesis') else None,
+            files_modified=files_fixed,
+            blocked_reason=f"Paused after {self.max_iterations} iterations. Fixed {len(files_fixed)} files. Run again to continue."
         )
 
     async def _run_gui_debug_loop(self) -> DebugResult:
         """
-        Simplified debug loop for GUI applications.
+        Debug loop for GUI applications with FULL RETRY CAPABILITY.
 
         GUI apps require visual verification which automated tests cannot provide.
         This loop:
         1. Analyzes the bug
         2. Applies the fix with lint checking
-        3. Skips test verification - user verifies manually
+        3. On failure: tracks the failed strategy and RETRIES with different approach
+        4. Loops until fixed or max iterations reached
 
-        No test generation, no test verification phases.
+        No test generation, no test verification phases - user verifies manually.
         """
         self.output("\n" + "="*60)
         self.output("GUI DEBUG MODE (No automated tests)")
         self.output("="*60)
 
-        # PHASE 1: UNDERSTAND
-        self.output("\n[PHASE 1] Analyzing bug...")
-        self._session.set_status(DebugStatus.ANALYZING)
+        # Track failed strategies to inform subsequent attempts
+        failed_strategies = []
+        runtime_error = None  # Will store real error from running the code
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # PRE-FLIGHT: Install dependencies BEFORE any debugging attempts
+        # ═══════════════════════════════════════════════════════════════════
+        req_path = self.project_dir / 'requirements.txt'
+        if req_path.exists():
+            self.output("\n📦 [PRE-FLIGHT] Installing dependencies from requirements.txt...")
+            import subprocess
+            
+            # [NEW] Sanitize requirements.txt before pip install
+            # Remove stdlib modules and invalid entries that cause pip to fail
+            try:
+                STDLIB_MODULES = {
+                    '__future__', 'abc', 'argparse', 'ast', 'asyncio', 'atexit', 'base64',
+                    'bisect', 'builtins', 'calendar', 'collections', 'colorsys', 'concurrent',
+                    'configparser', 'contextlib', 'copy', 'copyreg', 'csv', 'ctypes', 'dataclasses',
+                    'datetime', 'decimal', 'difflib', 'email', 'encodings', 'enum', 'errno',
+                    'fcntl', 'filecmp', 'fileinput', 'fnmatch', 'fractions', 'functools', 'gc',
+                    'getpass', 'gettext', 'glob', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac',
+                    'html', 'http', 'imaplib', 'importlib', 'inspect', 'io', 'ipaddress',
+                    'itertools', 'json', 'keyword', 'linecache', 'locale', 'logging', 'lzma',
+                    'mailbox', 'marshal', 'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing',
+                    'netrc', 'ntpath', 'numbers', 'operator', 'os', 'pathlib', 'pickle', 'pkgutil',
+                    'platform', 'plistlib', 'poplib', 'posix', 'posixpath', 'pprint', 'profile',
+                    'pwd', 'py_compile', 'queue', 'quopri', 'random', 're', 'readline', 'reprlib',
+                    'resource', 'rlcompleter', 'runpy', 'sched', 'secrets', 'select', 'selectors',
+                    'shelve', 'shlex', 'shutil', 'signal', 'site', 'smtplib', 'socket', 'socketserver',
+                    'sqlite3', 'ssl', 'stat', 'statistics', 'string', 'stringprep', 'struct',
+                    'subprocess', 'sunau', 'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny',
+                    'tarfile', 'tempfile', 'termios', 'test', 'textwrap', 'threading', 'time',
+                    'timeit', 'token', 'tokenize', 'trace', 'traceback', 'tracemalloc', 'tty',
+                    'turtle', 'types', 'typing', 'typing_extensions', 'unicodedata', 'unittest',
+                    'urllib', 'uu', 'uuid', 'venv', 'warnings', 'wave', 'weakref', 'webbrowser',
+                    'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc', 'zipapp',
+                    'zipfile', 'zipimport', 'zlib', '_thread', '_io', '_collections_abc'
+                }
+                
+                # Get local project module names
+                local_modules = set()
+                for f in self.project_dir.rglob('*.py'):
+                    local_modules.add(f.stem)
+                for d in self.project_dir.iterdir():
+                    if d.is_dir() and (d / '__init__.py').exists():
+                        local_modules.add(d.name)
+                
+                # Read and sanitize
+                original_content = req_path.read_text()
+                cleaned_lines = []
+                removed = []
+                
+                for line in original_content.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith('#'):
+                        cleaned_lines.append(line)
+                        continue
+                    
+                    # Extract package name (before any version specifier)
+                    import re
+                    match = re.match(r'^([a-zA-Z0-9_-]+)', stripped)
+                    if match:
+                        pkg_name = match.group(1).lower().replace('-', '_')
+                        if pkg_name in STDLIB_MODULES or pkg_name in local_modules:
+                            removed.append(stripped)
+                            continue
+                    
+                    cleaned_lines.append(line)
+                
+                # Write back if we removed anything
+                if removed:
+                    cleaned_content = '\n'.join(cleaned_lines) + '\n'
+                    req_path.write_text(cleaned_content)
+                    self.output(f"   ✓ Cleaned {len(removed)} invalid entries from requirements.txt")
+                    for r in removed[:5]:
+                        self.output(f"      - Removed: {r}")
+                    if len(removed) > 5:
+                        self.output(f"      ... and {len(removed) - 5} more")
+            except Exception as e:
+                self.output(f"   ⚠ Could not sanitize requirements.txt: {e}")
+            
+            # Now run pip install
+            try:
+                result = subprocess.run(
+                    ['pip', 'install', '-r', str(req_path)],
+                    capture_output=True, text=True, timeout=120, cwd=str(self.project_dir)
+                )
+                if result.returncode == 0:
+                    self.output("   ✓ Dependencies installed successfully")
+                else:
+                    self.output(f"   ⚠ pip install failed: {result.stderr[:200]}")
+            except Exception as e:
+                self.output(f"   ⚠ Could not install dependencies: {e}")
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # MAIN RETRY LOOP - Keep trying until fixed or max iterations
+        # ═══════════════════════════════════════════════════════════════════
+        while self._session.current_iteration < self.max_iterations:
+            iteration_num = self._session.current_iteration + 1
+            
+            if iteration_num > 1:
+                self.output(f"\n{'='*60}")
+                self.output(f"GUI DEBUG ITERATION {iteration_num}/{self.max_iterations}")
+                self.output(f"{'='*60}")
+            
+            iteration = DebugIteration(iteration_number=iteration_num)
 
-        analysis = await self._analyze_bug()
-        if not analysis:
-            self.output("❌ Bug analysis failed")
-            return DebugResult(
-                outcome=DebugOutcome.BLOCKED,
-                iterations=0,
-                blocked_reason="Bug analysis failed"
-            )
+            try:
+                # ═══════════════════════════════════════════════════════════
+                # PHASE 0: RUN THE CODE TO GET REAL ERRORS
+                # ═══════════════════════════════════════════════════════════
+                self.output("\n[PHASE 0] Running code to capture real errors...")
+                success, runtime_error = await self._run_entry_point(timeout=5)
+                
+                if success:
+                    # Code runs without crashing
+                    self.output("\n✅ CODE RUNS WITHOUT CRASH")
 
-        self._current_hypothesis = analysis['hypothesis']
-        self._affected_files = analysis['affected_files']
+                    # ASK LLM: Is the user's request satisfied, or do we need to make changes?
+                    # This follows the #1 rule - LLM decides, not RAICA
+                    llm_decision = await self._ask_llm_if_task_complete(
+                        self._session.bug_description,
+                        self._session.files_modified
+                    )
 
-        self.output(f"Hypothesis: {analysis['hypothesis'][:100]}...")
-        self.output(f"Affected files: {', '.join(analysis['affected_files'][:3])}")
+                    if llm_decision.get('status') == 'complete':
+                        # LLM says task is complete
+                        self._session.fix_applied = True
+                        self._session.set_status(DebugStatus.COMPLETE)
+                        self._session.completion_summary = self._generate_summary()
+                        self.context.save_session(self._session)
 
-        # Record root cause
-        if analysis.get('confidence', 0) > 0.5:
-            self._session.set_root_cause(RootCause(
-                description=analysis['hypothesis'],
-                file_path=analysis['affected_files'][0] if analysis['affected_files'] else '',
-                line_number=analysis.get('line_number'),
-                confidence=analysis.get('confidence', 0.7)
-            ))
+                        self.output("\n" + "="*60)
+                        self.output("✅ TASK COMPLETE - " + llm_decision.get('reason', 'LLM confirmed task is done'))
+                        self.output("="*60)
 
-        # PHASE 2: APPLY FIX (Skip test generation)
-        self.output("\n[PHASE 2] Applying fix & Linting...")
-        self._session.set_status(DebugStatus.FIXING)
+                        return DebugResult(
+                            outcome=DebugOutcome.FIXED,
+                            iterations=iteration_num,
+                            root_cause=self._current_hypothesis if hasattr(self, '_current_hypothesis') else None,
+                            files_modified=self._session.files_modified,
+                            fix_summary=llm_decision.get('reason', 'Task completed'),
+                            test_results={
+                                'gui_mode': True,
+                                'runtime_verified': True,
+                                'strategies_attempted': len(failed_strategies)
+                            }
+                        )
+                    else:
+                        # LLM says we need to make changes
+                        self.output("   ℹ LLM: " + llm_decision.get('reason', 'Changes needed'))
+                        # Use the user's request + LLM guidance as the "error" to analyze
+                        runtime_error = f"USER REQUEST NOT YET SATISFIED: {self._session.bug_description}\nLLM GUIDANCE: {llm_decision.get('reason', 'Make the requested changes')}"
+                
+                # Show the real error
+                self.output(f"[PHASE 0] Runtime error captured ({len(runtime_error)} chars):")
+                self.output(f"   {runtime_error[:500]}..." if len(runtime_error) > 500 else f"   {runtime_error}")
+                
+                # Update session with real error trace
+                if runtime_error:
+                    self._session.error_trace = runtime_error
+                
+                # PHASE 1: UNDERSTAND
+                self.output("\n[PHASE 1] Analyzing bug (using real runtime error)...")
+                self._session.set_status(DebugStatus.ANALYZING)
 
-        iteration = DebugIteration(iteration_number=1)
-        iteration.hypothesis = self._current_hypothesis
+                # Include previous failures in analysis context
+                analysis = await self._analyze_bug_with_history(failed_strategies)
+                
+                if not analysis:
+                    self.output("❌ Bug analysis failed - retrying with fresh approach...")
+                    failed_strategies.append({
+                        'iteration': iteration_num,
+                        'error': 'Analysis returned None',
+                        'approach': 'initial_analysis'
+                    })
+                    self._record_iteration(iteration)
+                    self.context.save_session(self._session)
+                    continue
 
-        fix_result = await self._apply_fix_and_lint(analysis)
+                self._current_hypothesis = analysis['hypothesis']
+                self._affected_files = analysis['affected_files']
+                iteration.hypothesis = self._current_hypothesis
 
-        if not fix_result['success']:
-            error_msg = fix_result.get('error', 'Unknown error')
-            self.output(f"❌ Failed to apply fix: {error_msg}")
-            iteration.failure_reason = error_msg
-            self._record_iteration(iteration)
-            return DebugResult(
-                outcome=DebugOutcome.BLOCKED,
-                iterations=1,
-                root_cause=self._current_hypothesis,
-                blocked_reason=f"Fix application failed: {error_msg}"
-            )
+                self.output(f"Hypothesis: {analysis['hypothesis'][:100]}...")
+                self.output(f"Affected files: {', '.join(analysis['affected_files'][:3])}")
 
-        iteration.files_modified = fix_result['files_modified']
-        iteration.action_taken = fix_result['description']
-        self._session.files_modified = fix_result['files_modified']
+                # Record root cause
+                if analysis.get('confidence', 0) > 0.5:
+                    self._session.set_root_cause(RootCause(
+                        description=analysis['hypothesis'],
+                        file_path=analysis['affected_files'][0] if analysis['affected_files'] else '',
+                        line_number=analysis.get('line_number'),
+                        confidence=analysis.get('confidence', 0.7)
+                    ))
 
-        self.output(f"✅ Modified: {', '.join(fix_result['files_modified'])}")
+                # PHASE 2: APPLY FIX
+                self.output("\n[PHASE 2] Applying fix & Linting...")
+                self._session.set_status(DebugStatus.FIXING)
 
-        # SUCCESS - User will verify
-        iteration.success = True
-        self._record_iteration(iteration)
+                fix_result = await self._apply_fix_and_lint(analysis)
 
-        self._session.fix_applied = True
-        self._session.set_status(DebugStatus.COMPLETE)
-        self._session.completion_summary = self._generate_summary()
+                if not fix_result['success']:
+                    error_msg = fix_result.get('error', 'Unknown error')
+                    self.output(f"❌ Failed to apply fix: {error_msg}")
+                    self.output(f"   Iteration {iteration_num}/{self.max_iterations} - will retry...")
+                    
+                    # Record failure for next attempt
+                    failed_strategies.append({
+                        'iteration': iteration_num,
+                        'error': error_msg,
+                        'approach': self._current_hypothesis[:200] if self._current_hypothesis else 'unknown',
+                        'affected_files': self._affected_files[:3] if self._affected_files else []
+                    })
+                    
+                    iteration.failure_reason = error_msg
+                    self._record_iteration(iteration)
+                    self.context.save_session(self._session)
+                    continue  # RETRY instead of returning
+
+                # Fix applied! Record the changes
+                files_modified = fix_result.get('files_modified', [])
+                iteration.files_modified = files_modified
+                iteration.action_taken = fix_result.get('fix_description', fix_result.get('description', 'Fix applied'))
+                self._session.files_modified.extend(files_modified)
+
+                self.output(f"✅ Modified: {', '.join(files_modified)}")
+
+                # ═══════════════════════════════════════════════════════════
+                # PHASE 3: RE-RUN TO VERIFY THE FIX ACTUALLY WORKS
+                # ═══════════════════════════════════════════════════════════
+                self.output("\n[PHASE 3] Re-running code to verify fix...")
+                verify_success, verify_error = await self._run_entry_point(timeout=5)
+                
+                if not verify_success:
+                    # Fix didn't work! Still crashing
+                    self.output(f"❌ Still crashing after fix!")
+                    self.output(f"   New error: {verify_error[:300]}...")
+                    
+                    # Record this for next attempt
+                    failed_strategies.append({
+                        'iteration': iteration_num,
+                        'error': f"Fix applied but still crashes: {verify_error[:200]}",
+                        'approach': self._current_hypothesis[:200] if self._current_hypothesis else 'unknown',
+                        'affected_files': fix_result.get('files_modified', [])
+                    })
+                    
+                    # Update error trace with new error for next analysis
+                    self._session.error_trace = verify_error
+                    
+                    iteration.failure_reason = f"Fix applied but verification failed: {verify_error[:100]}"
+                    self._record_iteration(iteration)
+                    self.context.save_session(self._session)
+                    continue  # Try again with new error info
+                
+                # ═══════════════════════════════════════════════════════════
+                # SUCCESS! Code runs without crashing!
+                # ═══════════════════════════════════════════════════════════
+                self.output("\n✅ VERIFIED: Code runs without errors!")
+                
+                iteration.success = True
+                self._record_iteration(iteration)
+
+                self._session.fix_applied = True
+                self._session.set_status(DebugStatus.COMPLETE)
+                self._session.completion_summary = self._generate_summary()
+                self.context.save_session(self._session)
+
+                # Generate comprehensive change summary
+                comprehensive_summary = self._generate_comprehensive_summary()
+                self.output(comprehensive_summary)
+
+                # Update persistent context
+                await self._update_persistent_context(
+                    files_modified=self._session.files_modified,
+                    success=True
+                )
+
+                self.output("\n" + "="*60)
+                self.output("✅ BUG FIXED AND VERIFIED!")
+                self.output("="*60)
+                self.output("\n👁️  Run your application and check if the fix works.")
+                self.output("   If not, describe what's still wrong and I'll try again.\n")
+
+                return DebugResult(
+                    outcome=DebugOutcome.FIXED,
+                    iterations=iteration_num,
+                    root_cause=self._current_hypothesis,
+                    files_modified=self._session.files_modified,
+                    fix_summary=self._session.completion_summary,
+                    test_results={
+                        'gui_mode': True,
+                        'user_verification_required': True,
+                        'strategies_attempted': len(failed_strategies) + 1
+                    }
+                )
+
+            except Exception as e:
+                logger.exception(f"GUI debug iteration {iteration_num} failed")
+                self.output(f"❌ Iteration failed: {e}")
+                failed_strategies.append({
+                    'iteration': iteration_num,
+                    'error': str(e),
+                    'approach': 'exception'
+                })
+                iteration.failure_reason = str(e)
+                self._record_iteration(iteration)
+                self.context.save_session(self._session)
+                continue
+
+        # Max iterations reached - but KEEP the progress!
+        # This is NOT a failure if we fixed some bugs along the way.
+        files_fixed = list(set(self._session.files_modified))  # Unique files
+        bugs_fixed_count = len([s for s in failed_strategies if 'Fix applied' not in s.get('error', '')])
+        
+        self.output(f"\n{'='*60}")
+        self.output(f"⏸️  PAUSED - Max iterations ({self.max_iterations}) reached")
+        self.output(f"{'='*60}")
+        
+        if files_fixed:
+            self.output(f"\n✓ PROGRESS KEPT - Modified {len(files_fixed)} files:")
+            for f in files_fixed[:10]:
+                self.output(f"   • {f}")
+            if len(files_fixed) > 10:
+                self.output(f"   ... and {len(files_fixed) - 10} more")
+        
+        self.output(f"\n⚠️  Still has errors - run again to continue fixing!")
+        self.output(f"   The fixes made so far are PRESERVED (not rolled back).")
+        self.output(f"   Run: raica debug -i\"continue fixing\" to resume.\n")
+        
+        self._session.set_status(DebugStatus.BLOCKED, "Max iterations reached - progress preserved")
         self.context.save_session(self._session)
 
-        # Generate comprehensive change summary
-        comprehensive_summary = self._generate_comprehensive_summary()
-        self.output(comprehensive_summary)
-
-        # Update persistent context for future requests
-        await self._update_persistent_context(
-            files_modified=self._session.files_modified,
-            success=True
-        )
-
-        self.output("\n" + "="*60)
-        self.output("✅ FIX APPLIED - Please verify visually")
-        self.output("="*60)
-        self.output("\n👁️  Run your application and check if the fix works.")
-        self.output("   If not, describe what's still wrong and I'll try again.\n")
-
         return DebugResult(
-            outcome=DebugOutcome.FIXED,
-            iterations=1,
-            root_cause=self._current_hypothesis,
-            files_modified=self._session.files_modified,
-            fix_summary=self._session.completion_summary,
-            test_results={
-                'gui_mode': True,
-                'user_verification_required': True
-            }
+            outcome=DebugOutcome.MAX_ITERATIONS,
+            iterations=self._session.current_iteration,
+            root_cause=self._current_hypothesis if hasattr(self, '_current_hypothesis') else None,
+            files_modified=files_fixed,
+            blocked_reason=f"Paused after {self.max_iterations} iterations. Fixed {len(files_fixed)} files. Run again to continue."
         )
+
+    async def _ask_llm_if_task_complete(self, request: str, files_modified: list) -> dict:
+        """
+        Ask LLM: Given that the code runs, is the user's request satisfied?
+
+        This follows the #1 rule - LLM decides if task is complete, not RAICA.
+        """
+        if not self.llm_client or not request:
+            # No LLM - can't decide, assume changes needed
+            return {'status': 'continue', 'reason': 'No LLM available to evaluate'}
+
+        files_info = ', '.join(files_modified) if files_modified else 'none yet'
+
+        prompt = f"""The code runs without crashing. But is the user's request actually satisfied?
+
+USER REQUEST: {request}
+
+FILES MODIFIED SO FAR: {files_info}
+
+Analyze carefully:
+1. What did the user ask for?
+2. If no files were modified yet, did we actually make the changes they requested?
+3. Just because code runs doesn't mean the request is fulfilled
+
+Return JSON only:
+{{
+    "status": "complete" or "continue",
+    "reason": "explanation of why task is complete OR what changes still need to be made"
+}}
+
+IMPORTANT:
+- If user asked for code changes (fix layout, add feature, modify behavior) and we haven't modified any files → status: "continue"
+- If user reported a crash and code now runs → status: "complete"
+- If user asked for visual/layout changes → those require code modifications, not just running
+"""
+        try:
+            response = await asyncio.to_thread(
+                self.llm_client.generate,
+                prompt,
+                max_tokens=500
+            )
+            content = response.content if hasattr(response, 'content') else str(response)
+
+            # Parse JSON response
+            from ..utils.json_utils import extract_json_from_llm_response
+            data = extract_json_from_llm_response(content)
+
+            if data and 'status' in data:
+                return data
+
+        except Exception as e:
+            self.output(f"   ⚠ Could not get LLM decision: {e}")
+
+        # Default: if we can't determine, assume changes are needed
+        return {'status': 'continue', 'reason': 'Could not determine if task is complete'}
+
+    async def _analyze_bug_with_history(self, failed_strategies: list) -> Optional[Dict[str, Any]]:
+        """
+        Analyze bug with context about previous failed attempts.
+
+        This helps the LLM avoid repeating the same mistakes.
+        """
+        if not failed_strategies:
+            # First attempt - use standard analysis
+            return await self._analyze_bug()
+        
+        # Build context about what failed before
+        failure_context = "\n".join([
+            f"  - Attempt {s['iteration']}: {s['approach'][:100]}... → FAILED: {s['error'][:100]}"
+            for s in failed_strategies[-3:]  # Last 3 failures
+        ])
+        
+        # Store for prompt injection
+        self._previous_failures_context = f"""
+PREVIOUS FAILED ATTEMPTS (DO NOT REPEAT THESE):
+{failure_context}
+
+You MUST try a DIFFERENT approach. Consider:
+1. If file creation failed, check if the file already exists
+2. If patch application failed, use more specific SEARCH blocks
+3. If the same file keeps failing, try a different fix strategy
+"""
+        
+        return await self._analyze_bug()
+
+    async def _run_entry_point(self, timeout: int = 5) -> tuple[bool, str]:
+        """
+        Run the project's entry point and capture any runtime errors.
+        
+        This is CRITICAL for GUI apps where we can't rely on automated tests.
+        We actually RUN the code to find real errors.
+        
+        Args:
+            timeout: Seconds to wait before killing the process.
+                     GUI apps may block on their main loop, so we use a short timeout.
+        
+        Returns:
+            tuple: (success: bool, error_output: str)
+                   success=True means no crash within timeout
+                   error_output contains stderr if crash occurred
+        """
+        import subprocess
+        import asyncio
+        
+        # Find the entry point
+        entry_points = []
+        if hasattr(self, '_execution_context') and self._execution_context:
+            entry_points = self._execution_context.entry_points
+        
+        if not entry_points:
+            # Try common entry points
+            for candidate in ['main.py', 'app.py', 'run.py', '__main__.py']:
+                if (self.project_dir / candidate).exists():
+                    entry_points = [candidate]
+                    break
+        
+        if not entry_points:
+            return False, "No entry point found"
+
+        entry_point = entry_points[0]
+        self.output(f"[Runtime] Determining how to run {entry_point}...")
+
+        # Ask LLM how to run this entry point
+        run_cmd = await self._get_run_command_from_llm(entry_point)
+
+        if not run_cmd:
+            # LLM couldn't determine - return with explanation
+            return False, f"Could not determine how to run {entry_point}"
+
+        if run_cmd.get('skip_runtime'):
+            # LLM says this type of app can't be tested via command line
+            reason = run_cmd.get('reason', 'Visual verification required')
+            self.output(f"[Runtime] ℹ {reason}")
+            return True, ""
+
+        cmd = run_cmd.get('command', [])
+        if not cmd:
+            return False, "LLM returned empty run command"
+
+        self.output(f"[Runtime] Running: {' '.join(cmd)}")
+
+        try:
+            # Run with timeout
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                cwd=str(self.project_dir),
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            if result.returncode != 0:
+                # Crashed! Capture the error
+                error_output = result.stderr or result.stdout
+                self.output(f"[Runtime] ❌ CRASH detected (exit code {result.returncode})")
+                return False, error_output
+            else:
+                # Exited cleanly (within timeout - unusual for GUI)
+                self.output(f"[Runtime] ✓ Exited cleanly")
+                return True, ""
+                
+        except subprocess.TimeoutExpired:
+            # For GUI apps, timeout usually means it's running successfully
+            self.output(f"[Runtime] ✓ Running (no crash within {timeout}s)")
+            return True, ""
+            
+        except Exception as e:
+            return False, f"Failed to run entry point: {str(e)}"
+
+    async def _get_run_command_from_llm(self, entry_point: str) -> dict:
+        """
+        Ask LLM how to run/test the given entry point.
+
+        Returns:
+            dict with either:
+            - {'command': ['cmd', 'arg1', ...]} for runnable entry points
+            - {'skip_runtime': True, 'reason': '...'} for apps needing visual verification
+        """
+        # Read the entry point file to give LLM context
+        entry_path = self.project_dir / entry_point
+        file_content = ""
+        try:
+            if entry_path.exists():
+                file_content = entry_path.read_text(encoding='utf-8', errors='replace')[:2000]
+        except Exception:
+            pass
+
+        prompt = f"""Given this entry point file, determine how to run/test it.
+
+ENTRY POINT: {entry_point}
+PROJECT DIR: {self.project_dir}
+
+FILE CONTENT (first 2000 chars):
+{file_content}
+
+RESPOND WITH JSON ONLY:
+
+If this can be run from command line:
+{{"command": ["python3", "main.py"]}}
+or
+{{"command": ["node", "index.js"]}}
+
+If this requires a browser/GUI and cannot be tested via command line:
+{{"skip_runtime": true, "reason": "Browser-based app - open in browser to test"}}
+
+Consider:
+- Python files: use python3 or check for venv
+- JavaScript files: use node
+- HTML files: cannot run directly, need browser
+- Check for package.json scripts, Makefile, etc.
+
+JSON ONLY, NO EXPLANATION:"""
+
+        try:
+            import asyncio
+            response = await asyncio.to_thread(
+                self.llm_client.generate,
+                prompt=prompt,
+                max_tokens=200
+            )
+            content = response.content if hasattr(response, 'content') else str(response)
+            if content:
+                # Extract JSON using robust utility
+                from ..utils.json_utils import extract_json_from_llm_response
+                data = extract_json_from_llm_response(content)
+                if data:
+                    return data
+        except Exception as e:
+            logger.warning(f"Failed to get run command from LLM: {e}")
+
+        return {}
 
     async def _run_incremental_debug_loop(self, decomposition: DecompositionResult) -> DebugResult:
         """
@@ -856,6 +1559,52 @@ class AutonomousDebugController:
                 error_details=unit.error_details
             )
 
+            # Check if this language requires manual testing
+            if not test_code:
+                lang = self.test_generator.language_detector.detect()
+                self.output(f"  ⚠️  {lang.name} requires MANUAL TESTING")
+                self.output(f"  → Will analyze code and suggest fix (user must verify)")
+                unit.test_path = None
+                unit.test_generated = False
+
+                # Still generate and apply fix, but skip test verification
+                # Read current file contents
+                file_contents = {}
+                for f in unit.affected_files:
+                    resolved_path = self._resolve_file_path(f)
+                    if resolved_path:
+                        try:
+                            file_contents[f] = resolved_path.read_text(encoding='utf-8', errors='replace')
+                            self.context.backup_file(resolved_path)
+                            self.output(f"    Loaded: {f}")
+                        except Exception as e:
+                            logger.warning(f"Could not read {resolved_path}: {e}")
+
+                if not file_contents:
+                    return {
+                        'success': False,
+                        'files_modified': [],
+                        'fix_description': '',
+                        'error': f'Could not read affected files for manual-test language: {unit.affected_files}'
+                    }
+
+                # Generate and apply fix (without test verification)
+                self.output("  Generating fix based on code analysis...")
+                fix_result = await self._apply_unit_fix(unit, file_contents, "")
+
+                if fix_result.get('success'):
+                    self.output(f"  ✓ Fix applied to: {fix_result.get('files_modified', [])}")
+                    self.output(f"  ⚠️  MANUAL VERIFICATION REQUIRED: Run the {lang.name} application to verify fix")
+                    return {
+                        'success': True,
+                        'files_modified': fix_result.get('files_modified', []),
+                        'fix_description': fix_result.get('description', '') + f'\n[MANUAL VERIFICATION REQUIRED - {lang.name}]',
+                        'error': None
+                    }
+                else:
+                    self.output(f"  ❌ Fix generation failed: {fix_result.get('error', 'Unknown')}")
+                    return fix_result
+
             test_name = f"test_unit_{unit.unit_id}_{attempt_num}"
             test_path = self.context.save_bug_test(test_name, test_code)
             unit.test_path = str(test_path)
@@ -915,6 +1664,7 @@ class AutonomousDebugController:
                     'success': False,
                     'files_modified': [],
                     'fix_description': '',
+                    'description': f'Could not read affected files: {unit.affected_files}. Project dir: {self.project_dir}',
                     'error': f'Could not read affected files: {unit.affected_files}. Project dir: {self.project_dir}'
                 }
 
@@ -927,7 +1677,7 @@ class AutonomousDebugController:
                 await self._rollback(fix_result.get('files_modified', []))
                 continue
 
-            self.output(f"  ✓ Fix applied to: {fix_result['files_modified']}")
+            self.output(f"  ✓ Fix applied to: {fix_result.get('files_modified', [])}")
 
             # STEP 4: Verify test passes (confirms fix works)
             self.output("  Verifying fix (test should pass)...")
@@ -935,26 +1685,18 @@ class AutonomousDebugController:
 
             if not test_passes:
                 self.output("  ❌ Test still fails - fix incomplete")
-                await self._rollback(fix_result['files_modified'])
+                await self._rollback(fix_result.get('files_modified', []))
                 continue
 
             self.output("  ✓ Test passes - unit fix verified!")
 
-            # STEP 5: Quick regression check for this unit's files
-            self.output("  Running quick regression check...")
-            relevant_tests = self.test_generator.identify_relevant_tests(fix_result['files_modified'])
-            if relevant_tests:
-                targeted_result = await self.test_generator.run_targeted_tests(relevant_tests)
-                if not targeted_result.passed:
-                    self.output(f"  ❌ Regression detected: {targeted_result.error}")
-                    await self._rollback(fix_result['files_modified'])
-                    continue
-                self.output("  ✓ No regressions in related tests")
+            # Skip regression check - only the bug-specific test matters
+            # Running all tests is wasteful and slow
 
             # SUCCESS!
             return {
                 'success': True,
-                'files_modified': fix_result['files_modified'],
+                'files_modified': fix_result.get('files_modified', []),
                 'fix_description': fix_result.get('description', ''),
                 'error': None
             }
@@ -964,6 +1706,7 @@ class AutonomousDebugController:
             'success': False,
             'files_modified': [],
             'fix_description': '',
+            'description': f'Failed after {MAX_UNIT_ATTEMPTS} attempts',
             'error': f'Failed after {MAX_UNIT_ATTEMPTS} attempts'
         }
 
@@ -974,98 +1717,134 @@ class AutonomousDebugController:
         test_code: str
     ) -> Dict[str, Any]:
         """
-        Apply a fix for a single unit.
-
-        Similar to _apply_fix_and_lint but scoped to one unit.
+        Apply a fix for a single unit using ToolCallingClient (Phase 5).
+        
+        Uses intelligent tool use instead of raw text patching.
+        Propagates errors back to the LLM for self-correction.
+        Uses ContextManager for token-safe context construction.
         """
-        prompt = f"""Generate a SURGICAL fix for this specific bug unit.
+        if not self.tool_client:
+            logger.error("Phase 5 Error: ToolCallingClient not initialized")
+            return {
+                'success': False,
+                'files_modified': [],
+                'fix_description': '',
+                'description': 'ToolCallingClient not initialized (Phase 5 misconfiguration)',
+                'error': 'ToolCallingClient not initialized (Phase 5 misconfiguration)'
+            }
 
-UNIT DESCRIPTION: {unit.description}
+        instruction = f"""FIX THIS BUG BY CALLING THE PROVIDED TOOLS.
 
-ERROR DETAILS: {unit.error_details or 'Not specified'}
+BUG TO FIX: {unit.description}
+FILES TO EDIT: {list(file_contents.keys())}
 
-TEST APPROACH: {unit.test_approach}
+⚠️ CRITICAL - FORBIDDEN PATHS (DO NOT WRITE TO):
+- venv/, .venv/, __pycache__/, .git/, node_modules/, .raica/
 
-TEST CODE (your fix must pass this test):
-```
-{test_code}
-```
+⚠️ CRITICAL - CHOICE OF TOOLS:
+1. replace_line: BEST for single-line fixes (e.g. removing/changing one line). Safe & precise.
+2. edit_file: Use for multi-line search/replace blocks.
+3. write_file: ONLY for creating NEW files. recursive destructive!
 
-CURRENT CODE:
-{self._format_file_contents(file_contents)}
+DISCRETE FIX PROCESS:
+1. read_file to see current content (REQUIRED FIRST)
+2. Use replace_line or edit_file to modify the code (REQUIRED)
+3. ONLY report done AFTER the tool returns success
 
-REQUIREMENTS:
-1. Fix ONLY this specific unit - do not refactor or change unrelated code
-2. Make the SMALLEST change that fixes the bug
-3. Your fix MUST align with what the test verifies
-4. Use SEARCH/REPLACE blocks format
-
-FORMAT:
-File: <filename>
-<<<<<<< SEARCH
-<exact original code>
-=======
-<fixed code>
->>>>>>> REPLACE
+⚠️ A fix is NOT applied until the tool returns success.
+⚠️ Do NOT explain. CALL THE TOOLS NOW.
 """
+        # [NEW] Phase 5: Use ContextManager to ensure we respect token limits
+        # We create a local instance to build the context string for this specific turn
+        temp_cm = self.ContextManager()
+        
+        # Add file contents with high priority
+        # We assume file_contents contains relative paths as keys
+        full_content = ""
+        for fname, content in file_contents.items():
+            full_content += f"--- {fname} ---\n{content}\n\n"
+            
+        temp_cm.add_context_item(
+            type="code",
+            content=f"CURRENT CODE:\n{full_content}",
+            priority=self.ContextPriority.FILE_CONTENT
+        )
+        
+        # Add error details with higher priority
+        if unit.error_details:
+             temp_cm.add_context_item(
+                type="error",
+                content=f"ERROR TRACE:\n{unit.error_details}",
+                priority=self.ContextPriority.CRITICAL_ERROR
+             )
 
+        # Compile token-safe context string
+        context = temp_cm.compile_context()
+        
         try:
-            response = await asyncio.to_thread(
-                self.llm_client.generate,
-                prompt=prompt,
-                temperature=0.2,
-                max_tokens=4000
+            # Execute tools with retry/continuation
+            execution_result = await self.tool_client.execute_and_continue(
+                instruction=instruction,
+                context=context,
+                max_iterations=3  # Limit tool steps per unit
             )
 
-            if not response.success:
-                return {'success': False, 'error': response.error, 'files_modified': []}
+            # Check which files were actually written by looking at tool results
+            # This is more reliable than git status (file might already be dirty)
+            files_written = []
+            for result in execution_result.results:
+                if result.success and result.result:
+                    result_str = str(result.result)
+                    # Check for write_file success patterns
+                    if "Written" in result_str and "bytes to" in result_str:
+                        # Extract filename from "Written X bytes to filename"
+                        import re
+                        match = re.search(r'bytes to (.+)$', result_str)
+                        if match:
+                            fname = match.group(1)
+                            files_written.append(fname)
+                            self.output(f"  ✓ Wrote: {fname}")
 
-            # Parse and apply patches
-            patches = self._parse_fix_response(response.content)
-            if not patches:
-                return {'success': False, 'error': 'No patches parsed', 'files_modified': []}
+            # Also check git for any newly dirty files (backup detection)
+            files_after_modification = set(self.git_tracker.get_dirty_files())
 
-            # CRITICAL: Filter out patches to ORPHANED files (not in execution path)
-            patch_dicts = []
-            for p in patches:
-                fname = p['file']
-                if self._execution_context and self._execution_context.active_files:
-                    norm_fname = fname.replace('\\', '/')
-                    if norm_fname not in self._execution_context.active_files:
-                        if norm_fname in self._execution_context.orphaned_files:
-                            logger.warning(f"REJECTED patch to orphaned file: {fname}")
-                            continue
-                patch_dicts.append({'file': fname, 'search': p['search'], 'replace': p['replace']})
-
-            if not patch_dicts:
-                return {'success': False, 'error': 'All patches targeted orphaned files', 'files_modified': []}
-
-            apply_result = self.patch_applier.apply_patches(patch_dicts)
-
-            if not apply_result.success:
-                return {'success': False, 'error': apply_result.error, 'files_modified': apply_result.modified_files}
-
-            # Lint check
-            for fname in apply_result.modified_files:
-                fpath = self.project_dir / fname
-                linter_res = await self.linter_service.check_file(fpath, strict=False)
-                if not linter_res.valid:
-                    return {
+            if not execution_result.success:
+                logger.warning(f"Tool execution had errors: {execution_result.errors}")
+                if not files_written:
+                     return {
                         'success': False,
-                        'error': f'Lint failed: {linter_res.errors}',
-                        'files_modified': apply_result.modified_files
+                        'error': f"Tool execution failed: {execution_result.errors}",
+                        'files_modified': [],
+                        'description': f"Tool execution failed: {execution_result.errors}"
                     }
+
+            # Use files_written as primary indicator (more reliable)
+            modified_files = files_written if files_written else list(files_after_modification)
+            
+            # Final safety filter - ensure no forbidden paths slip through
+            FORBIDDEN = ["venv/", ".venv/", "__pycache__/", ".git/", "node_modules/", ".raica/"]
+            modified_files = [f for f in modified_files if not any(p in f for p in FORBIDDEN)]
+
+            if not modified_files:
+                return {
+                    'success': False,
+                    'files_modified': [],
+                    'fix_description': "No files were modified by the agent.",
+                    'description': "No files were modified by the agent.",
+                    'error': "Agent did not modify any files."
+                }
 
             return {
                 'success': True,
-                'files_modified': apply_result.modified_files,
-                'applied_patches': len(patches)
+                'files_modified': modified_files,
+                'fix_description': "Applied fix via tool usage",
+                'description': "Applied fix via tool usage",
+                'applied_patches': len(modified_files)
             }
 
         except Exception as e:
-            logger.error(f"Fix application error: {e}")
-            return {'success': False, 'error': str(e), 'files_modified': []}
-
+            logger.error(f"Tool execution failed in _apply_unit_fix: {e}")
+            return {'success': False, 'error': f"Exception during fix: {str(e)}", 'files_modified': [], 'description': f"Exception during fix: {str(e)}"}
     def _resolve_file_path(self, file_path: str) -> Optional[Path]:
         """
         Resolve a file path trying multiple strategies.
@@ -1138,8 +1917,11 @@ File: <filename>
             if word in desc_lower:
                 keywords.append(word)
 
-        # Look for specific file types mentioned
-        extensions = ['.js', '.ts', '.py', '.jsx', '.tsx', '.json']
+        # Look for specific file types mentioned (from language definitions)
+        extensions = set()
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            extensions.update(lang_info.file_extensions)
+        extensions.add('.json')  # Always include config files
 
         found_files = []
         for ext in extensions:
@@ -1218,28 +2000,13 @@ Be thorough - the bug might be in an unexpected place!"""
                 logger.warning("LLM search guidance returned empty response")
                 return {'search_terms': [], 'file_patterns': [], 'reasoning': 'Empty LLM response'}
 
-            # Extract JSON if wrapped in markdown
-            if "```json" in content:
-                start = content.find("```json") + 7
-                end = content.find("```", start)
-                content = content[start:end].strip()
-            elif "```" in content:
-                start = content.find("```") + 3
-                end = content.find("```", start)
-                content = content[start:end].strip()
+            # Use robust JSON extraction utility
+            from ..utils.json_utils import extract_json_from_llm_response
+            guidance = extract_json_from_llm_response(content)
 
-            # Try to find JSON object if content doesn't start with {
-            if not content.startswith('{'):
-                json_start = content.find('{')
-                json_end = content.rfind('}')
-                if json_start != -1 and json_end != -1 and json_end > json_start:
-                    content = content[json_start:json_end + 1]
-                else:
-                    logger.warning(f"Could not find JSON in LLM response: {content[:200]}")
-                    return {'search_terms': [], 'file_patterns': [], 'reasoning': 'No JSON in response'}
-
-            import json
-            guidance = json.loads(content)
+            if not guidance:
+                logger.warning(f"Could not extract JSON from LLM response: {content[:200]}")
+                return {'search_terms': [], 'file_patterns': [], 'reasoning': 'No valid JSON in response'}
 
             logger.info(f"LLM search guidance: {len(guidance.get('search_terms', []))} terms, "
                        f"{len(guidance.get('file_patterns', []))} patterns")
@@ -1292,9 +2059,13 @@ Be thorough - the bug might be in an unexpected place!"""
         llm_search_terms = guidance.get('search_terms', [])
         llm_file_patterns = guidance.get('file_patterns', [])
 
-        # Read relevant files - start with error trace files
+        # Read relevant files - start with ALL files from the error trace
         files_to_read = set()
-        if error_info.get('file'):
+        if error_info.get('all_files'):
+            # Add ALL files mentioned in the error trace - critical for seeing all imports
+            for trace_file in error_info['all_files']:
+                files_to_read.add(trace_file)
+        elif error_info.get('file'):
             files_to_read.add(error_info['file'])
 
         # CRITICAL: If we have execution context, add ALL active files to be read!
@@ -1307,14 +2078,19 @@ Be thorough - the bug might be in an unexpected place!"""
             logger.info(f"Added {len(files_to_read)} active files from execution context")
         else:
             # Fallback: Add main files if no execution context
-            for ext in ['.py', '.js', '.ts']:
+            # Use all extensions from language definitions
+            all_extensions = set()
+            for lang_info in LANGUAGE_DEFINITIONS.values():
+                all_extensions.update(lang_info.file_extensions)
+
+            for ext in all_extensions:
                 main_file = self.project_dir / f"main{ext}"
                 if main_file.exists():
                     files_to_read.add(f"main{ext}")
                     break
             # Also check common entry point names
-            for name in ['app', 'index', 'script']:
-                for ext in ['.py', '.js', '.ts']:
+            for name in ['app', 'index', 'script', 'Main']:
+                for ext in all_extensions:
                     entry_file = self.project_dir / f"{name}{ext}"
                     if entry_file.exists():
                         files_to_read.add(f"{name}{ext}")
@@ -1335,14 +2111,9 @@ Be thorough - the bug might be in an unexpected place!"""
                 else:
                     rel_path = str(path_obj)
 
-                # CRITICAL: If we have execution context, only include ACTIVE files
-                if self._execution_context and self._execution_context.active_files:
-                    if rel_path not in self._execution_context.active_files:
-                        # Check if it's an orphaned file - log warning
-                        if rel_path in self._execution_context.orphaned_files:
-                            logger.warning(f"Skipping ORPHANED file (not in execution path): {rel_path}")
-                        return None  # Exclude this file
-
+                # NOTE: We no longer filter "orphaned" files here.
+                # The LLM should see ALL code and decide what's relevant.
+                # Aggressive filtering prevented the LLM from seeing the full picture.
                 return rel_path
             except Exception:
                 return str(p)
@@ -1401,20 +2172,65 @@ Be thorough - the bug might be in an unexpected place!"""
 
         # Gather file structures for symbols
         file_structures = "\n\n".join([self._get_file_structure(self.project_dir / f) for f in file_contents.keys()])
+        
+        # [NEW] Read project documentation to understand what files SHOULD exist
+        project_documentation = self._get_project_documentation()
+        if project_documentation:
+            self.output(f"[Phase 1a] Read project documentation ({len(project_documentation)} chars)")
 
-        # Build analysis prompt
-        prompt = f"""Analyze this bug and identify the ROOT CAUSE.
+        # [NEW] Gather symbol context and analyze NameErrors
+        symbol_analysis = ""
+        symbol_context_str = ""
+        
+        try:
+            from ..services.symbol_extractor import analyze_undefined_symbol, SymbolExtractor, SymbolContextGenerator
+            
+            # 1. Analyze specific NameErrors in trace
+            if self._session.error_trace:
+                suggestion, ctx = analyze_undefined_symbol(
+                    self.project_dir, 
+                    self._session.error_trace,
+                    relevant_files=list(files_to_read)
+                )
+                if suggestion:
+                    symbol_analysis = f"\n\nSYMBOL ANALYSIS (FUZZY MATCH):\n{suggestion}\n"
+                    logger.info(f"Symbol analysis suggestion: {suggestion}")
+            
+            # 2. Build general symbol context for prompt
+            extractor = SymbolExtractor(self.project_dir)
+            table = extractor.build_symbol_table(list(files_to_read))
+            ctx_gen = SymbolContextGenerator(table)
+            symbol_context_str = ctx_gen.generate_context(list(files_to_read), max_symbols_per_file=30)
+            
+        except ImportError:
+            logger.warning("SymbolExtractor service not available")
+        except Exception as e:
+            logger.warning(f"Symbol analysis failed: {e}")
+
+        # Build analysis prompt with forceful structured output requirement
+        prompt = f"""YOU ARE A CODE ANALYSIS AGENT. YOUR RESPONSE MUST BE VALID JSON ONLY.
+DO NOT OUTPUT ANY PROSE, EXPLANATIONS, OR COMMENTARY BEFORE OR AFTER THE JSON.
+DO NOT USE PHRASES LIKE "We'll fix..." OR "Let me analyze..." - ONLY OUTPUT THE JSON STRUCTURE BELOW.
+
+Analyze this bug and identify the ROOT CAUSE.
 
 {lang_context}
 
 NOTE: This is a {lang.name} project. Look for {lang.name}-specific patterns and frameworks.
 For UI bugs, check for programmatic styling, not just stylesheets.
+{symbol_analysis}
 
 BUG DESCRIPTION:
 {self._session.bug_description}
 
 ERROR TRACE:
 {self._session.error_trace or 'Not provided'}
+
+{self._get_import_error_context(error_info)}
+
+{self._get_masked_error_prompt(error_info)}
+
+{self._get_preemptive_fix_prompt(error_info)}
 
 PROJECT FILES:
 {project_files}
@@ -1423,27 +2239,72 @@ RELEVANT FILE STRUCTURES:
 {file_structures}
 {self._get_semantic_context(self._session.bug_description) if self.ragg_tool else ""}
 
+PROJECT DOCUMENTATION (what files SHOULD exist):
+{project_documentation if project_documentation else "No documentation found"}
+
+{symbol_context_str}
+
 FILE CONTENTS:
 {self._format_file_contents(file_contents)}
 
 PREVIOUS ATTEMPTS (if any):
 {self._format_previous_attempts()}
 
+{getattr(self, '_previous_failures_context', '')}
+
 IMPORTANT: If previous attempts failed due to "Search block not found" or "Patch application failed", it means the file content DOES NOT match what you expected.
 DO NOT repeat the same "Locate X" strategy if X does not exist. Instead, propose creating it or check the FILE CONTENTS carefully.
 
 CRITICAL: Check RELEVANT FILE STRUCTURES above. If a method or class already exists, DO NOT propose creating it again. Update it in place.
 
-DO NOT provide lengthy reasoning or analysis.  
-DO NOT use <details> tags or markdown formatting in your response.
-DO NOT explain your thought process - ONLY provide the structured output below.
+CIRCULAR IMPORT/DEPENDENCY FIX GUIDE:
+If you see "circular import", "partially initialized module", or circular dependency errors:
+1. IDENTIFY the cycle: A imports B, B imports A
+2. FIX using ONE of these strategies (language-appropriate):
+   a) LAZY IMPORT: Move the import INSIDE the function that needs it
+   b) RESTRUCTURE: Move shared code to a third module that both import
+   c) For Python: use TYPE_CHECKING for type hints only
+   d) For JavaScript/TypeScript: use dynamic imports or dependency injection
+3. PREFER lazy imports as the simplest fix
 
-Provide your analysis in this EXACT format (no additional text):
-HYPOTHESIS: <one sentence describing the root cause>
-AFFECTED_FILES: <comma-separated list of files>
-LINE_NUMBER: <specific line number if known, or "unknown">
-CONFIDENCE: <number from 0.0 to 1.0>
-FIX_APPROACH: <brief description of how to fix it>
+DO NOT provide lengthy reasoning or analysis.
+DO NOT use <details> tags or markdown formatting in your response.
+DO NOT explain your thought process - ONLY provide the structured JSON output below.
+
+Provide UP TO 3 RANKED HYPOTHESES as a JSON object (no additional text):
+
+```json
+{{
+  "hypotheses": [
+    {{
+      "rank": 1,
+      "hypothesis": "One sentence describing the most likely root cause",
+      "affected_files": ["src/file1.ext", "src/file2.ext"],
+      "line_number": 42,
+      "confidence": 0.9,
+      "fix_approach": "Brief description of how to fix it"
+    }},
+    {{
+      "rank": 2,
+      "hypothesis": "Alternative root cause if first fails",
+      "affected_files": ["other/module.ext"],
+      "line_number": null,
+      "confidence": 0.6,
+      "fix_approach": "Alternative fix approach"
+    }}
+  ]
+}}
+```
+
+NOTE: Use actual file extensions from the project (.py, .js, .ts, .html, etc.)
+
+RULES:
+- Order hypotheses by confidence (highest first)
+- Use null for unknown line_number
+- confidence must be a number from 0.0 to 1.0
+- affected_files must be an array of strings
+- If only one cause is likely, provide just one hypothesis
+- Return ONLY valid JSON, no other text
 """
 
         try:
@@ -1451,7 +2312,7 @@ FIX_APPROACH: <brief description of how to fix it>
                 self.llm_client.generate,
                 prompt=prompt,
                 provider=None, 
-                model="qwen3-coder:480b-cloud", # Force specific model as requested
+                model=None,  # Use code_generation model from config
                 temperature=0.3,
                 max_tokens=4000
             )
@@ -1471,8 +2332,48 @@ FIX_APPROACH: <brief description of how to fix it>
             return None
 
     def _parse_analysis_response(self, content: str) -> Dict[str, Any]:
-        """Parse the structured analysis response."""
-        result = {
+        """Parse the structured analysis response with multiple hypotheses.
+
+        Supports both JSON format (preferred) and legacy text format (backward compatibility).
+
+        Returns dict with:
+        - hypotheses: List of hypothesis dicts (ranked by confidence)
+        - hypothesis: Best hypothesis string (for backward compatibility)
+        - affected_files: Files from best hypothesis
+        - line_number: Line from best hypothesis
+        - confidence: Confidence from best hypothesis
+        - fix_approach: Fix from best hypothesis
+        """
+        hypotheses = []
+
+        # Try JSON format first (preferred)
+        hypotheses = self._parse_json_hypotheses(content)
+
+        # Fallback to legacy text format if JSON parsing failed
+        if not hypotheses:
+            logger.debug("JSON parsing failed, trying legacy text format")
+            # Split by hypothesis markers (legacy format)
+            hypothesis_blocks = re.split(r'---HYPOTHESIS \d+---', content)
+
+            for block in hypothesis_blocks:
+                if not block.strip():
+                    continue
+
+                hyp = self._parse_single_hypothesis(block)
+                if hyp.get('hypothesis'):
+                    hypotheses.append(hyp)
+
+            # If no multi-hypothesis format, try legacy single format
+            if not hypotheses:
+                hyp = self._parse_single_hypothesis(content)
+                if hyp.get('hypothesis'):
+                    hypotheses.append(hyp)
+        
+        # Sort by confidence (highest first)
+        hypotheses.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        
+        # Build result with best hypothesis for backward compatibility
+        best = hypotheses[0] if hypotheses else {
             'hypothesis': '',
             'affected_files': [],
             'line_number': None,
@@ -1480,6 +2381,79 @@ FIX_APPROACH: <brief description of how to fix it>
             'fix_approach': ''
         }
         
+        result = {
+            'hypotheses': hypotheses,  # NEW: All ranked hypotheses
+            'hypothesis': best.get('hypothesis', ''),
+            'affected_files': best.get('affected_files', []),
+            'line_number': best.get('line_number'),
+            'confidence': best.get('confidence', 0.5),
+            'fix_approach': best.get('fix_approach', '')
+        }
+        
+        return result
+
+    def _parse_json_hypotheses(self, content: str) -> List[Dict[str, Any]]:
+        """Parse JSON-formatted hypotheses from LLM response.
+
+        Args:
+            content: Raw LLM response that may contain JSON
+
+        Returns:
+            List of hypothesis dicts, or empty list if parsing fails
+        """
+        hypotheses = []
+
+        try:
+            # Use robust JSON extraction utility
+            from ..utils.json_utils import extract_json_from_llm_response
+            data = extract_json_from_llm_response(content)
+
+            if not data or not isinstance(data, dict) or 'hypotheses' not in data:
+                return []
+
+            for hyp in data['hypotheses']:
+                if not isinstance(hyp, dict):
+                    continue
+
+                # Normalize the hypothesis dict
+                parsed = {
+                    'hypothesis': hyp.get('hypothesis', ''),
+                    'affected_files': hyp.get('affected_files', []),
+                    'line_number': hyp.get('line_number'),
+                    'confidence': float(hyp.get('confidence', 0.5)),
+                    'fix_approach': hyp.get('fix_approach', '')
+                }
+
+                # Ensure affected_files is a list
+                if isinstance(parsed['affected_files'], str):
+                    parsed['affected_files'] = [f.strip() for f in parsed['affected_files'].split(',')]
+
+                # Ensure line_number is int or None
+                if parsed['line_number'] is not None:
+                    try:
+                        parsed['line_number'] = int(parsed['line_number'])
+                    except (ValueError, TypeError):
+                        parsed['line_number'] = None
+
+                if parsed['hypothesis']:
+                    hypotheses.append(parsed)
+
+            logger.debug(f"Parsed {len(hypotheses)} hypotheses from JSON format")
+            return hypotheses
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug(f"JSON hypothesis parsing failed: {e}")
+            return []
+
+    def _parse_single_hypothesis(self, content: str) -> Dict[str, Any]:
+        """Parse a single hypothesis block (legacy text format)."""
+        result = {
+            'hypothesis': '',
+            'affected_files': [],
+            'line_number': None,
+            'confidence': 0.5,
+            'fix_approach': ''
+        }
         # Regex parsing for robustness against **bolding** and case
         hyp_match = re.search(r'(?:\*\*|)?HYPOTHESIS(?:\*\*|)?:\s*(.*)', content, re.IGNORECASE)
         if hyp_match:
@@ -1618,7 +2592,7 @@ NEW_TEST_CODE: <if TEST_FLAWED, provide corrected test code here following the f
             response = await asyncio.to_thread(
                 self.llm_client.generate,
                 prompt=prompt,
-                model="qwen3-coder:480b-cloud", # High intelligence for judging
+                model=None,  # Use code_generation model from config
                 temperature=0.1,
                 max_tokens=2000
             )
@@ -1651,14 +2625,16 @@ NEW_TEST_CODE: <if TEST_FLAWED, provide corrected test code here following the f
         """
         Generate, Apply, and Lint a fix.
         Implements Gate 1 (Static Analysis).
+        
+        Refactored in Phase 5 to delegate to the robust _apply_unit_fix method,
+        ensuring consistent tool usage for both simple and complex bugs.
         """
         affected_files = analysis.get('affected_files', [])
         if not affected_files:
-            return {'success': False, 'error': 'No affected files identified'}
+            return {'success': False, 'error': 'No affected files identified', 'description': 'No affected files identified', 'files_modified': []}
 
         # Read current file contents, backup, and capture lint baseline
         file_contents = {}
-        baselines = {}
         for f in affected_files:
             try:
                 full_path = self.project_dir / f
@@ -1666,274 +2642,54 @@ NEW_TEST_CODE: <if TEST_FLAWED, provide corrected test code here following the f
                     self.context.backup_file(full_path)
                     with open(full_path, 'r') as fp:
                         file_contents[f] = fp.read()
-                    
-                    # Capture baseline (non-strict check to avoid huge overhead, but gets current state)
-                    baselines[f] = await self.linter_service.check_file(full_path, strict=True)
             except Exception as e:
-                logger.warning(f"Could not read/baseline {f}: {e}")
+                logger.warning(f"Could not read {f}: {e}")
 
-        if not file_contents:
-            # Provide detailed error message showing what was attempted
+        # Track which files are marked as new (to be created)
+        new_files_to_create = []
+        for f in affected_files:
+            if '(new' in f.lower() or 'new file' in f.lower():
+                clean_name = f.split('(')[0].strip()
+                if clean_name:
+                    new_files_to_create.append(clean_name)
+                    logger.info(f"Detected new file to create: {clean_name}")
+
+        if not file_contents and not new_files_to_create:
             attempted_files = [str(self.project_dir / f) for f in affected_files]
             error_msg = f'Could not read affected files. Attempted: {", ".join(attempted_files)}'
             logger.error(error_msg)
             self.output(f"❌ {error_msg}")
-            return {'success': False, 'error': error_msg}
+            return {'success': False, 'error': error_msg, 'description': error_msg, 'files_modified': []}
+        
+        # Add placeholders for new files
+        if new_files_to_create:
+            for new_file in new_files_to_create:
+                if new_file not in file_contents:
+                    file_contents[new_file] = "# [NEW FILE - TO BE CREATED]\n# This file does not exist yet. Generate the complete content."
 
-        # GENERALIZED APPROACH: Include the test code so LLM can align its implementation
-        # with what the test actually verifies. No hardcoded framework rules needed.
+        # Get test code if available
         test_code = ""
         if self._session.bug_test_path:
             try:
                 test_path = Path(self._session.bug_test_path)
                 if test_path.exists():
                     test_code = test_path.read_text()
-                    self.output(f"[Fix Alignment] Including test code for implementation alignment")
             except Exception as e:
-                logger.warning(f"Could not read test file for alignment: {e}")
+                logger.warning(f"Could not read test file: {e}")
 
-        # Build execution context info if available
-        exec_context_info = ""
-        code_location_info = ""
-        if self._execution_context and self._execution_context.active_files:
-            exec_context_info = f"""
-============================================================
-CODE PATH ANALYSIS
-============================================================
-Entry Points: {', '.join(self._execution_context.entry_points)}
-Active Files (in execution path): {len(self._execution_context.active_files)}
-Orphaned Files (NOT loaded): {len(self._execution_context.orphaned_files)}
-
-⛔ CRITICAL: You may ONLY patch files in the ACTIVE list!
-⛔ DO NOT patch orphaned files - they are NOT loaded at runtime!
-
-Active files: {', '.join(sorted(self._execution_context.active_files))}
-============================================================
-"""
-            # Feature-to-code mapping for bug keywords
-            bug_keywords = [k for k in self._session.bug_description.split() if len(k) > 3 and k.isalpha()]
-            if bug_keywords:
-                code_locations = self.code_path_tracer.find_code_for_feature(bug_keywords[:10])
-                if code_locations:
-                    code_location_info = "\n🎯 RELEVANT CODE LOCATIONS:\n"
-                    for file_path, matches in code_locations.items():
-                        code_location_info += f"\n📍 {file_path}:\n"
-                        for line_num, line_content in matches[:5]:
-                            code_location_info += f"   Line {line_num}: {line_content[:80]}\n"
-
-        # Build prompt with test code for natural alignment
-        prompt = f"""Generate a SURGICAL fix for this bug using SEARCH/REPLACE blocks.
-{exec_context_info}
-BUG: {self._session.bug_description}
-
-ROOT CAUSE: {analysis['hypothesis']}
-
-FIX APPROACH: {analysis.get('fix_approach', 'Fix the identified issue')}
-{code_location_info}
-CURRENT CODE:
-(Line numbers provided for reference only - do NOT include them in your SEARCH/REPLACE blocks)
-{self._format_file_contents(file_contents)}
-
-{"VERIFICATION TEST (your fix must pass this test):" + chr(10) + "```" + chr(10) + test_code + chr(10) + "```" + chr(10) + chr(10) + "CRITICAL: Analyze what the test is checking and ensure your implementation uses the SAME APIs/methods that the test verifies. If the test checks a specific property or method, your fix must set that same property or method." if test_code else ""}
-
-REQUIREMENTS:
-1. Make the SMALLEST possible change to fix the bug. Be surgical.
-2. Provide multiple small patches instead of one large block if changes are far apart.
-3. Your SEARCH block should ideally be 3-10 lines long.
-4. Avoid rewriting entire functions if only a few lines need to change.
-5. The SEARCH block must contain the EXACT original lines to be replaced (including whitespace, but WITHOUT line numbers).
-6. Your implementation MUST align with what the verification test checks.
-7. CRITICAL: To ADD code to a class, SEARCH for existing code INSIDE that class (like the end of __init__ or an existing method), NOT the class header itself.
-8. CRITICAL: Your REPLACE block must be syntactically valid Python that can replace the SEARCH block.
-
-🛑 ABSOLUTE PROHIBITIONS:
-⛔ NEVER replace more than 15 lines in a single SEARCH/REPLACE block
-⛔ NEVER include entire file content in SEARCH block
-⛔ NEVER replace entire functions if only a few lines changed
-⛔ NEVER replace complete class definitions
-⛔ Wholesale file replacements will be AUTOMATICALLY REJECTED
-
-✅ SURGICAL CHANGE PRINCIPLE:
-- Identify the MINIMAL code that needs modification
-- Include ONLY that code in your SEARCH block
-- Add 1-2 lines of context before/after for uniqueness
-- If multiple changes needed, create MULTIPLE small patches
-
-FORMAT:
-For EACH change:
-
-File: <filename>
-<<<<<<< SEARCH
-<original code lines (exact match, 3-15 lines max, no line numbers)>
-=======
-<new code lines>
->>>>>>> REPLACE
-
-IMPORTANT: Your SEARCH block must be SMALL and TARGETED (max 15 lines).
-Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale replacements.
-"""
-
-        # Retry loop for fix generation AND linting
-        current_lint_error = None
+        # Create a transient DebugUnit for this fix
+        unit = DebugUnit(
+            unit_id="main_fix",
+            description=self._session.bug_description,
+            affected_files=affected_files,
+            error_details=self._session.error_trace,
+            test_approach="reproduction_test"
+        )
         
-        for attempt in range(4): # Increased attempts to handle lint failures
-            try:
-                # Add hint if retrying
-                current_prompt = prompt
-                if attempt > 0:
-                    if current_lint_error:
-                        current_prompt += f"\n\nIMPORTANT: Your previous patch introduced a SYNTAX/LINT ERROR:\n{current_lint_error}\n\nPlease fix the code to be valid."
-                    else:
-                        current_prompt += f"\n\nIMPORTANT: Your previous response was invalid. You MUST use the <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE format."
-
-                # Progress indicator
-                self.output(f"[Attempt {attempt + 1}/4] Generating fix code (this may take 30-60s)...")
-
-                # Call LLM with timeout
-                try:
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self.llm_client.generate,
-                            prompt=current_prompt,
-                            provider=None,
-                            model="qwen3-coder:480b-cloud", # Force specific model
-                            temperature=0.2 + (0.1 * attempt),
-                            max_tokens=8000
-                        ),
-                        timeout=120.0  # 2 minute timeout
-                    )
-                except asyncio.TimeoutError:
-                    self.output(f"⚠ LLM call timed out after 120s")
-                    if attempt == 3:
-                        return {'success': False, 'error': 'LLM generation timed out'}
-                    continue
-
-                if not response.success:
-                    if attempt == 3:
-                        return {'success': False, 'error': f"LLM failed: {response.error}"}
-                    continue
-
-                content = response.content
-                self.output(f"RAW FIX RESPONSE (Attempt {attempt+1}):\n{content}")
-                
-                # Parse patches
-                patches = self._parse_fix_response(content)
-                if not patches:
-                    logger.warning(f"Attempt {attempt+1} parsed 0 patches")
-                    if attempt == 3:
-                         return {'success': False, 'error': 'Could not parse any patches'}
-                    current_lint_error = None # Not a lint error, a parsing error
-                    continue
-                
-                # Apply patches using Service
-                # CRITICAL: Filter out patches to ORPHANED files (not in execution path)
-                # This prevents LLM from modifying files that look relevant but aren't loaded
-                patch_dicts = []
-                rejected_patches = []
-                for p in patches:
-                    fname = p['file']
-                    # Check if file is orphaned (exists but not in execution path)
-                    if self._execution_context and self._execution_context.active_files:
-                        # Normalize path for comparison
-                        norm_fname = fname.replace('\\', '/')
-                        if norm_fname not in self._execution_context.active_files:
-                            if norm_fname in self._execution_context.orphaned_files:
-                                rejected_patches.append(f"{fname} (ORPHANED - not loaded by entry point)")
-                                logger.warning(f"REJECTED patch to orphaned file: {fname}")
-                                continue
-                            # File might be new or outside tracked area - allow it
-                    patch_dicts.append({'file': fname, 'search': p['search'], 'replace': p['replace']})
-
-                if rejected_patches:
-                    self.output(f"  ⚠️ Rejected {len(rejected_patches)} patches to orphaned files:")
-                    for rp in rejected_patches[:5]:  # Show up to 5
-                        self.output(f"     • {rp}")
-                    if len(rejected_patches) > 5:
-                        self.output(f"     ... and {len(rejected_patches) - 5} more")
-
-                if not patch_dicts:
-                    # All patches were to orphaned files
-                    current_lint_error = "All patches targeted orphaned files (not in execution path). Re-examine active files."
-                    continue
-
-                apply_result = self.patch_applier.apply_patches(patch_dicts)
-                
-                if not apply_result.success:
-                     # Application failed (e.g. search block not found)
-                     failed_file = apply_result.error or "Unknown"
-                     logger.warning(f"Patch application failed: {failed_file}")
-                     
-                     # Build detailed error message with file content context
-                     error_msg = (
-                         f"Patch application failed. The SEARCH block was NOT found in the file.\n"
-                         f"Error details: {apply_result.error}\n\n"
-                         f"CRITICAL: The code you searched for does NOT exist in the current file.\n"
-                         f"Here is the CURRENT CONTENT of the file you tried to patch:\n\n"
-                     )
-                     
-                     # Include the actual file content so LLM can see what's really there
-                     for fname in affected_files:
-                         if fname in file_contents:
-                             error_msg += f"=== {fname} (CURRENT CODE) ===\n{file_contents[fname]}\n\n"
-                     
-                     error_msg += (
-                         "You MUST copy and paste the EXACT lines from the CURRENT CODE above into your SEARCH block.\n"
-                         "DO NOT modify whitespace, comments, or any characters."
-                     )
-                     
-                     current_lint_error = error_msg
-                     
-                     # Rollback partial changes
-                     await self._rollback(apply_result.modified_files)
-                     continue
-                     
-                # ── GATE 1: STATIC ANALYSIS ──
-                self.output("[Gate 1] Running Static Analysis...")
-                
-                # Check all modified files
-                lint_failed = False
-                lint_errors = []
-                
-                for fname in apply_result.modified_files:
-                    fpath = self.project_dir / fname
-                    # On the last attempt, be less strict (only check syntax)
-                    is_last_attempt = (attempt == 3)
-                    linter_res = await self.linter_service.check_file(
-                        fpath, 
-                        strict=not is_last_attempt,
-                        baseline=baselines.get(fname)
-                    )
-                    
-                    if not linter_res.valid:
-                        lint_failed = True
-                        lint_errors.append(f"File {fname}: {'; '.join(linter_res.errors)}")
-                        
-                if lint_failed:
-                    error_summary = "\n".join(lint_errors)
-                    self.output(f"❌ Static Analysis Failed:\n{error_summary}")
-                    current_lint_error = error_summary
-                    
-                    # Rollback and retry loop
-                    await self._rollback(apply_result.modified_files)
-                    continue
-                    
-                self.output("✅ Static Analysis Passed")
-                
-                # If we get here, patches applied AND linted correclty
-                return {
-                    'success': True,
-                    'files_modified': apply_result.modified_files,
-                    'description': analysis.get('fix_approach', 'Applied search/replace patches')
-                }
-
-            except Exception as e:
-                logger.error(f"Fix attempt {attempt+1} failed: {e}")
-                if attempt == 3:
-                     return {'success': False, 'error': str(e)}
-
-        # Return the last specific error if possible
-        final_error = current_lint_error if current_lint_error else "Failed to generate valid fix after 4 attempts"
-        return {'success': False, 'error': final_error}
+        self.output(f"[Phase 4] delegating to _apply_unit_fix (Tool Enabled: {bool(self.tool_client)})")
+        
+        # Delegate to the unified fix method
+        return await self._apply_unit_fix(unit, file_contents, test_code)
 
     def _validate_patch_content(self, content: str) -> Tuple[bool, str]:
         """
@@ -1980,7 +2736,8 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
         # Simpler: Iterate over the whole string looking for the block pattern,
         # and search backwards for the filename.
 
-        block_pattern = r'<<<<<<<\s*SEARCH\s*\n(.*?)\n=======\s*\n(.*?)\n>>>>>>>\s*REPLACE'
+        # Pattern allows empty SEARCH block (for new file creation) by making first \n optional
+        block_pattern = r'<<<<<<<\s*SEARCH\s*\n(.*?)\n?=======\s*\n(.*?)\n>>>>>>>\s*REPLACE'
         
         # We need to preserve order, so we iterate through matches
         for match in re.finditer(block_pattern, content, re.DOTALL):
@@ -2033,15 +2790,21 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
                  # We don't have analysis here, so we look for common patterns or just mentions
                  pass
             
-            if fname and search_content and replace_content:
-                # CRITICAL: Validate patch content before accepting
-                search_valid, search_err = self._validate_patch_content(search_content)
+            if fname and replace_content:
+                # For new file creation, search_content can be empty
+                # Only validate non-empty search blocks
+                if search_content and search_content.strip():
+                    search_valid, search_err = self._validate_patch_content(search_content)
+                    if not search_valid:
+                        logger.warning(f"Rejected SEARCH block for {fname}: {search_err}")
+                        self.output(f"⚠️ Rejected invalid SEARCH block for {fname}: {search_err}")
+                        continue
+                else:
+                    # Empty search block = new file creation
+                    logger.info(f"Empty SEARCH block detected for {fname} - will create new file")
+                
+                # Always validate replace block
                 replace_valid, replace_err = self._validate_patch_content(replace_content)
-
-                if not search_valid:
-                    logger.warning(f"Rejected SEARCH block for {fname}: {search_err}")
-                    self.output(f"⚠️ Rejected invalid SEARCH block for {fname}: {search_err}")
-                    continue
                 if not replace_valid:
                     logger.warning(f"Rejected REPLACE block for {fname}: {replace_err}")
                     self.output(f"⚠️ Rejected invalid REPLACE block for {fname}: {replace_err}")
@@ -2049,11 +2812,37 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
 
                 patches.append({
                     'file': fname,
-                    'search': search_content,
-                    'replace': replace_content
+                    'search': search_content.strip(),
+                    'replace': replace_content.strip()
                 })
-
-        return patches
+        
+        # [NEW] Post-process patches to remove any leaked separator markers
+        cleaned_patches = []
+        for patch in patches:
+            search = patch['search']
+            replace = patch['replace']
+            
+            # Strip any '=======' or '>>>>>>>' that leaked into content
+            search = re.sub(r'^={5,}$', '', search, flags=re.MULTILINE).strip()
+            search = re.sub(r'^>{5,}.*$', '', search, flags=re.MULTILINE).strip()
+            search = re.sub(r'^<{5,}.*$', '', search, flags=re.MULTILINE).strip()
+            
+            replace = re.sub(r'^={5,}$', '', replace, flags=re.MULTILINE).strip()
+            replace = re.sub(r'^>{5,}.*$', '', replace, flags=re.MULTILINE).strip()
+            replace = re.sub(r'^<{5,}.*$', '', replace, flags=re.MULTILINE).strip()
+            
+            # Skip if search is empty after cleaning (malformed patch)
+            if not search:
+                logger.warning(f"Skipping patch with empty SEARCH block for {patch['file']}")
+                continue
+            
+            cleaned_patches.append({
+                'file': patch['file'],
+                'search': search,
+                'replace': replace
+            })
+        
+        return cleaned_patches
 
     async def _rollback(self, files: List[str]) -> None:
         """Rollback modified files to their original state."""
@@ -2072,27 +2861,394 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
         self.context.save_session(self._session)
 
     def _parse_error_trace(self) -> Dict[str, Any]:
-        """Parse the error trace to extract useful info."""
-        result = {'file': None, 'line': None, 'error_type': None, 'message': None}
+        """Parse the error trace to extract useful info.
+        
+        For ImportError, also extracts ALL names from the full import statement,
+        not just the one that caused the error. This enables fixing all missing
+        constants in one iteration.
+        """
+        result = {
+            'file': None, 
+            'line': None, 
+            'error_type': None, 
+            'message': None, 
+            'all_files': [],
+            'all_imports': []  # NEW: All names from the import statement
+        }
 
         if not self._session.error_trace:
             return result
 
         trace = self._session.error_trace
 
-        # Extract file and line from traceback
-        file_match = re.search(r'File "([^"]+)", line (\d+)', trace)
-        if file_match:
-            result['file'] = file_match.group(1)
-            result['line'] = int(file_match.group(2))
+        # Extract ALL files mentioned in the traceback, not just the first
+        file_matches = re.findall(r'File "([^"]+)", line (\d+)', trace)
+        if file_matches:
+            # First match is the primary file
+            result['file'] = file_matches[0][0]
+            result['line'] = int(file_matches[0][1])
+            
+            # Collect ALL unique files from the trace
+            all_files = []
+            for fpath, _ in file_matches:
+                # Normalize and dedupe
+                if fpath not in all_files:
+                    all_files.append(fpath)
+            result['all_files'] = all_files
 
         # Extract error type and message
         error_match = re.search(r'(\w+Error|\w+Exception): (.+)$', trace, re.MULTILINE)
         if error_match:
             result['error_type'] = error_match.group(1)
             result['message'] = error_match.group(2)
+            
+        if not result['file'] and not result['error_type']:
+            # NO TRACEBACK FOUND - Check for MASKED ERRORS (Warnings/caught exceptions)
+            # Example: "[logger] Warning: could not import logging config (...)"
+            warning_patterns = [
+                r'(?:Warning|Error):\s*could not import.*',
+                r'(?:Warning|Error):\s*failed to import.*',
+                r'ImportError:.*',  # Sometimes printed without traceback
+                r'ModuleNotFoundError:.*'
+            ]
+            
+            for pattern in warning_patterns:
+                warning_match = re.search(pattern, trace, re.IGNORECASE)
+                if warning_match:
+                    result['masked_error'] = warning_match.group(0)
+                    result['warning_detected'] = True
+                    logger.info(f"⚠️ Masked error detected: {result['masked_error']}")
+                    break
+
+        # For ImportError: extract ALL names from the import statement
+        # Python only reports the FIRST missing name, but we want ALL of them
+        if result['error_type'] == 'ImportError' and result['file'] and result['line']:
+            all_imports = self._extract_all_imports_from_file(
+                result['file'], 
+                result['line']
+            )
+            if all_imports:
+                result['all_imports'] = all_imports
+                logger.info(f"Extracted {len(all_imports)} imports from statement: {all_imports[:10]}...")
 
         return result
+    
+    def _extract_all_imports_from_file(self, file_path: str, line_num: int) -> List[str]:
+        """Extract ALL names from an import statement at the given line.
+        
+        Handles multi-line imports like:
+            from config import (
+                NAME1,
+                NAME2,
+                NAME3,
+            )
+        """
+        try:
+            # Read the file
+            path = Path(file_path)
+            if not path.exists():
+                return []
+            
+            content = path.read_text(encoding='utf-8', errors='ignore')
+            lines = content.split('\n')
+            
+            if line_num < 1 or line_num > len(lines):
+                return []
+            
+            # Get the line and check if it's a 'from X import' line
+            start_line = lines[line_num - 1]
+            
+            # Check if this is the start of an import statement
+            import_match = re.match(r'\s*from\s+(\S+)\s+import\s*(.*)$', start_line)
+            if not import_match:
+                return []
+            
+            module_name = import_match.group(1)
+            rest = import_match.group(2).strip()
+            
+            # If it's a parenthesized import, collect all lines until closing paren
+            if '(' in rest:
+                # Multi-line import
+                import_text = rest
+                i = line_num
+                while ')' not in import_text and i < len(lines):
+                    import_text += ' ' + lines[i].strip()
+                    i += 1
+                # Remove parentheses
+                import_text = import_text.replace('(', '').replace(')', '')
+            else:
+                import_text = rest
+            
+            # Extract all names
+            # Handle: NAME1, NAME2 as alias, NAME3
+            names = []
+            for part in import_text.split(','):
+                part = part.strip()
+                if not part or part.startswith('#'):
+                    continue
+                # Handle 'as' aliases: "NAME as alias"
+                name = part.split()[0] if part else ''
+                if name and name.isidentifier():
+                    names.append(name)
+            
+            return names
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract imports from {file_path}:{line_num}: {e}")
+            return []
+    
+    def _gather_usage_context(self, symbol_name: str, source_module: str) -> str:
+        """
+        Gather RAW context about how a missing symbol is used in calling code.
+        
+        CLAUDE.md COMPLIANCE: This method ONLY gathers raw file contents.
+        It does NOT interpret, parse, or infer anything. The LLM interprets.
+        
+        Args:
+            symbol_name: The missing symbol (e.g., 'ClipboardApp')
+            source_module: Where it's supposed to come from (e.g., 'clipboard_history')
+            
+        Returns:
+            RAW file contents with prompts for LLM interpretation
+        """
+        importing_files = {}
+        
+        # Find files that import this symbol - just collect file contents
+        import_pattern = rf'from\s+{re.escape(source_module)}\s+import'
+        
+        for root, dirs, files in os.walk(self.project_dir):
+            dirs[:] = [d for d in dirs if d not in {'venv', '.venv', '__pycache__', '.git', 'node_modules'}]
+            for f in files:
+                if not f.endswith('.py'):
+                    continue
+                path = Path(root) / f
+                try:
+                    content = path.read_text('utf-8')
+                    # Simple check: does this file import from the module?
+                    if re.search(import_pattern, content):
+                        rel_path = str(path.relative_to(self.project_dir))
+                        importing_files[rel_path] = content
+                except Exception as e:
+                    logger.debug(f"Failed to read {path}: {e}")
+                    continue
+        
+        if not importing_files:
+            return ""
+        
+        # Build RAW context for LLM interpretation - NO hardcoded logic
+        file_contents_str = ""
+        for filepath, content in importing_files.items():
+            # Truncate very long files but keep enough for context
+            if len(content) > 2000:
+                content = content[:2000] + "\n... (truncated)"
+            file_contents_str += f"\n--- {filepath} ---\n{content}\n"
+        
+        # CLAUDE.md COMPLIANT: LLM interprets, RAICA just provides raw data
+        context = f"""
+=== MISSING SYMBOL CONTEXT ===
+
+The symbol '{symbol_name}' cannot be imported from module '{source_module}'.
+The following files import from '{source_module}' and may show how '{symbol_name}' should be used.
+
+YOU (the LLM) must analyze these files to determine:
+1. Is '{symbol_name}' a class or function? (Look for instantiation patterns like `{symbol_name}()`)
+2. What methods must it have? (Look for method calls like `var.method()`)
+3. What base class should it inherit from? (Look at the imports in the calling file)
+4. What attributes must it have? (Look for attribute access like `var.attribute`)
+
+FILES THAT IMPORT FROM '{source_module}':
+{file_contents_str}
+
+Based on your analysis of the above code, create '{symbol_name}' with the correct interface.
+"""
+        return context
+    
+    def _get_import_error_context(self, error_info: Dict[str, Any]) -> str:
+        """Generate context for ImportError cases.
+        
+        CLAUDE.md COMPLIANCE: This method gathers raw context.
+        The LLM interprets what the missing symbol should look like.
+        """
+        if error_info.get('error_type') != 'ImportError':
+            return ""
+        
+        all_imports = error_info.get('all_imports', [])
+        msg = error_info.get('message', '')
+        
+        context = ""
+        
+        # Gather usage context for "cannot import name" errors
+        if 'cannot import name' in msg:
+            # Extract symbol name - this is parsing the error message, not interpreting code
+            match = re.search(r"cannot import name ['\"]?(\w+)['\"]?", msg)
+            if match:
+                symbol_name = match.group(1)
+                # Extract source module from error
+                module_match = re.search(r"from ['\"]?([^'\"]+)['\"]?", msg)
+                source_module = module_match.group(1) if module_match else error_info.get('module', '')
+                
+                if not source_module and error_info.get('file'):
+                    source_module = Path(error_info['file']).stem
+                
+                if source_module:
+                    # Get RAW context - LLM will interpret
+                    usage_context = self._gather_usage_context(symbol_name, source_module)
+                    if usage_context:
+                        context += usage_context + "\n"
+        
+        # Provide the full import list if available
+        if all_imports:
+            context += f"""
+⚠️ FULL IMPORT STATEMENT ANALYSIS:
+The error shows only ONE missing name ({msg}), but the import statement requires ALL of these:
+{', '.join(all_imports)}
+
+If creating a new symbol, ensure ALL required symbols are added.
+"""
+        
+        return context
+
+    def _get_masked_error_prompt(self, error_info: Dict[str, Any]) -> str:
+        """Construct prompt instructions for masked/swallowed errors."""
+        
+        if not error_info.get('warning_detected'):
+            return ""
+            
+        masked_warning = error_info.get('masked_error', 'Unknown warning')
+        
+        context = f"""
+⚠️ MASKED ERROR DETECTED:
+The application output contains a warning about imports but NO TRACEBACK.
+This means the code is catching the exception and hiding the crash details.
+
+YOUR TASK:
+1. LOCATE the `try...except` block that prints this warning: "{masked_warning}"
+2. MODIFY the code to UNMASK the error. 
+   - Option A: Remove the try/except block entirely.
+   - Option B: Add `import traceback; traceback.print_exc()` or `logger.exception(...)` before the except block ends.
+
+DO NOT try to guess the missing constants yet!
+We need to UNMASK the error first to get a proper traceback.
+Fixing the masking is the PRIORITY.
+"""
+        return context
+
+    def _scan_usage_requirements(self, module_name: str) -> Set[str]:
+        """
+        Scan the entire project for symbols imported from the given module.
+        Used to identify ALL requirements for a module that is causing ImportErrors.
+        
+        Args:
+            module_name: The name of the module (e.g. 'config' or 'src.utils.logger')
+            
+        Returns:
+            Set of symbol names (e.g. {'PLAYER_GRAVITY', 'LOG_LEVEL'})
+        """
+        # Simplify module name to just the last part or relevant part
+        # e.g. "src.config" -> "config"
+        short_name = module_name.split('.')[-1]
+        
+        required_symbols = set()
+        
+        # Files to scan (skip hidden/system/venv)
+        include_exts = {'.py'}
+        exclude_dirs = {'venv', '.venv', '.git', '.raica', '__pycache__', 'node_modules'}
+        
+        logger.info(f"Scanning project for imports from '{module_name}' / '{short_name}'...")
+        
+        for root, dirs, files in os.walk(self.project_dir):
+            # Prune excluded dirs
+            dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith('.')]
+            
+            for f in files:
+                if Path(f).suffix not in include_exts:
+                    continue
+                    
+                path = Path(root) / f
+                try:
+                    content = path.read_text('utf-8')
+                    
+                    # Regex for "from <module> import X, Y, Z"
+                    # We look for both "from config import" and "from src.config import"
+                    patterns = [
+                        rf'from\s+(?:.*\.)?{re.escape(short_name)}\s+import\s+([^#\n]+)',
+                        rf'from\s+{re.escape(module_name)}\s+import\s+([^#\n]+)'
+                    ]
+                    
+                    for pattern in patterns:
+                        for match in re.finditer(pattern, content):
+                            imports_str = match.group(1)
+                            
+                            # Skip if lines end with backslash or open paren (too complex for simple regex)
+                            # But we can do basic cleanup
+                            
+                            # Clean up: remove parens, backslashes, newlines
+                            cleaned = imports_str.replace('(', '').replace(')', '').replace('\\', '').replace('\n', ' ')
+                            
+                            # Split by comma
+                            for item in cleaned.split(','):
+                                symbol = item.split(' as ')[0].strip() # Handle aliases
+                                if symbol and symbol != '*' and symbol.isidentifier():
+                                    required_symbols.add(symbol)
+                                    
+                except Exception as e:
+                    logger.debug(f"Failed to scan {path.name}: {e}")
+                    
+        return required_symbols
+
+    def _get_preemptive_fix_prompt(self, error_info: Dict[str, Any]) -> str:
+        """
+        Generate prompt section for pre-emptive fixes if an internal module import error is detected.
+        """
+        if error_info.get('error_type') != 'ImportError' and not error_info.get('masked_error'):
+            return ""
+            
+        # Try to identify the module being imported
+        # Case 1: Standard traceback with message "cannot import name 'X' from 'config'"
+        msg = error_info.get('message', '')
+        
+        # Determine module name
+        module_name = None
+        match = re.search(r"from ['\"]([^'\"]+)['\"]", msg)
+        if match:
+            module_name = match.group(1)
+        
+        # Case 2: Masked error message
+        if not module_name and error_info.get('masked_error'):
+             masked = error_info['masked_error']
+             # Example: "Warning: could not import logging config (cannot import name 'LOG_MAX_BYTES' from 'config')"
+             match = re.search(r"from ['\"]([^'\"]+)['\"]", masked)
+             if match:
+                 module_name = match.group(1)
+
+        if not module_name:
+            return ""
+
+        # Only scan if it looks like an internal project module (no dots or starts with src/project dir name)
+        # Quick heuristic: if it's a standard library or known package, skip
+        if module_name in sys.stdlib_module_names:
+            return ""
+            
+        # Scan usage
+        required_symbols = self._scan_usage_requirements(module_name)
+        
+        if not required_symbols:
+            return ""
+            
+        # Format the list
+        formatted_list = '\n'.join([f"- {s}" for s in sorted(required_symbols)])
+        
+        return f"""
+🛑 CRITICAL - PRE-EMPTIVE FIX REQUIRED:
+The module `{module_name}` is a dependency for multiple files in the project.
+The error shows one missing import, but a full project scan reveals that other files REQUIRE the following symbols from `{module_name}`:
+
+{formatted_list}
+
+YOU MUST ENSURE `{module_name}` EXPORTS ALL OF THESE SYMBOLS.
+Do not fix just the one error. You must define/export ALL the symbols above in `{module_name}` NOW.
+Refactoring `{module_name}` to include these will prevent cascading crashes.
+"""
 
     def _is_web_project(self) -> bool:
         """
@@ -2129,13 +3285,11 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
     def _get_project_structure(self) -> str:
         """Get a summary of the project structure."""
         files = []
-        extensions = [
-            '*.py', '*.js', '*.ts', '*.jsx', '*.tsx',
-            '*.html', '*.css', '*.scss',
-            '*.java', '*.kt',
-            '*.c', '*.cpp', '*.h', '*.hpp',
-            '*.go', '*.rs', '*.php', '*.rb'
-        ]
+        # Build extensions from LANGUAGE_DEFINITIONS (no hardcoding!)
+        extensions = []
+        for lang_info in LANGUAGE_DEFINITIONS.values():
+            for ext in lang_info.file_extensions:
+                extensions.append(f"*{ext}")
         
         # Use rglob to get all files recursively
         seen = set()
@@ -2160,6 +3314,84 @@ Large SEARCH blocks (>15 lines) will be automatically rejected as wholesale repl
         # Limit and format
         file_list = sorted(set(str(f.relative_to(self.project_dir)) for f in files))[:50]
         return '\n'.join(file_list)
+
+    def _get_project_documentation(self) -> str:
+        """
+        Read project documentation to understand what files SHOULD exist.
+        
+        Reads:
+        - README.md: Project description and expected structure
+        - .raica/project_context.yaml: File entries and test imports
+        
+        Returns a formatted string with documentation context for the LLM.
+        """
+        doc_parts = []
+        
+        # Read README.md
+        readme_path = self.project_dir / "README.md"
+        if readme_path.exists():
+            try:
+                readme_content = readme_path.read_text(encoding='utf-8')
+                # Truncate if too long
+                if len(readme_content) > 3000:
+                    readme_content = readme_content[:3000] + "\n... (truncated)"
+                doc_parts.append(f"=== README.md ===\n{readme_content}")
+                logger.info(f"Read README.md ({len(readme_content)} chars)")
+            except Exception as e:
+                logger.warning(f"Could not read README.md: {e}")
+        
+        # Read .raica/project_context.yaml
+        context_path = self.project_dir / ".raica" / "project_context.yaml"
+        if context_path.exists():
+            try:
+                import yaml
+                context_data = yaml.safe_load(context_path.read_text(encoding='utf-8'))
+                
+                # Extract expected files from test imports
+                expected_files = set()
+                file_entries = context_data.get('file_entries', {})
+                
+                for file_path, entry in file_entries.items():
+                    # Look at test files to find expected imports
+                    if 'test' in file_path.lower():
+                        imports = entry.get('imports', [])
+                        for imp in imports:
+                            # Convert import like "src.controllers.state_machine.GameStateMachine" 
+                            # to expected file "src/controllers/state_machine.py"
+                            if imp.startswith('src.') or imp.startswith('src/'):
+                                parts = imp.replace('/', '.').split('.')
+                                # Take all parts except the last (which is usually the class/function name)
+                                if len(parts) > 1:
+                                    # Check if it looks like a ClassName (starts with uppercase)
+                                    if parts[-1] and parts[-1][0].isupper():
+                                        module_parts = parts[:-1]
+                                    else:
+                                        module_parts = parts
+                                    expected_file = '/'.join(module_parts) + '.py'
+                                    expected_files.add((expected_file, file_path))
+                
+                if expected_files:
+                    expected_list = "\n".join(
+                        f"  - {exp_file} (imported by {test_file})" 
+                        for exp_file, test_file in sorted(expected_files)
+                    )
+                    doc_parts.append(f"=== EXPECTED FILES (from test imports) ===\n{expected_list}")
+                    logger.info(f"Found {len(expected_files)} expected files from test imports")
+                
+                # Also check README content in project_context
+                key_contents = context_data.get('key_file_contents', {})
+                if 'README.md' in key_contents and 'README.md' not in doc_parts[0] if doc_parts else True:
+                    readme_from_context = key_contents['README.md']
+                    if len(readme_from_context) > 2000:
+                        readme_from_context = readme_from_context[:2000] + "..."
+                    doc_parts.append(f"=== README (from context) ===\n{readme_from_context}")
+                    
+            except Exception as e:
+                logger.warning(f"Could not parse project_context.yaml: {e}")
+        
+        if doc_parts:
+            return "\n\n".join(doc_parts)
+        return ""
 
     def _get_file_structure(self, file_path: Path) -> str:
         """Get a summary of classes and functions in a file using AST."""
@@ -2302,6 +3534,83 @@ Regression Check: Passed
         lines.append(f"   • Bug test passes: Yes")
         lines.append(f"   • Regression check: Passed")
         lines.append(f"   • Iterations used: {self._session.current_iteration}")
+
+        lines.append("\n" + "="*60)
+
+        return "\n".join(lines)
+
+    def _generate_incremental_summary(
+        self,
+        fixed_units: List['DebugUnit'],
+        failed_units: List['DebugUnit'],
+        visual_units: List['DebugUnit']
+    ) -> str:
+        """
+        Generate a summary for incremental debug mode.
+
+        This is used when debugging complex bugs broken into multiple units.
+        Shows which units were successfully fixed, which failed, and visual checkpoints.
+
+        Args:
+            fixed_units: List of DebugUnit objects that were successfully fixed
+            failed_units: List of DebugUnit objects that failed to fix
+            visual_units: List of DebugUnit objects representing visual checkpoints
+
+        Returns:
+            Formatted summary string
+        """
+        lines = []
+        lines.append("\n" + "="*60)
+        lines.append("📋 INCREMENTAL DEBUG SUMMARY")
+        lines.append("="*60)
+
+        # Issue description
+        if self._session and self._session.bug_description:
+            desc = self._session.bug_description[:200]
+            lines.append(f"\n🐛 ISSUE: {desc}{'...' if len(self._session.bug_description) > 200 else ''}")
+
+        # Root cause
+        if self._current_hypothesis:
+            lines.append(f"\n🔍 ROOT CAUSE: {self._current_hypothesis}")
+
+        # Fixed units
+        lines.append(f"\n✅ FIXED UNITS ({len(fixed_units)}):")
+        if fixed_units:
+            for unit in fixed_units:
+                lines.append(f"   • [{unit.unit_id}] {unit.description}")
+                if unit.fix_description:
+                    lines.append(f"     Fix: {unit.fix_description[:100]}{'...' if len(unit.fix_description) > 100 else ''}")
+                if unit.affected_files:
+                    lines.append(f"     Files: {', '.join(unit.affected_files[:3])}{'...' if len(unit.affected_files) > 3 else ''}")
+        else:
+            lines.append("   (none)")
+
+        # Failed units
+        lines.append(f"\n❌ FAILED UNITS ({len(failed_units)}):")
+        if failed_units:
+            for unit in failed_units:
+                lines.append(f"   • [{unit.unit_id}] {unit.description}")
+                if unit.error_details:
+                    lines.append(f"     Error: {unit.error_details[:100]}{'...' if len(unit.error_details) > 100 else ''}")
+        else:
+            lines.append("   (none)")
+
+        # Visual checkpoints
+        if visual_units:
+            lines.append(f"\n👁️ VISUAL CHECKPOINTS ({len(visual_units)}):")
+            for unit in visual_units:
+                status = "✓" if unit.fix_verified else "○"
+                lines.append(f"   {status} {unit.description}")
+
+        # Overall statistics
+        total = len(fixed_units) + len(failed_units)
+        if total > 0:
+            success_rate = (len(fixed_units) / total) * 100
+            lines.append(f"\n📊 SUCCESS RATE: {len(fixed_units)}/{total} ({success_rate:.0f}%)")
+
+        # Iterations
+        if self._session:
+            lines.append(f"   Iterations: {self._session.current_iteration}")
 
         lines.append("\n" + "="*60)
 

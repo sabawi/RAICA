@@ -29,20 +29,22 @@ import asyncio
 
 class RAICAResearchAgent(BaseUserTool):
     """
-    RAICA Research Agent - Delegates research tasks to RAICA server API.
+    RAICA Research Agent - Delegates complex tasks to RAICA server API.
 
     Use this tool for:
+    - Multi-step workflows ("research news and email it to X")
     - Web searches ("latest news on...", "current information about...")
     - Research and summarization ("research X and summarize")
-    - News lookups ("latest national news in last 24 hours")
-    - Complex queries requiring web access
+    - Email sending with research ("find Y and email results to Z")
+    - File creation with content ("create PDF with stock analysis")
+    - Any complex task requiring multiple steps or external services
 
-    The RAICA server will use its full suite of tools (web search, news APIs,
-    document search) to answer the query.
+    The RAICA server has access to ALL tools (web search, news APIs, email sender,
+    PDF generator, etc.) and can orchestrate complete multi-step workflows end-to-end.
     """
 
     name = "raica_research_agent"
-    description = "Delegate research, web search, news lookup, and summarization tasks to RAICA server as sub-agent. Use for ANY task requiring web access, current information, or research."
+    description = "Delegate complex multi-step tasks to RAICA server as a sub-agent. RAICA server has access to ALL tools and capabilities including web search, news lookup, email sending (via secure_email_sender), file creation, research, summarization, and more. Can handle complete workflows end-to-end. Use for ANY task that requires multiple steps, web access, external services, or complex orchestration. Simply pass the entire user request - RAICA server will break it down, execute all steps, and complete the full workflow."
     category = "research"
 
     parameters = {
@@ -50,12 +52,12 @@ class RAICAResearchAgent(BaseUserTool):
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The research query or task to delegate to RAICA server. Be specific about what information you need."
+                "description": "The complete task or workflow to delegate to RAICA server. Can be a simple query ('latest news') or a complex multi-step request ('research news and email summary to user@example.com'). Be specific and include ALL requirements."
             },
             "task_type": {
                 "type": "string",
-                "enum": ["web_search", "news_lookup", "research", "summarize", "general"],
-                "description": "Type of research task (helps RAICA server optimize its approach)",
+                "enum": ["web_search", "news_lookup", "research", "summarize", "multi_step_workflow", "general"],
+                "description": "Type of task: 'multi_step_workflow' for complex requests with multiple steps (research + email, etc.), 'web_search'/'news_lookup'/'research'/'summarize' for focused tasks, 'general' for anything else",
                 "default": "general"
             }
         },
@@ -80,6 +82,47 @@ class RAICAResearchAgent(BaseUserTool):
             )
         return self.client
 
+    def _extract_metadata(self, response_text: str) -> dict:
+        """
+        Extract structured metadata from LLM response.
+
+        Looks for ## AGENT_METADATA section with JSON block.
+        Returns parsed metadata dict or empty dict if not found.
+        """
+        import re
+        import json
+
+        try:
+            # Look for metadata block in response
+            # Pattern: ## AGENT_METADATA followed by ```json {...} ```
+            pattern = r'## AGENT_METADATA\s*```json\s*(\{.*?\})\s*```'
+            match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
+
+            if match:
+                json_str = match.group(1)
+                metadata = json.loads(json_str)
+
+                # Validate metadata structure
+                if isinstance(metadata, dict):
+                    print(f"✅ Extracted metadata from server response: {list(metadata.keys())}")
+                    return metadata
+                else:
+                    print(f"⚠️ Metadata found but not a dict: {type(metadata)}")
+                    return {}
+            else:
+                # LLM didn't include metadata - this is OK, fallback to fuzzy matching
+                print(f"ℹ️ No structured metadata in response (will use fuzzy matching for files)")
+                return {}
+
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Failed to parse metadata JSON: {e}")
+            return {}
+        except Exception as e:
+            print(f"⚠️ Error extracting metadata: {e}")
+            return {}
+
+        return {}
+
     async def execute(self, query: str, task_type: str = "general") -> dict:
         """
         Delegate a research task to the RAICA server.
@@ -103,12 +146,41 @@ class RAICAResearchAgent(BaseUserTool):
                 }
 
             # Build system message based on task type
+            # CRITICAL: For agent-to-agent communication, request structured metadata in final response
+            metadata_instruction = '''
+
+CRITICAL - FINAL RESPONSE FORMAT:
+After completing all work, your FINAL response to the calling agent MUST include a structured metadata block at the END:
+
+## AGENT_METADATA
+```json
+{
+  "files_created": ["exact_filename1.html", "exact_filename2.pdf"],
+  "files_modified": ["existing_file.txt"],
+  "email_sent": {
+    "to": ["recipient@example.com"],
+    "subject": "Email subject",
+    "attachments": ["exact_filename1.html"]
+  },
+  "task_completed": true
+}
+```
+
+Rules for metadata:
+- Use EXACT filenames (with extensions) as created/saved
+- Include full relative paths if files are in subdirectories
+- If no files created, use empty array: "files_created": []
+- If no email sent, omit "email_sent" key
+- This metadata is for the calling AGENT to parse, not for human display
+'''
+
             system_messages = {
-                'web_search': 'You are a web research assistant. Search the web for current information and provide comprehensive results.',
-                'news_lookup': 'You are a news researcher. Find and summarize the latest news on the requested topic.',
-                'research': 'You are a research assistant. Conduct thorough research and provide well-sourced findings.',
-                'summarize': 'You are a summarization expert. Provide concise, accurate summaries of complex information.',
-                'general': 'You are a helpful research assistant with access to web search, news APIs, and document search. Answer the query thoroughly.'
+                'web_search': 'You are a web research assistant. Search the web for current information and provide comprehensive results.' + metadata_instruction,
+                'news_lookup': 'You are a news researcher. Find and summarize the latest news on the requested topic.' + metadata_instruction,
+                'research': 'You are a research assistant. Conduct thorough research and provide well-sourced findings.' + metadata_instruction,
+                'summarize': 'You are a summarization expert. Provide concise, accurate summaries of complex information.' + metadata_instruction,
+                'multi_step_workflow': 'You are a multi-step workflow orchestrator with access to ALL tools (web search, news APIs, email sender, PDF generator, etc.). Break down the complete request into steps, execute each step using available tools, and complete the entire workflow end-to-end.' + metadata_instruction,
+                'general': 'You are a helpful assistant with access to ALL tools including web search, news APIs, email sending, file creation, and more. Complete the entire request end-to-end using whatever tools are needed.' + metadata_instruction
             }
 
             system_message = system_messages.get(task_type, system_messages['general'])
@@ -122,12 +194,21 @@ class RAICAResearchAgent(BaseUserTool):
                     'error': 'RAICA server returned no response. Check server logs for details.'
                 }
 
-            return {
+            # Extract structured metadata from response (if LLM included it)
+            metadata = self._extract_metadata(result)
+
+            response = {
                 'success': True,
                 'result': result,
                 'source': 'RAICA-Model1',
                 'base_url': self.base_url
             }
+
+            # Include metadata if found
+            if metadata:
+                response['metadata'] = metadata
+
+            return response
 
         except Exception as e:
             return {

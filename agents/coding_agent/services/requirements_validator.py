@@ -168,6 +168,9 @@ def generate_requirements_from_imports(py_files_content: List[str]) -> str:
         'yaml': 'PyYAML',
         'bs4': 'beautifulsoup4',
         'dotenv': 'python-dotenv',
+        'gi': 'PyGObject',
+        'cairo': 'pycairo',
+        'Xlib': 'python-xlib',
     }
     
     imports = set()

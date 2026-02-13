@@ -11,6 +11,7 @@ import logging
 import json
 import re
 from typing import List, Dict, Any, Optional
+from ..config_accessor import get_success_threshold
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -67,13 +68,12 @@ class RefinementLoop:
     - Tracks completeness percentage
     """
 
-    DEFAULT_THRESHOLD = 90  # Default completeness threshold
 
     def __init__(
         self,
         llm_client: Any,
         max_iterations: int = 3,
-        completeness_threshold: float = 90.0
+        completeness_threshold: Optional[float] = None
     ):
         """
         Initialize the refinement loop.
@@ -85,7 +85,7 @@ class RefinementLoop:
         """
         self.llm_client = llm_client
         self.max_iterations = max_iterations
-        self.threshold = completeness_threshold
+        self.threshold = completeness_threshold if completeness_threshold is not None else get_success_threshold()
 
     async def run(
         self,

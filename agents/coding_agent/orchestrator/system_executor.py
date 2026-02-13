@@ -58,59 +58,42 @@ class SystemExecutor:
     Safely executes system commands with approval workflow.
 
     Features:
-    - Risk classification for commands
+    - LLM-driven risk classification for commands
+    - Security guardrails for critical patterns (always blocked)
     - Approval workflow for risky operations
     - Timeout handling
     - Output capture and parsing
     - Sudo handling (requests user to run)
+
+    ARCHITECTURE: LLM assesses command risk, RAICA executes with guardrails.
+    Only truly dangerous patterns (fork bombs, rm -rf /) are hardcoded blocks.
     """
 
-    # Commands that are always safe (read-only)
-    SAFE_COMMANDS = [
-        'cat', 'ls', 'pwd', 'echo', 'which', 'whereis', 'type',
-        'head', 'tail', 'grep', 'find', 'locate', 'wc',
-        'uname', 'hostname', 'whoami', 'id', 'groups',
-        'date', 'uptime', 'free', 'df', 'du', 'ps', 'top',
-        'env', 'printenv', 'lsb_release', 'lscpu', 'lsmem'
+    # SECURITY GUARDRAILS: These patterns are ALWAYS blocked
+    # This is not "LLM deciding" - this is a safety net that protects the system
+    BLOCKED_PATTERNS = [
+        r'rm\s+-rf?\s+/',        # rm -rf / (catastrophic)
+        r'rm\s+-rf?\s+\*',       # rm -rf * in root
+        r'>\s*/dev/sd',          # Overwrite disk
+        r'dd\s+.*of=/dev/sd',    # dd to disk
+        r'mkfs\.',               # Format filesystem
+        r':()\{\s*:\|:&\s*\};:', # Fork bomb
+        r'chmod\s+-R\s+777\s+/', # Chmod 777 recursively from root
     ]
 
-    # Commands requiring medium caution
-    MEDIUM_RISK_COMMANDS = [
-        'mkdir', 'touch', 'cp', 'mv', 'ln',
-        'pip', 'npm', 'yarn', 'cargo', 'go',
-        'git', 'curl', 'wget', 'tar', 'unzip'
-    ]
-
-    # High risk commands requiring sudo
-    HIGH_RISK_COMMANDS = [
-        'apt', 'apt-get', 'yum', 'dnf', 'pacman', 'brew',
-        'systemctl', 'service', 'init',
-        'chmod', 'chown', 'chgrp',
-        'mount', 'umount',
-        'useradd', 'userdel', 'usermod', 'groupadd',
-        'iptables', 'firewall-cmd', 'ufw'
-    ]
-
-    # Critical/destructive commands - require explicit confirmation
-    CRITICAL_COMMANDS = [
-        'rm', 'rmdir', 'dd', 'mkfs', 'fdisk', 'parted',
-        'shutdown', 'reboot', 'poweroff', 'halt',
-        'kill', 'killall', 'pkill',
-        'truncate', 'shred'
-    ]
-
-    # Patterns that indicate destructive intent
-    DESTRUCTIVE_PATTERNS = [
-        r'rm\s+-rf?\s+/',        # rm -rf /
-        r'rm\s+-rf?\s+\*',       # rm -rf *
-        r'>\s*/dev/',            # Redirect to device
-        r'dd\s+.*of=/dev/',      # dd to device
-        r'mkfs',                 # Format filesystem
-        r':()\{.*\}',            # Fork bomb pattern
+    # Patterns that indicate interactive mode (will freeze agent)
+    INTERACTIVE_PATTERNS = [
+        r'^python[23]?\s*$',     # Python REPL (no script)
+        r'^node\s*$',            # Node REPL
+        r'^irb\s*$',             # Ruby REPL
+        r'^ghci\s*$',            # Haskell REPL
+        r'--interactive',        # Explicit interactive flag
+        r'\s+-i\s*$',            # -i flag at end
     ]
 
     def __init__(
         self,
+        llm_client: Optional[Any] = None,
         approval_callback: Optional[Callable[[str, str, CommandRisk], Awaitable[bool]]] = None,
         default_timeout: int = 120,
         allow_sudo: bool = False
@@ -119,19 +102,108 @@ class SystemExecutor:
         Initialize the executor.
 
         Args:
+            llm_client: LLM client for risk assessment
             approval_callback: Async function to get user approval
                 Signature: async (command, description, risk) -> bool
             default_timeout: Default command timeout in seconds
             allow_sudo: Whether to allow sudo commands (with approval)
         """
+        self.llm_client = llm_client
         self.approval_callback = approval_callback
         self.default_timeout = default_timeout
         self.allow_sudo = allow_sudo
         self._execution_history: List[ExecutionResult] = []
+        self._risk_cache: Dict[str, CommandRisk] = {}  # Cache LLM risk assessments
+
+    def is_interactive_command(self, command: str) -> bool:
+        """
+        Check if a command is interactive (would block waiting for input).
+
+        Args:
+            command: Command string to check
+
+        Returns:
+            True if command is interactive and should not be executed
+        """
+        command = command.strip()
+        if not command:
+            return False
+
+        # Extract the base command
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            parts = command.split()
+
+        if not parts:
+            return False
+
+        base_cmd = parts[0]
+
+        # Handle sudo prefix
+        if base_cmd == 'sudo' and len(parts) > 1:
+            base_cmd = parts[1]
+            parts = parts[1:]  # Remove sudo for further analysis
+
+        # Extract just the command name from full path (e.g., /usr/games/gnuchess -> gnuchess)
+        if '/' in base_cmd:
+            base_cmd = base_cmd.split('/')[-1]
+
+        # Special handling for shells - they're only interactive without args or scripts
+        shell_commands = ['bash', 'sh', 'zsh', 'fish', 'csh', 'tcsh']
+        if base_cmd in shell_commands:
+            # bash/sh with -c flag is NOT interactive (runs command and exits)
+            if '-c' in parts:
+                return False
+            # bash/sh with a script file is NOT interactive
+            if len(parts) > 1 and not parts[1].startswith('-'):
+                # Likely a script file argument
+                return False
+            # bash/sh with no meaningful args IS interactive
+            if len(parts) == 1:
+                return True
+            # If only flags like -l, -i, it's likely interactive
+            return True
+
+        # Special handling for Python/Node - only interactive without script
+        repl_commands = ['python', 'python3', 'ipython', 'node', 'irb', 'ghci']
+        if base_cmd in repl_commands:
+            # python/node with a script or -c is NOT interactive
+            if len(parts) > 1:
+                if '-c' in parts or '-m' in parts:
+                    return False
+                # Has a script argument
+                for arg in parts[1:]:
+                    if not arg.startswith('-'):
+                        return False  # Likely a script file
+            # Just 'python' with no args IS interactive
+            return len(parts) == 1
+
+        # Check against interactive patterns
+        for pattern in self.INTERACTIVE_PATTERNS:
+            if re.search(pattern, command):
+                return True
+
+        # Known interactive programs (editors, file managers, etc.)
+        # These are not "LLM decisions" - they're functional guardrails
+        # to prevent agent from hanging on programs that need TTY input
+        known_interactive = {
+            'vim', 'vi', 'nano', 'emacs', 'pico',
+            'less', 'more', 'most',
+            'top', 'htop',
+            'man', 'info',
+            'ssh', 'telnet',
+        }
+        if base_cmd in known_interactive:
+            return True
+
+        return False
 
     def classify_risk(self, command: str) -> CommandRisk:
         """
-        Classify the risk level of a command.
+        Classify the risk level of a command using LLM assessment.
+
+        ARCHITECTURE: LLM assesses risk, with security guardrails for critical patterns.
 
         Args:
             command: Command string to classify
@@ -141,44 +213,126 @@ class SystemExecutor:
         """
         command = command.strip()
 
-        # Check for destructive patterns first
-        for pattern in self.DESTRUCTIVE_PATTERNS:
+        # Security guardrail: Check for blocked patterns first (always)
+        for pattern in self.BLOCKED_PATTERNS:
             if re.search(pattern, command):
+                logger.warning(f"Command blocked by security guardrail: {command[:50]}")
                 return CommandRisk.CRITICAL
 
         # Extract the base command
-        parts = shlex.split(command) if command else []
+        try:
+            parts = shlex.split(command) if command else []
+        except ValueError:
+            parts = command.split()
+
         if not parts:
             return CommandRisk.LOW
 
         base_cmd = parts[0]
 
-        # Handle sudo prefix
+        # Handle sudo prefix - sudo always elevates risk
         if base_cmd == 'sudo':
             if len(parts) > 1:
-                base_cmd = parts[1]
-                # Sudo automatically makes it at least HIGH risk
-                if base_cmd in self.CRITICAL_COMMANDS:
+                # Assess the actual command after sudo
+                inner_risk = self._assess_command_risk(parts[1:])
+                # Sudo elevates risk by at least one level
+                if inner_risk == CommandRisk.LOW:
+                    return CommandRisk.MEDIUM
+                elif inner_risk == CommandRisk.MEDIUM:
+                    return CommandRisk.HIGH
+                else:
                     return CommandRisk.CRITICAL
-                return CommandRisk.HIGH
 
-        # Check against command lists
-        if base_cmd in self.CRITICAL_COMMANDS:
-            return CommandRisk.CRITICAL
-        if base_cmd in self.HIGH_RISK_COMMANDS:
-            return CommandRisk.HIGH
-        if base_cmd in self.MEDIUM_RISK_COMMANDS:
-            return CommandRisk.MEDIUM
-        if base_cmd in self.SAFE_COMMANDS:
+        return self._assess_command_risk(parts)
+
+    def _assess_command_risk(self, parts: List[str]) -> CommandRisk:
+        """Assess command risk using LLM or heuristics.
+
+        Args:
+            parts: Command parts (excluding sudo if present)
+
+        Returns:
+            CommandRisk level
+        """
+        if not parts:
             return CommandRisk.LOW
 
-        # Check for pipes and redirects
+        command = ' '.join(parts)
+
+        # Check cache first
+        if command in self._risk_cache:
+            return self._risk_cache[command]
+
+        # Quick heuristics for common patterns (not hardcoded command lists)
+        # These are structural checks, not command-specific
         if '|' in command or '>' in command or '>>' in command:
-            # Piped commands need more scrutiny
+            # Piped/redirected commands need more scrutiny
             return CommandRisk.MEDIUM
 
-        # Default to medium for unknown commands
+        # If LLM available, use it for assessment
+        if self.llm_client:
+            risk = self._llm_assess_risk(command)
+            self._risk_cache[command] = risk
+            return risk
+
+        # No LLM available - default to MEDIUM for safety
+        logger.warning(f"No LLM for risk assessment, defaulting to MEDIUM: {command[:50]}")
         return CommandRisk.MEDIUM
+
+    def _llm_assess_risk(self, command: str) -> CommandRisk:
+        """Use LLM to assess command risk.
+
+        Args:
+            command: Command to assess
+
+        Returns:
+            CommandRisk level from LLM assessment
+        """
+        prompt = f"""Assess the risk level of this shell command.
+
+COMMAND: {command}
+
+Risk levels:
+- LOW: Read-only commands, status checks, safe operations (ls, cat, echo, pwd, date, etc.)
+- MEDIUM: Creates/modifies files in current directory, installs user packages, downloads files
+- HIGH: System-wide changes, installs system packages, modifies permissions, starts services
+- CRITICAL: Destructive operations, deletes files/directories, modifies system config, disk operations
+
+Return ONLY a JSON response:
+{{"risk": "LOW"}} or {{"risk": "MEDIUM"}} or {{"risk": "HIGH"}} or {{"risk": "CRITICAL"}}
+"""
+        try:
+            response = self.llm_client.generate(prompt, max_tokens=50)
+            content = response.content if hasattr(response, 'content') else str(response)
+            content_lower = content.strip().lower()
+
+            # Try to parse JSON using robust utility
+            from ..utils.json_utils import extract_json_from_llm_response
+            data = extract_json_from_llm_response(content)
+            if data:
+                risk_str = data.get('risk', 'MEDIUM').upper()
+            else:
+                # Fallback: look for risk level in text
+                if 'critical' in content_lower:
+                    risk_str = 'CRITICAL'
+                elif 'high' in content_lower:
+                    risk_str = 'HIGH'
+                elif 'low' in content_lower:
+                    risk_str = 'LOW'
+                else:
+                    risk_str = 'MEDIUM'
+
+            risk_map = {
+                'LOW': CommandRisk.LOW,
+                'MEDIUM': CommandRisk.MEDIUM,
+                'HIGH': CommandRisk.HIGH,
+                'CRITICAL': CommandRisk.CRITICAL
+            }
+            return risk_map.get(risk_str, CommandRisk.MEDIUM)
+
+        except Exception as e:
+            logger.warning(f"LLM risk assessment failed: {e}")
+            return CommandRisk.MEDIUM  # Safe default
 
     async def execute(
         self,
@@ -207,6 +361,20 @@ class SystemExecutor:
         timeout = timeout or self.default_timeout
 
         logger.info(f"Executing command (risk={risk.name}): {command[:50]}...")
+
+        # Block interactive commands - they would freeze the agent
+        if self.is_interactive_command(command):
+            logger.warning(f"Blocked interactive command: {command[:50]}")
+            return ExecutionResult(
+                command=command,
+                success=False,
+                exit_code=-1,
+                stdout="",
+                stderr="",
+                duration_seconds=0,
+                error=f"BLOCKED: This is an interactive command that requires user input. "
+                      f"Please run it manually in your terminal: {command}"
+            )
 
         # Check if command needs sudo
         needs_sudo = command.strip().startswith('sudo') or risk == CommandRisk.HIGH

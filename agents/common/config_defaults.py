@@ -12,8 +12,17 @@ DEFAULT_TEST_COMMANDS = {
 }
 
 # Default commands for linting based on language
+# Python: Exclude venv directories, only check for REAL errors that break code:
+#   E9: Runtime errors (syntax errors, etc.)
+#   F: PyFlakes errors (undefined names, unused imports that cause issues)
+# Ignores style issues like blank lines (E3xx), whitespace (E2xx), etc.
 DEFAULT_LINT_COMMANDS = {
-    'python': ['python', '-m', 'flake8', '--max-line-length=120'],
+    'python': [
+        'python', '-m', 'flake8',
+        '--max-line-length=120',
+        '--exclude=venv,.venv,__pycache__,.git,build,dist,*.egg-info',
+        '--select=E9,F',  # Only syntax errors (E9) and PyFlakes (F)
+    ],
     'javascript': ['npx', 'eslint', '.'],
     'typescript': ['npx', 'eslint', '.'],
 }

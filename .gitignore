@@ -124,3 +124,24 @@ watched_directories.json
 logs/
 runtime/
 venv_*/
+
+# Generated/test projects
+generated_projects/
+.raica/
+
+# Output logs
+raica_output_*.txt
+*.log
+
+# Debug/temp files
+project_context.json
+raica_state_copy.json
+top100_ai_developers.txt
+path/
+test_google_news_rss.py
+test_news_sources.py
+test_regex.py
+test_sys_dep.py
+debug_pygobject.py
+examine_*
+fix_this_*

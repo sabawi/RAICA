@@ -28,7 +28,7 @@ defaults:
 
   # LLM settings for agent queries
   llm:
-    model: "RAICA-Model1"
+    model: "RAICA-Model1"  # Routes through RAICA server → uses primary LLM from llm_config.yaml
     temperature: 0.7
     max_tokens: 4096
     timeout: 600
@@ -320,3 +320,33 @@ agents:
       auto_save: true
       checkpoint_on_phase_complete: true
       max_checkpoints: 10
+
+    # Autonomous Debug Loop (Test-driven, no-approval debugging)
+    autonomous_debug:
+      enabled: true
+      max_iterations: 10           # Max debug iterations before giving up
+      generate_bug_test: true      # Generate test that reproduces the bug
+      require_test_fails_first: true   # Confirm bug exists before fixing
+      require_test_passes_after: true  # Confirm bug fixed after applying fix
+      check_regressions: true      # Run all project tests after fix
+      auto_rollback: true          # Automatically rollback if fix breaks things
+      context_dir: ".raica"        # Directory in project for debug context
+
+      # When to ask user (only these cases trigger approval)
+      ask_user_when:
+        - cannot_reproduce_bug     # Test doesn't fail = can't confirm bug
+        - cannot_identify_root_cause   # Analysis failed after N iterations
+        - conflicting_hypotheses   # Multiple equally valid root causes
+        - need_expected_behavior   # Unclear what correct behavior should be
+
+      # Auto-approve everything else
+      auto_approve:
+        - file_reads               # Reading project files
+        - code_analysis            # Analyzing code for root cause
+        - test_execution           # Running tests
+        - fix_application          # Applying fixes (protected by baseline)
+        - rollback                 # Rolling back failed fixes
+
+    # Orchestrator Settings
+    orchestrator:
+      use_universal_handler: true  # Use unified request handler (false = legacy routing)

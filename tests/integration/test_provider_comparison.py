@@ -8,7 +8,9 @@ import json
 import logging
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tests.utilities.test_helpers import setup_test_paths
+
+setup_test_paths()
 
 from llm_providers.factory import LLMProviderFactory
 

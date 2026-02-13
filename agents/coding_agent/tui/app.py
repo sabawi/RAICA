@@ -49,7 +49,7 @@ class CodingAgentApp(App):
     }
 
     #output-container {
-        height: 4fr;
+        height: 1fr;
     }
 
     #status-container {
@@ -57,8 +57,9 @@ class CodingAgentApp(App):
     }
 
     #prompt-container {
-        height: 1fr;
-        max-height: 8;
+        height: auto;
+        /* Allow prompt to grow more if needed */
+        max-height: 15;
     }
     """
 
