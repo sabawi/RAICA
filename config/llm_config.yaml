@@ -59,7 +59,7 @@ llm:
   primary:
     type: ollama
     config:
-      model: deepseek-v3.2:cloud # deepseek-v3.1:671b-cloud
+      model: deepseek-v3.1:671b-cloud # deepseek-v3.1:671b-cloud
       timeout: 600
       temperature: 0.7
       max_tokens: 16384
@@ -210,7 +210,7 @@ code_generation:
       model: glm-4.7:cloud
     deepseek-v3:
       provider: ollama
-      model: deepseek-v3.2:cloud
+      model: deepseek-v3.1:671b-cloud
     qwen-coder:
       provider: ollama
       model: qwen3-coder:480b-cloud
@@ -239,7 +239,7 @@ code_generation:
       - provider: gemini
         model: gemini-2.0-flash
       - provider: ollama
-        model: deepseek-v3.2:cloud
+        model: deepseek-v3.1:671b-cloud
       - provider: ollama
         model: qwen3-coder:480b-cloud
 

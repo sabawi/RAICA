@@ -102,7 +102,6 @@ try:
     from gnews import GNews
     import yfinance as yf
     from ddgs import DDGS
-    from archive.experimental.webcrawler import SeleniumCrawler
     from text_chunker import TextChunker
     import PyPDF2
     import magic
@@ -112,6 +111,13 @@ try:
 except ImportError as e:
     print(f"WARNING: Some tools not available: {e}")
     TOOLS_AVAILABLE = False
+
+# SeleniumCrawler is an optional dev-only dependency (archive/ not deployed on server).
+# Isolated so its absence does not block TOOLS_AVAILABLE for the rest of the tool suite.
+try:
+    from archive.experimental.webcrawler import SeleniumCrawler
+except ImportError:
+    SeleniumCrawler = None  # Falls back to BeautifulSoup in fetch_url_content()
 
 # Import our optimization safety system
 try:
