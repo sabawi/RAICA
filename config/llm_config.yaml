@@ -67,7 +67,7 @@ llm:
       stream: true
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
-    type: ollama
+    type: openai
     config:
       model: qwen3.5:397b-cloud
       timeout: 120
@@ -75,7 +75,8 @@ llm:
       temperature: 0.1
       max_tokens: 1024
       stream: false
-      think: false
+      api_key: "ollama"
+      base_url: http://127.0.0.1:11434/v1
   providers:
     ollama:
       base_url: http://127.0.0.1:11434
@@ -145,7 +146,7 @@ security:
     burst_limit: 10
 arbitrator:
   enabled: true
-  type: ollama
+  type: openai
   config:
     model: qwen3.5:397b-cloud
     timeout: 60
@@ -153,7 +154,8 @@ arbitrator:
     temperature: 0.1
     max_tokens: 1024
     stream: false
-    think: false
+    api_key: "ollama"
+    base_url: http://127.0.0.1:11434/v1
 optimization:
   enabled: true
   rollout_percentage: 100.0
