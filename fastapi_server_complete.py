@@ -157,7 +157,7 @@ class ServerConfig:
     OPENAI_HTTP_TIMEOUT = int(os.getenv('OPENAI_HTTP_TIMEOUT', '600'))  # 10 minutes default
     
     # Server configuration
-    HOST = os.getenv('HOST', '0.0.0.0')
+    HOST = os.getenv('HOST', '127.0.0.1')
     PORT = int(os.getenv('PORT', '5000'))
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
