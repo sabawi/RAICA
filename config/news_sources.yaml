@@ -34,6 +34,9 @@ news_sources:
     - https://theintercept.com/feed/
     - https://www.france24.com/en/rss
     - https://www.euronews.com/rss?level=vertical&name=news
+    - https://english.alarabiya.net/
+    - https://www.bbc.com/news/world/middle_east
+    - https://eurasianet.org/
     - https://www.scmp.com/rss/feed/
     - https://www.reuters.com/world/rss  # ADDED: Reuters world wire (breaking news)
     - https://www.ft.com/world?format=rss  # ADDED: Financial Times world coverage (analytical depth)
@@ -261,6 +264,7 @@ category_mapping:
       - earnings report
       - market analysis
       - stock trading
+      - middle east
     business_crossover:
       - corporate earnings
       - business finance
