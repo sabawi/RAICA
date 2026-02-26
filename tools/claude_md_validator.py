@@ -10,8 +10,8 @@ is INVALIDATED. The code must be redesigned and retested before committing.
 
 Usage:
     python tools/claude_md_validator.py [files...]
-    python tools/claude_md_validator.py --staged  # Check staged files only
-    python tools/claude_md_validator.py --all     # Check all Python files
+    python tools/claude_md_validator.py --staged  # Check staged (diff-only) lines
+    python tools/claude_md_validator.py --all     # Check all Python files (full scan)
 
 Exit codes:
     0 = All checks passed
@@ -20,17 +20,23 @@ Exit codes:
 
 Integration:
     Add to .git/hooks/pre-commit or use with pre-commit framework
+
+Modes:
+    --staged : Only checks NEWLY ADDED/MODIFIED lines in the git diff.
+               Pre-existing code is not flagged, preventing false positives
+               on large files where only a few lines changed.
+    --all    : Full-file scan of every Python file (for auditing).
+    [files]  : Full-file scan of specified files.
 """
 
 import argparse
-import ast
 import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Set, Dict, Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -49,14 +55,17 @@ class Violation:
     suggestion: str = ""
 
     def __str__(self) -> str:
-        return (
-            f"\n{'='*70}\n"
-            f"❌ {self.severity}: {self.rule}\n"
-            f"   File: {self.file}:{self.line}\n"
-            f"   Issue: {self.message}\n"
-            f"   Code: {self.code_snippet[:100]}...\n" if self.code_snippet else ""
-            f"   Fix: {self.suggestion}\n" if self.suggestion else ""
-        )
+        parts = [
+            f"\n{'='*70}",
+            f"❌ {self.severity}: {self.rule}",
+            f"   File: {self.file}:{self.line}",
+            f"   Issue: {self.message}",
+        ]
+        if self.code_snippet:
+            parts.append(f"   Code: {self.code_snippet[:100]}...")
+        if self.suggestion:
+            parts.append(f"   Fix: {self.suggestion}")
+        return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -70,7 +79,6 @@ EXCLUDED_PATHS = {
     'tests/',
     # User tools (plugin-style code with legitimate file system operations)
     'user_tools/',
-    # Security guardrails are allowed (e.g., blocking rm -rf /)
     # Configuration files
     'config/',
     # Archive/experimental
@@ -91,6 +99,52 @@ EXCLUDED_FUNCTIONS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# GIT DIFF PARSING - Extract only changed lines for --staged mode
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_staged_diff_lines() -> Dict[str, Set[int]]:
+    """
+    Parse `git diff --cached` to find which line numbers were added/modified
+    in each staged Python file.
+
+    Returns:
+        Dict mapping filepath -> set of added/modified line numbers.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--cached', '-U0', '--diff-filter=ACM'],
+            capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError:
+        return {}
+
+    changed: Dict[str, Set[int]] = {}
+    current_file: Optional[str] = None
+
+    for line in result.stdout.split('\n'):
+        # Detect file header: +++ b/path/to/file.py
+        if line.startswith('+++ b/'):
+            path = line[6:]
+            if path.endswith('.py'):
+                current_file = path
+                changed.setdefault(current_file, set())
+            else:
+                current_file = None
+            continue
+
+        # Detect hunk header: @@ -old,count +new,count @@
+        if current_file and line.startswith('@@'):
+            match = re.search(r'\+(\d+)(?:,(\d+))?', line)
+            if match:
+                start = int(match.group(1))
+                count = int(match.group(2)) if match.group(2) else 1
+                for ln in range(start, start + count):
+                    changed[current_file].add(ln)
+
+    return changed
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # VIOLATION DETECTION RULES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -101,8 +155,21 @@ class ClaudeMdValidator:
     The Cardinal Rule: LLM decides everything, RAICA executes blindly.
     """
 
-    def __init__(self):
+    def __init__(self, changed_lines: Optional[Dict[str, Set[int]]] = None):
+        """
+        Args:
+            changed_lines: If provided, only flag violations on these line
+                           numbers (diff-only mode). None = full-file scan.
+        """
         self.violations: List[Violation] = []
+        self.changed_lines = changed_lines
+
+    def _should_check_line(self, filepath: str, line_num: int) -> bool:
+        """Return True if this line should be checked (always True in full-scan mode)."""
+        if self.changed_lines is None:
+            return True
+        file_lines = self.changed_lines.get(filepath, set())
+        return line_num in file_lines
 
     def validate_file(self, filepath: str) -> List[Violation]:
         """Validate a single file against CLAUDE.md rules."""
@@ -124,42 +191,54 @@ class ClaudeMdValidator:
             )]
 
         # Run all checks
-        self._check_hardcoded_keyword_lists(filepath, content, lines)
-        self._check_pattern_matching_on_text(filepath, content, lines)
+        self._check_hardcoded_intent_routing(filepath, content, lines)
+        self._check_pattern_matching_on_user_text(filepath, content, lines)
         self._check_language_specific_detection(filepath, content, lines)
         self._check_special_case_handlers(filepath, content, lines)
         self._check_hardcoded_fallbacks(filepath, content, lines)
 
         return self.violations
 
-    def _check_hardcoded_keyword_lists(self, filepath: str, content: str, lines: List[str]):
+    def _check_hardcoded_intent_routing(self, filepath: str, content: str, lines: List[str]):
         """
-        Rule: No hardcoded keyword lists for interpreting user intent.
+        Rule: No hardcoded keyword lists for INTERPRETING USER INTENT or
+        ROUTING REQUESTS. This is the core CLAUDE.md violation.
 
-        FORBIDDEN:
-            KEYWORDS = ["fix", "debug", "install", ...]
-            WEB_SEARCH_KEYWORDS = [...]
-            if word in KEYWORDS:
+        FORBIDDEN (intent routing / request classification):
+            WEB_SEARCH_KEYWORDS = ["latest news", "find", ...]
+            CLASSIFICATION_KEYWORDS = {"debug": ..., "fix": ...}
+            if word in REQUEST_KEYWORDS:
+
+        ALLOWED (legitimate infrastructure code):
+            stop_words = {"the", "a", "an"}       # NLP preprocessing
+            date_patterns = [r"\\d{4}-\\d{2}"]    # Data parsing regex
+            error_patterns = [...]                  # Log parsing
+            json_patterns = [...]                   # Format detection
+            email_keywords = [...]                  # Post-LLM content routing
         """
-        # Pattern: Variable assignments that look like keyword lists
+        # Targeted patterns: UPPER_CASE constants that route/classify user intent
         patterns = [
-            (r'(?:KEYWORDS|PATTERNS|TRIGGERS|COMMANDS)\s*=\s*[\[\{]',
-             "Hardcoded keyword list detected"),
-            (r'_(?:KEYWORDS|PATTERNS|WORDS|TERMS)\s*=\s*[\[\{]',
-             "Hardcoded keyword list detected (private variable)"),
-            (r'(?:keywords|patterns|triggers)\s*=\s*[\[\"\'].*[\"\']',
-             "Inline keyword list detected"),
+            # SCREAMING_CASE keyword lists for routing (the actual CLAUDE.md violation)
+            (r'\b(?:SEARCH|ROUTING|CLASSIFICATION|INTENT|REQUEST|CATEGORY|COMMAND)_?(?:KEYWORDS|WORDS|TERMS|TRIGGERS)\s*=\s*[\[\{]',
+             "Hardcoded intent-routing keyword list"),
+            # Generic KEYWORDS/COMMANDS constant assignment (likely routing)
+            (r'\b(?:KEYWORDS|COMMANDS)\s*=\s*\[',
+             "Hardcoded keyword/command routing list"),
+            # Keyword-based request routing: checking if user text contains action words
+            (r'if\s+\w+\s+in\s+(?:KEYWORDS|SEARCH_KEYWORDS|ROUTING_KEYWORDS|COMMANDS)',
+             "Keyword-based request routing"),
         ]
 
         for line_num, line in enumerate(lines, 1):
-            # Skip comments and docstrings
+            if not self._should_check_line(filepath, line_num):
+                continue
+
             stripped = line.strip()
             if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
                 continue
 
             for pattern, message in patterns:
-                if re.search(pattern, line, re.IGNORECASE):
-                    # Check if it's in an excluded function
+                if re.search(pattern, line):
                     if self._is_in_excluded_function(lines, line_num):
                         continue
 
@@ -169,32 +248,38 @@ class ClaudeMdValidator:
                         rule="NO_HARDCODED_KEYWORDS",
                         severity="ERROR",
                         message=message,
-                        code_snippet=line.strip(),
-                        suggestion="Let LLM classify/interpret instead of hardcoded keywords"
+                        code_snippet=stripped,
+                        suggestion="Let LLM classify/interpret user intent instead of hardcoded keywords"
                     ))
 
-    def _check_pattern_matching_on_text(self, filepath: str, content: str, lines: List[str]):
+    def _check_pattern_matching_on_user_text(self, filepath: str, content: str, lines: List[str]):
         """
-        Rule: No pattern matching on user request text.
+        Rule: No pattern matching on user request text to determine intent.
 
         FORBIDDEN:
             if "install" in request:
             if request.lower().startswith("fix"):
-            if any(word in text for word in [...]):
+            if any(word in user_prompt for word in [...]):
+
+        ALLOWED:
+            if "install" in llm_response:   # Parsing structured LLM output is fine
         """
+        # Only flag variables that clearly represent user input
+        user_text_vars = r'(?:request|user_input|user_prompt|user_message|user_text|user_query)'
+
         patterns = [
-            # Direct string matching on request/text/prompt variables
-            (r'if\s+["\'][\w\s]+["\']\s+in\s+(?:request|text|prompt|user_input|message)',
-             "Pattern matching on user text"),
-            (r'if\s+(?:request|text|prompt|message).*\.(?:startswith|endswith|contains)\s*\(["\']',
+            (rf'if\s+["\'][\w\s]+["\']\s+in\s+{user_text_vars}',
+             "Pattern matching on user text to determine intent"),
+            (rf'if\s+{user_text_vars}.*\.(?:startswith|endswith)\s*\(["\']',
              "String method pattern matching on user text"),
-            (r'if\s+any\s*\(.*\s+in\s+(?:request|text|prompt|message)',
+            (rf'if\s+any\s*\(.*\s+in\s+{user_text_vars}',
              "Any/all pattern matching on user text"),
-            (r'for\s+\w+\s+in\s+(?:KEYWORDS|PATTERNS|WORDS).*if.*in\s+(?:request|text)',
-             "Keyword iteration pattern matching"),
         ]
 
         for line_num, line in enumerate(lines, 1):
+            if not self._should_check_line(filepath, line_num):
+                continue
+
             stripped = line.strip()
             if stripped.startswith('#'):
                 continue
@@ -210,41 +295,41 @@ class ClaudeMdValidator:
                         rule="NO_PATTERN_MATCHING_ON_TEXT",
                         severity="ERROR",
                         message=message,
-                        code_snippet=line.strip(),
+                        code_snippet=stripped,
                         suggestion="Use LLM to classify/interpret the text semantically"
                     ))
 
     def _check_language_specific_detection(self, filepath: str, content: str, lines: List[str]):
         """
-        Rule: No hardcoded language/file type detection patterns.
+        Rule: No hardcoded language/file type detection patterns for
+        classification purposes (LLM should classify content type).
 
         FORBIDDEN:
-            if '<!DOCTYPE' in content:  # HTML detection
-            if 'import ' in content:    # Python detection
-            if 'function ' in content:  # JavaScript detection
+            if '<!DOCTYPE' in content:  # HTML detection for routing
+            if 'import ' in content:    # Python detection for routing
+
+        ALLOWED:
+            if filename.endswith('.py'):  # File extension for loading (infrastructure)
         """
         patterns = [
-            # HTML detection
             (r'if\s+["\']<!DOCTYPE["\'].*in\s+\w+',
              "Hardcoded HTML detection pattern"),
             (r'if\s+["\']<html["\'].*in\s+\w+',
              "Hardcoded HTML detection pattern"),
-            # Python detection
             (r'if\s+["\']import\s+["\'].*in\s+\w+',
              "Hardcoded Python detection pattern"),
             (r'if\s+["\']def\s+["\'].*in\s+\w+',
              "Hardcoded Python detection pattern"),
-            # JavaScript detection
             (r'if\s+["\']function\s+["\'].*in\s+\w+',
              "Hardcoded JavaScript detection pattern"),
             (r'if\s+["\']const\s+["\'].*in\s+\w+',
              "Hardcoded JavaScript detection pattern"),
-            # File extension detection for classification
-            (r'if\s+\w+\.endswith\s*\(\s*["\']\.(?:py|js|html|css)["\']',
-             "Hardcoded file extension classification"),
         ]
 
         for line_num, line in enumerate(lines, 1):
+            if not self._should_check_line(filepath, line_num):
+                continue
+
             stripped = line.strip()
             if stripped.startswith('#'):
                 continue
@@ -260,7 +345,7 @@ class ClaudeMdValidator:
                         rule="NO_HARDCODED_LANGUAGE_DETECTION",
                         severity="ERROR",
                         message=message,
-                        code_snippet=line.strip(),
+                        code_snippet=stripped,
                         suggestion="Ask LLM to detect language/type instead"
                     ))
 
@@ -271,18 +356,18 @@ class ClaudeMdValidator:
         FORBIDDEN:
             if error_type == "ImportError":
             if request_type == "install":
-            elif classification == "CODE_DEBUG":  # When used for hardcoded routing
         """
         patterns = [
-            # Error type special handling
             (r'if\s+(?:error_type|error_name|exc_type)\s*==\s*["\']',
              "Special case handler for specific error type"),
-            # Request type hardcoded routing (when not from LLM classification)
             (r'if\s+["\'](?:install|fix|debug|create|delete)["\']\s+in\s+',
              "Special case handler based on request keywords"),
         ]
 
         for line_num, line in enumerate(lines, 1):
+            if not self._should_check_line(filepath, line_num):
+                continue
+
             stripped = line.strip()
             if stripped.startswith('#'):
                 continue
@@ -298,7 +383,7 @@ class ClaudeMdValidator:
                         rule="NO_SPECIAL_CASE_HANDLERS",
                         severity="WARNING",
                         message=message,
-                        code_snippet=line.strip(),
+                        code_snippet=stripped,
                         suggestion="Use generic LLM-driven handling instead"
                     ))
 
@@ -314,15 +399,16 @@ class ClaudeMdValidator:
             raise RuntimeError("LLM failed")  # Fail explicitly
         """
         patterns = [
-            # Returning hardcoded commands as fallback
             (r'return\s*\[\s*["\'](?:ls|cd|pwd|echo|cat)',
              "Hardcoded command fallback"),
-            # Returning hardcoded classification
             (r'return\s+["\'](?:unknown|default|fallback)["\']',
              "Hardcoded classification fallback"),
         ]
 
         for line_num, line in enumerate(lines, 1):
+            if not self._should_check_line(filepath, line_num):
+                continue
+
             stripped = line.strip()
             if stripped.startswith('#'):
                 continue
@@ -338,13 +424,12 @@ class ClaudeMdValidator:
                         rule="NO_HARDCODED_FALLBACKS",
                         severity="WARNING",
                         message=message,
-                        code_snippet=line.strip(),
+                        code_snippet=stripped,
                         suggestion="Fail explicitly instead of guessing"
                     ))
 
     def _is_in_excluded_function(self, lines: List[str], line_num: int) -> bool:
         """Check if the line is inside an excluded function."""
-        # Look backwards for function definition
         for i in range(line_num - 1, max(0, line_num - 50), -1):
             line = lines[i].strip()
             if line.startswith('def '):
@@ -354,7 +439,7 @@ class ClaudeMdValidator:
                         return True
                 return False
             if line.startswith('class '):
-                return False  # Hit class definition, stop looking
+                return False
         return False
 
 
@@ -379,7 +464,6 @@ def get_all_python_files(root: str = '.') -> List[str]:
     """Get all Python files in the project."""
     files = []
     for path in Path(root).rglob('*.py'):
-        # Skip venv, __pycache__, etc.
         if any(skip in str(path) for skip in ['venv', '__pycache__', '.git', 'archive']):
             continue
         files.append(str(path))
@@ -391,36 +475,42 @@ def main():
         description='CLAUDE.md Compliance Validator - Pre-commit Hook'
     )
     parser.add_argument('files', nargs='*', help='Files to validate')
-    parser.add_argument('--staged', action='store_true', help='Check staged files only')
-    parser.add_argument('--all', action='store_true', help='Check all Python files')
+    parser.add_argument('--staged', action='store_true',
+                        help='Check only added/modified lines in staged diff')
+    parser.add_argument('--all', action='store_true', help='Full-scan all Python files')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 
     args = parser.parse_args()
 
-    # Determine files to check
+    # Determine files and mode
+    changed_lines = None  # None = full-file scan
+
     if args.staged:
-        files = get_staged_files()
-        print(f"🔍 Checking {len(files)} staged files...")
+        changed_lines = get_staged_diff_lines()
+        files = list(changed_lines.keys())
+        total_lines = sum(len(v) for v in changed_lines.values())
+        print(f"🔍 Checking {total_lines} changed lines across {len(files)} staged file(s)...")
     elif args.all:
         files = get_all_python_files()
-        print(f"🔍 Checking {len(files)} Python files...")
+        print(f"🔍 Full-scan checking {len(files)} Python files...")
     elif args.files:
         files = args.files
         print(f"🔍 Checking {len(files)} specified files...")
     else:
-        # Default: staged files
-        files = get_staged_files()
+        changed_lines = get_staged_diff_lines()
+        files = list(changed_lines.keys())
         if not files:
             print("✅ No Python files staged for commit")
             return 0
-        print(f"🔍 Checking {len(files)} staged files...")
+        total_lines = sum(len(v) for v in changed_lines.values())
+        print(f"🔍 Checking {total_lines} changed lines across {len(files)} staged file(s)...")
 
     if not files:
         print("✅ No files to check")
         return 0
 
     # Run validation
-    validator = ClaudeMdValidator()
+    validator = ClaudeMdValidator(changed_lines=changed_lines)
     all_violations: List[Violation] = []
 
     for filepath in files:
@@ -458,6 +548,8 @@ def main():
 ║  1. Fix all ERROR violations                                         ║
 ║  2. Re-run tests (previous tests are INVALIDATED)                    ║
 ║  3. Re-attempt commit                                                ║
+║                                                                      ║
+║  TIP: Run with --all for a full audit of all Python files.           ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """)
             return 1

@@ -9019,7 +9019,10 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                 fn_args = json.loads(fn_args)
                                             except json.JSONDecodeError:
                                                 fn_args = {}
-                                        result = await tool_manager.execute_tool(fn_name, fn_args)
+                                        
+                                        # Convert args back to string for safe_function_call
+                                        args_str = json.dumps(fn_args) if isinstance(fn_args, dict) else str(fn_args)
+                                        result = await tool_manager.safe_function_call(fn_name, args_str)
                                         return idx, fn_name, fn_args, result
 
                                     logger.info(f"🚀 PARALLEL CONTENT-PARSED EXECUTION: Starting {len(tool_calls)} tools concurrently")
@@ -9221,8 +9224,8 @@ Generate the corrected tool calls:"""
                                     
                                     # Execute each regenerated tool
                                     for i, tool_call in enumerate(regeneration_response['tool_calls']):
-                                        func_name = tool_call.function.name
-                                        func_args = json.loads(tool_call.function.arguments)
+                                        func_name = tool_call['function']['name']
+                                        func_args = json.loads(tool_call['function']['arguments'])
                                         
                                         logger.info(f"🔧 REGENERATED TOOL {i+1}: {func_name}({func_args})")
                                         
@@ -9237,7 +9240,7 @@ Generate the corrected tool calls:"""
                                     
                                     # Update tools_results_list with regenerated results
                                     tools_results_list = regenerated_tools_results
-                                    tools_called = [tool_call.function.name for tool_call in regeneration_response['tool_calls']]
+                                    tools_called = [tool_call['function']['name'] for tool_call in regeneration_response['tool_calls']]
                                     
                                 else:
                                     logger.warning(f"❌ REGENERATION ATTEMPT #{attempt}: No tool calls generated")
