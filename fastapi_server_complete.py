@@ -212,14 +212,16 @@ class OpenAIChatRequest(BaseModel):
     messages: List[OpenAIMessage] = Field(..., description="Messages array")
     # Everything else is ignored for security - zero trust design
     stream: Optional[bool] = Field(default=None)
-    temperature: Optional[float] = Field(default=None) 
+    temperature: Optional[float] = Field(default=None)
     max_tokens: Optional[int] = Field(default=None)
     top_p: Optional[float] = Field(default=None)
     frequency_penalty: Optional[float] = Field(default=None)
     presence_penalty: Optional[float] = Field(default=None)
     # Support for custom images parameter (file paths or base64)
     images: Optional[List[str]] = Field(default=None, description="Image data - file paths or base64")
-    
+    # Tool whitelist: only these tools may be called (sent by NewX AI connector)
+    allowed_tools: Optional[List[str]] = Field(default=None, description="Whitelist of allowed tool names")
+
     class Config:
         extra = "ignore"  # Ignore all other fields for security
 
@@ -8216,6 +8218,16 @@ The above image analysis was automatically performed on newly uploaded images. T
                     else:
                         # Normal tool processing for non-meta tasks
                         tools_array = await tool_manager.get_tools_definitions(exclude_file_email_tools=False)
+
+                        # 🔒 TOOL WHITELIST ENFORCEMENT: Filter tools if allowed_tools is set
+                        request_allowed_tools = data.get('allowed_tools')
+                        if request_allowed_tools:
+                            tools_array = [
+                                t for t in tools_array
+                                if t['function']['name'] in request_allowed_tools
+                            ]
+                            logger.info(f"🔒 Tool whitelist enforced: {request_allowed_tools}")
+
                         # Tools array prepared
                         if len(tools_array) == 0:
                             logger.error("❌ Tools array is empty! This will cause timeout.")
@@ -9211,9 +9223,14 @@ Generate the corrected tool calls:"""
                             # Call tool calling LLM for regeneration
                             try:
                                 logger.info(f"🧠 CALLING TOOL CALLING LLM FOR REGENERATION")
+                                # 🔒 Apply tool whitelist to regeneration too
+                                regen_tools = await tool_manager.get_tools_definitions()
+                                regen_allowed = data.get('allowed_tools')
+                                if regen_allowed:
+                                    regen_tools = [t for t in regen_tools if t['function']['name'] in regen_allowed]
                                 regeneration_response = await llm_manager.generate_tools(
                                     prompt=regeneration_prompt,
-                                    tools=await tool_manager.get_tools_definitions(),
+                                    tools=regen_tools,
                                     system_prompt="You are a tool calling specialist. Generate corrected tool calls that will execute successfully."
                                 )
                                 
@@ -9626,6 +9643,7 @@ END OF CONTEXT
                         "top_p": data.get('top_p', config_options.get('top_p', 0.9)),
                         "num_ctx": data.get('num_ctx', config_options.get('context_window_size', 8192)),
                         "num_predict": data.get('max_tokens', config_options.get('max_tokens', 4096)),
+                        "repeat_penalty": data.get('repeat_penalty', config_options.get('repeat_penalty', 1.3)),
                         "low_vram": data.get('low_vram', config_options.get('low_vram', False))
                     },
                     "think": think_enabled,  # Add think parameter from configuration
@@ -11429,7 +11447,8 @@ async def openai_streaming_response(user_prompt: str, model: str, conversation_i
                 "searchWebInUse": False,
                 "images": images if images else ["noimage"],  # 🔧 FIX: Use actual images from OpenAI request
                 "tools_calling_model": ServerConfig.DEFAULT_TOOL_CALLING_MODEL,
-                "system": ""
+                "system": "",
+                "allowed_tools": request.allowed_tools,  # Pass tool whitelist from caller
             }
             
             # Choose routing method based on feature flag
