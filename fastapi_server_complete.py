@@ -10239,53 +10239,65 @@ END OF CONTEXT
                         logger.info(f"🚫 META-TASK BLOCKED: Preventing meta task from executing publishing tools: {verification_result.get('missing_tools', [])}")
 
                     if pending_auto_execution and verification_result and not is_meta_task:
-                        logger.info(f"🎯 POST-LLM AUTO-EXECUTION: Primary LLM completed, executing missing tools")
-                        logger.info(f"🎯 Complete LLM response length: {len(complete_llm_response)} characters")
-                            
-                        try:
-                            # 🔧 CRITICAL FIX v1.0.3.9: Use actual_user_prompt (original) not user_prompt (may be reassigned/empty)
-                            # 🔧 DEBUG v1.0.3.9: Log what we're passing to POST-LLM
-                            logger.info(f"🔍 BEFORE POST-LLM CALL: actual_user_prompt = {repr(actual_user_prompt[:200] if actual_user_prompt else 'EMPTY!')}")
-                            logger.info(f"🔍 BEFORE POST-LLM CALL: user_prompt = {repr(user_prompt[:200] if user_prompt else 'EMPTY!')}")
-                            # Execute missing tools with complete LLM response as content
-                            # 🤖 v1.0.3.111: Pass llm_manager for Arbitrator-based parameter generation
-                            additional_results = await _execute_missing_tools_post_llm(
-                                verification_result['missing_tools'],
-                                tool_manager,
-                                tools_results,
-                                complete_llm_response,
-                                actual_user_prompt,
-                                llm_manager
-                            )
-                            logger.info(f"✅ POST-LLM AUTO-EXECUTION COMPLETED: {additional_results}")
+                        # 🔒 v1.0.0.51: Filter POST-LLM missing tools against allowed_tools whitelist
+                        post_llm_missing_tools = verification_result['missing_tools']
+                        request_allowed_tools = data.get('allowed_tools')
+                        if request_allowed_tools:
+                            blocked = [t for t in post_llm_missing_tools if t not in request_allowed_tools]
+                            if blocked:
+                                logger.warning(f"🔒 POST-LLM WHITELIST: Blocked tools not in allowed_tools: {blocked}")
+                            post_llm_missing_tools = [t for t in post_llm_missing_tools if t in request_allowed_tools]
 
-                            # 🔧 FIX v1.0.3.19: Stream POST-LLM results in Ollama's JSON format
-                            # This ensures Discord client displays the results correctly
-                            if additional_results:
-                                # Format as readable text
-                                result_text = f"\n\n---\n✅ POST-PROCESSING COMPLETED:\n{additional_results}\n---\n"
+                        if not post_llm_missing_tools:
+                            logger.info(f"🔒 POST-LLM AUTO-EXECUTION SKIPPED: All missing tools blocked by whitelist")
+                        else:
+                            logger.info(f"🎯 POST-LLM AUTO-EXECUTION: Primary LLM completed, executing missing tools: {post_llm_missing_tools}")
+                            logger.info(f"🎯 Complete LLM response length: {len(complete_llm_response)} characters")
 
-                                # Stream in Ollama's format so Discord client displays it
-                                import time
-                                post_llm_chunk = json.dumps({
-                                    "model": model,
-                                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                    "message": {
-                                        "role": "assistant",
-                                        "content": result_text
-                                    },
-                                    "done": False
+                        if post_llm_missing_tools:
+                            try:
+                                # 🔧 CRITICAL FIX v1.0.3.9: Use actual_user_prompt (original) not user_prompt (may be reassigned/empty)
+                                logger.info(f"🔍 BEFORE POST-LLM CALL: actual_user_prompt = {repr(actual_user_prompt[:200] if actual_user_prompt else 'EMPTY!')}")
+                                logger.info(f"🔍 BEFORE POST-LLM CALL: user_prompt = {repr(user_prompt[:200] if user_prompt else 'EMPTY!')}")
+                                # Execute missing tools with complete LLM response as content
+                                # 🤖 v1.0.3.111: Pass llm_manager for Arbitrator-based parameter generation
+                                additional_results = await _execute_missing_tools_post_llm(
+                                    post_llm_missing_tools,
+                                    tool_manager,
+                                    tools_results,
+                                    complete_llm_response,
+                                    actual_user_prompt,
+                                    llm_manager
+                                )
+                                logger.info(f"✅ POST-LLM AUTO-EXECUTION COMPLETED: {additional_results}")
+
+                                # 🔧 FIX v1.0.3.19: Stream POST-LLM results in Ollama's JSON format
+                                # This ensures Discord client displays the results correctly
+                                if additional_results:
+                                    # Format as readable text
+                                    result_text = f"\n\n---\n✅ POST-PROCESSING COMPLETED:\n{additional_results}\n---\n"
+
+                                    # Stream in Ollama's format so Discord client displays it
+                                    import time
+                                    post_llm_chunk = json.dumps({
+                                        "model": model,
+                                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": result_text
+                                        },
+                                        "done": False
+                                    })
+                                    yield (post_llm_chunk + '\n').encode()
+                                    logger.info(f"📤 POST-LLM: Streamed results to user ({len(result_text)} chars)")
+
+                            except Exception as e:
+                                logger.error(f"❌ POST-LLM AUTO-EXECUTION FAILED: {e}")
+                                error_msg = json.dumps({
+                                    "post_processing": "failed",
+                                    "error": str(e)
                                 })
-                                yield (post_llm_chunk + '\n').encode()
-                                logger.info(f"📤 POST-LLM: Streamed results to user ({len(result_text)} chars)")
-                                
-                        except Exception as e:
-                            logger.error(f"❌ POST-LLM AUTO-EXECUTION FAILED: {e}")
-                            error_msg = json.dumps({
-                                "post_processing": "failed",
-                                "error": str(e)
-                            })
-                            yield (error_msg + '\n').encode()
+                                yield (error_msg + '\n').encode()
 
                 except asyncio.TimeoutError:
                     logger.error("🕒 PRIMARY LLM: Request timed out after 10 minutes")
