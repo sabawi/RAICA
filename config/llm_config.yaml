@@ -8,26 +8,38 @@ document_interrogator:
   auto_watch_enabled: false
   startup_initialization_delay: 3
   embedding:
-    model_name: mxbai-embed-large
+    # Provider: "openai", "ollama", or any OpenAI-compatible endpoint
+    # To switch back to Ollama local: set provider to "ollama" and update service below
+    provider: openai
+    model_name: text-embedding-3-small
     dimension: 1024
     service:
-      host: 127.0.0.1
-      port: 11434
-      base_url: http://127.0.0.1:11434
-      health_check_timeout_seconds: 10
+      base_url: https://api.openai.com/v1
+      api_key: ${OPENAI_API_KEY}
     timeout:
-      embedding_request: 120
-      service_restart: 5
+      embedding_request: 30
       health_check: 10
     retry:
-      max_service_restart_attempts: 3
-      retry_delay_seconds: 3
+      max_attempts: 3
+      retry_delay_seconds: 2
     batch_processing:
-      batch_size: 15
-      batch_delay_seconds: 4.0
+      batch_size: 50
+      batch_delay_seconds: 1.0
       adaptive_mode_enabled: true
       min_batch_size: 1
       adaptive_reduction_factor: 0.5
+    # To revert to local Ollama embeddings, use this config:
+    # provider: ollama
+    # model_name: mxbai-embed-large
+    # dimension: 1024
+    # service:
+    #   host: 127.0.0.1
+    #   port: 11434
+    #   base_url: http://127.0.0.1:11434
+    # timeout:
+    #   embedding_request: 120
+    #   service_restart: 5
+    #   health_check: 10
   document_processing:
     chunk_size: 400
     chunk_overlap: 50
@@ -90,8 +102,8 @@ llm:
       retry_attempts: 3
       retry_delay: 1
       models:
-        primary: gpt-4o
-        tool_calling: gpt-4o
+        primary: gpt-4o-mini
+        tool_calling: gpt-4o-mini
     openrouter:
       api_key: ${OPENROUTER_API_KEY}
       base_url: https://openrouter.ai/api/v1

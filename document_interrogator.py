@@ -80,32 +80,48 @@ except ImportError as e:
 # =============================================================================
 
 def _load_embedding_config() -> Dict[str, Any]:
-    """Load embedding configuration from config file with safe fallbacks"""
+    """Load embedding configuration from config file with safe fallbacks.
+
+    Supports multiple providers via the 'provider' field:
+      - "openai": OpenAI API (text-embedding-3-small, etc.)
+      - "ollama": Local Ollama instance (mxbai-embed-large, etc.)
+      - Any OpenAI-compatible endpoint (e.g., OpenRouter, Azure)
+    """
     try:
         config = config_loader.load_config()
         doc_config = config.get('document_interrogator', {})
         embedding_config = doc_config.get('embedding', {})
 
+        provider = embedding_config.get('provider', 'ollama')
+
         return {
+            # Provider selection
+            'provider': provider,
+
             # Model configuration
             'model_name': embedding_config.get('model_name', 'mxbai-embed-large'),
             'dimension': embedding_config.get('dimension', 1024),
 
-            # Service configuration
+            # Service configuration (provider-agnostic)
+            'service_base_url': embedding_config.get('service', {}).get('base_url',
+                'https://api.openai.com/v1' if provider == 'openai' else 'http://127.0.0.1:11434'),
+            'api_key': embedding_config.get('service', {}).get('api_key', ''),
+
+            # Ollama-specific (only used when provider=ollama)
             'service_host': embedding_config.get('service', {}).get('host', '127.0.0.1'),
             'service_port': embedding_config.get('service', {}).get('port', 11434),
-            'service_base_url': embedding_config.get('service', {}).get('base_url', 'http://127.0.0.1:11434'),
 
             # Timeout configuration
-            'embedding_timeout': embedding_config.get('timeout', {}).get('embedding_request', 120),
+            'embedding_timeout': embedding_config.get('timeout', {}).get('embedding_request', 30 if provider != 'ollama' else 120),
             'health_check_timeout': embedding_config.get('timeout', {}).get('health_check', 10),
             'service_restart_delay': embedding_config.get('timeout', {}).get('service_restart', 5),
 
             # Retry configuration
-            'max_service_restart_attempts': embedding_config.get('retry', {}).get('max_service_restart_attempts', 3),
-            'retry_delay': embedding_config.get('retry', {}).get('retry_delay_seconds', 3),
+            'max_attempts': embedding_config.get('retry', {}).get('max_attempts',
+                embedding_config.get('retry', {}).get('max_service_restart_attempts', 3)),
+            'retry_delay': embedding_config.get('retry', {}).get('retry_delay_seconds', 2 if provider != 'ollama' else 3),
 
-            # Batch processing configuration (CRITICAL)
+            # Batch processing configuration
             'batch_size': embedding_config.get('batch_processing', {}).get('batch_size', 10),
             'batch_delay': embedding_config.get('batch_processing', {}).get('batch_delay_seconds', 5.0),
             'adaptive_mode_enabled': embedding_config.get('batch_processing', {}).get('adaptive_mode_enabled', True),
@@ -125,20 +141,21 @@ def _load_embedding_config() -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"❌ Failed to load embedding config, using safe fallbacks: {e}")
-        # Return safe fallback configuration
         return {
+            'provider': 'ollama',
             'model_name': 'mxbai-embed-large',
             'dimension': 1024,
+            'service_base_url': 'http://127.0.0.1:11434',
+            'api_key': '',
             'service_host': '127.0.0.1',
             'service_port': 11434,
-            'service_base_url': 'http://127.0.0.1:11434',
             'embedding_timeout': 120,
             'health_check_timeout': 10,
             'service_restart_delay': 5,
-            'max_service_restart_attempts': 3,
+            'max_attempts': 3,
             'retry_delay': 3,
-            'batch_size': 10,  # ✅ Safe reduced default
-            'batch_delay': 5.0,  # ✅ Safe increased default
+            'batch_size': 10,
+            'batch_delay': 5.0,
             'adaptive_mode_enabled': True,
             'min_batch_size': 1,
             'adaptive_reduction_factor': 0.5,
@@ -155,17 +172,32 @@ def _load_embedding_config() -> Dict[str, Any]:
 _EMBEDDING_CONFIG = _load_embedding_config()
 
 # ✅ Configuration Constants (loaded from config file, not hardcoded)
+EMBEDDING_PROVIDER = _EMBEDDING_CONFIG['provider']
 EMBEDDING_MODEL_NAME = _EMBEDDING_CONFIG['model_name']
 EMBEDDING_DIMENSION = _EMBEDDING_CONFIG['dimension']
-OLLAMA_EMBEDDING_HOST = _EMBEDDING_CONFIG['service_host']
-OLLAMA_EMBEDDING_PORT = _EMBEDDING_CONFIG['service_port']
-OLLAMA_MAIN_PORT = _EMBEDDING_CONFIG['service_port']
-EMBEDDING_SERVICE_URL = f"{_EMBEDDING_CONFIG['service_base_url']}/api/embeddings"
+EMBEDDING_API_KEY = _EMBEDDING_CONFIG['api_key']
 EMBEDDING_TIMEOUT_SECONDS = _EMBEDDING_CONFIG['embedding_timeout']
 HEALTH_CHECK_TIMEOUT_SECONDS = _EMBEDDING_CONFIG['health_check_timeout']
 SERVICE_RESTART_DELAY_SECONDS = _EMBEDDING_CONFIG['service_restart_delay']
+MAX_SERVICE_RESTART_ATTEMPTS = _EMBEDDING_CONFIG['max_attempts']
+
+# Provider-specific URL construction
+if EMBEDDING_PROVIDER == 'ollama':
+    EMBEDDING_SERVICE_URL = f"{_EMBEDDING_CONFIG['service_base_url']}/api/embeddings"
+    OLLAMA_EMBEDDING_HOST = _EMBEDDING_CONFIG['service_host']
+    OLLAMA_EMBEDDING_PORT = _EMBEDDING_CONFIG['service_port']
+    OLLAMA_MAIN_PORT = _EMBEDDING_CONFIG['service_port']
+else:
+    # OpenAI and OpenAI-compatible endpoints use /v1/embeddings
+    base = _EMBEDDING_CONFIG['service_base_url'].rstrip('/')
+    EMBEDDING_SERVICE_URL = f"{base}/embeddings"
+    OLLAMA_EMBEDDING_HOST = None
+    OLLAMA_EMBEDDING_PORT = None
+    OLLAMA_MAIN_PORT = None
+
+print(f"📐 Embedding provider: {EMBEDDING_PROVIDER}, model: {EMBEDDING_MODEL_NAME}, "
+      f"dimension: {EMBEDDING_DIMENSION}, url: {EMBEDDING_SERVICE_URL}", flush=True)
 RETRY_DELAY_SECONDS = _EMBEDDING_CONFIG['retry_delay']
-MAX_SERVICE_RESTART_ATTEMPTS = _EMBEDDING_CONFIG['max_service_restart_attempts']
 DEFAULT_BATCH_SIZE = _EMBEDDING_CONFIG['batch_size']
 DEFAULT_CHUNK_SIZE = _EMBEDDING_CONFIG['chunk_size']
 DEFAULT_SEARCH_RESULTS = 5  # Static default for search results
@@ -831,111 +863,71 @@ class FAISSDocumentStore:
     async def _check_embedding_service_health(self) -> bool:
         """Check if embedding service is healthy and responsive"""
         try:
-            payload = {"model": EMBEDDING_MODEL_NAME, "prompt": "health check", "keep_alive": -1}
-            response_data = await pooled_post(
-                EMBEDDING_SERVICE_URL,
-                json=payload,
-                timeout=HEALTH_CHECK_TIMEOUT_SECONDS
-            )
-            return response_data['status_code'] == 200
+            if EMBEDDING_PROVIDER == 'ollama':
+                payload = {"model": EMBEDDING_MODEL_NAME, "prompt": "health check", "keep_alive": -1}
+                response_data = await pooled_post(
+                    EMBEDDING_SERVICE_URL,
+                    json=payload,
+                    timeout=HEALTH_CHECK_TIMEOUT_SECONDS
+                )
+                return response_data['status_code'] == 200
+            else:
+                # OpenAI / compatible: lightweight models list check
+                base = _EMBEDDING_CONFIG['service_base_url'].rstrip('/')
+                headers = {}
+                if EMBEDDING_API_KEY:
+                    headers["Authorization"] = f"Bearer {EMBEDDING_API_KEY}"
+                response_data = await pooled_post(
+                    EMBEDDING_SERVICE_URL,
+                    json={"model": EMBEDDING_MODEL_NAME, "input": "health check",
+                          "dimensions": EMBEDDING_DIMENSION},
+                    headers=headers,
+                    timeout=HEALTH_CHECK_TIMEOUT_SECONDS
+                )
+                return response_data['status_code'] == 200
         except Exception as e:
             logger.error(f"❌ Embedding service health check failed: {e}")
             return False
     
     async def _restart_embedding_service(self) -> bool:
-        """Restart the embedding service - CORRECTED VERSION"""
+        """Restart the embedding service (only applicable for local providers like Ollama)"""
+        if EMBEDDING_PROVIDER != 'ollama':
+            # Cloud providers don't need restart — just retry
+            logger.info(f"☁️ Embedding provider '{EMBEDDING_PROVIDER}' is cloud-based, no restart needed")
+            return True
+
         try:
-            logger.info("🔄 Attempting to restart embedding service...")
-            
-            # First, check if we need a separate instance at all
-            # Modern Ollama can handle both LLM and embedding requests on the same port
-            
-            # Option 1: Use the main Ollama instance (RECOMMENDED)
-            # Just ensure the embedding model is pulled and loaded
-            try:
-                # Pull the embedding model if not already present
-                pull_result = await asyncio.create_subprocess_shell(
-                    f"ollama pull {EMBEDDING_MODEL_NAME}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await pull_result.communicate()
-                
-                if pull_result.returncode != 0:
-                    logger.error(f"Failed to pull embedding model: {stderr.decode()}")
-                    return False
-                    
-                # Pre-load the model to keep it in memory
-                load_payload = {
+            logger.info("🔄 Attempting to restart Ollama embedding service...")
+            # Pull the embedding model if not already present
+            pull_result = await asyncio.create_subprocess_shell(
+                f"ollama pull {EMBEDDING_MODEL_NAME}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await pull_result.communicate()
+
+            if pull_result.returncode != 0:
+                logger.error(f"Failed to pull embedding model: {stderr.decode()}")
+                return False
+
+            # Use the main Ollama port for embeddings
+            response = await pooled_post(
+                f"http://{OLLAMA_EMBEDDING_HOST}:{OLLAMA_MAIN_PORT}/api/embeddings",
+                json={
                     "model": EMBEDDING_MODEL_NAME,
-                    "keep_alive": -1  # Keep loaded indefinitely
-                }
-                
-                # Use the main Ollama port for embeddings
-                response = await pooled_post(
-                    f"http://{OLLAMA_EMBEDDING_HOST}:{OLLAMA_MAIN_PORT}/api/embeddings",
-                    json={
-                        "model": EMBEDDING_MODEL_NAME,
-                        "prompt": "warmup",
-                        "keep_alive": -1
-                    },
-                    timeout=30
-                )
-                
-                return response['status_code'] == 200
-                
-            except Exception as e:
-                logger.error(f"Failed to setup embedding model: {e}")
-                
-                # Option 2: If you really need a separate instance (NOT RECOMMENDED)
-                # Kill ALL ollama processes and restart with specific port
-                logger.info("Attempting fallback: Kill all Ollama and restart on specific port")
-                
-                # Kill all ollama processes
-                kill_result = await asyncio.create_subprocess_shell(
-                    "pkill -f 'ollama serve' || true",  # || true prevents error if no process found
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await kill_result.wait()
-                
-                # Wait for processes to fully terminate
-                await asyncio.sleep(3)
-                
-                # Start Ollama on the embedding port using a proper daemon approach
-                # Note: This will be the ONLY Ollama instance running
-                start_cmd = f"""
-                export OLLAMA_HOST=0.0.0.0:{OLLAMA_EMBEDDING_PORT} && \
-                ollama serve 2>/dev/null 1>/dev/null &
-                """
-                
-                start_result = await asyncio.create_subprocess_shell(
-                    start_cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await start_result.wait()
-                
-                # Wait longer for service to fully start
-                await asyncio.sleep(10)  # Ollama needs time to initialize
-                
-                # Pull and load the embedding model
-                pull_result = await asyncio.create_subprocess_shell(
-                    f"OLLAMA_HOST=127.0.0.1:{OLLAMA_EMBEDDING_PORT} ollama pull {EMBEDDING_MODEL_NAME}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await pull_result.communicate()
-                
-                # Verify it's working
-                return await self._check_embedding_service_health()
-                
+                    "prompt": "warmup",
+                    "keep_alive": -1
+                },
+                timeout=30
+            )
+            return response['status_code'] == 200
+
         except Exception as e:
             logger.error(f"❌ Failed to restart embedding service: {e}")
             return False
         
     async def _generate_embeddings(self, texts: List[str]) -> Optional[List[np.ndarray]]:
-        """Generate embeddings using Ollama via existing HTTP pool with health checking"""
+        """Generate embeddings via configured provider (OpenAI, Ollama, etc.) with health checking"""
         try:
             # First check if service is healthy
             if not await self._check_embedding_service_health():
@@ -951,32 +943,49 @@ class FAISSDocumentStore:
                         await asyncio.sleep(RETRY_DELAY_SECONDS)
                 else:
                     logger.error(f"❌ Failed to restart embedding service after {MAX_SERVICE_RESTART_ATTEMPTS} attempts")
-                    logger.error("🛑 RECOMMENDATION: Manual intervention required - check ollama installation and restart embedding service manually")
-                    logger.error(f"🛑 Command to restart: OLLAMA_HOST={OLLAMA_EMBEDDING_HOST}:{OLLAMA_EMBEDDING_PORT} ollama serve")
+                    logger.error(f"🛑 RECOMMENDATION: Manual intervention required — provider: {EMBEDDING_PROVIDER}, url: {EMBEDDING_SERVICE_URL}")
                     return None
             async def generate_single_embedding(text: str) -> Optional[np.ndarray]:
-                """Generate embedding for a single text"""
+                """Generate embedding for a single text (provider-aware)"""
                 try:
-                    payload = {
-                        "model": EMBEDDING_MODEL_NAME,  # High-quality embedding model
-                        "prompt": text,
-                        "keep_alive": -1  # Keep model loaded permanently
-                    }
-                    
+                    if EMBEDDING_PROVIDER == 'ollama':
+                        payload = {
+                            "model": EMBEDDING_MODEL_NAME,
+                            "prompt": text,
+                            "keep_alive": -1
+                        }
+                        headers = {}
+                    else:
+                        # OpenAI and OpenAI-compatible APIs
+                        payload = {
+                            "model": EMBEDDING_MODEL_NAME,
+                            "input": text,
+                            "dimensions": EMBEDDING_DIMENSION,
+                        }
+                        headers = {}
+                        if EMBEDDING_API_KEY:
+                            headers["Authorization"] = f"Bearer {EMBEDDING_API_KEY}"
+
                     response_data = await pooled_post(
-                        EMBEDDING_SERVICE_URL,  # Use dedicated embedding instance
+                        EMBEDDING_SERVICE_URL,
                         json=payload,
+                        headers=headers if headers else None,
                         timeout=EMBEDDING_TIMEOUT_SECONDS
                     )
-                    
+
                     if response_data['status_code'] == 200:
                         embedding_data = json.loads(response_data['text'])
-                        embedding = np.array(embedding_data['embedding'], dtype=np.float32)
+                        if EMBEDDING_PROVIDER == 'ollama':
+                            raw = embedding_data['embedding']
+                        else:
+                            # OpenAI format: {"data": [{"embedding": [...]}]}
+                            raw = embedding_data['data'][0]['embedding']
+                        embedding = np.array(raw, dtype=np.float32)
                         return embedding
                     else:
                         logger.error(f"❌ Embedding generation failed: {response_data['status_code']}")
                         return None
-                        
+
                 except Exception as e:
                     logger.error(f"❌ Single embedding error: {e}")
                     return None
@@ -1023,37 +1032,36 @@ class FAISSDocumentStore:
                         logger.error(f"❌ Batch failed and adaptive mode disabled - aborting")
                         return None
 
-                    # 🛡️ CRITICAL: Check if Ollama service itself is healthy
+                    # 🛡️ CRITICAL: Check if embedding service itself is healthy
                     is_service_healthy = await self._check_embedding_service_health()
-                    logger.warning(f"🔍 Ollama health check: {'✅ HEALTHY' if is_service_healthy else '❌ UNHEALTHY'}")
+                    logger.warning(f"🔍 Embedding health check ({EMBEDDING_PROVIDER}): {'✅ HEALTHY' if is_service_healthy else '❌ UNHEALTHY'}")
 
                     if not is_service_healthy:
-                        logger.error(f"🚨 EMBEDDING SERVICE UNHEALTHY - Attempting restart")
+                        logger.error(f"🚨 EMBEDDING SERVICE UNHEALTHY ({EMBEDDING_PROVIDER}) - Attempting recovery")
                         logger.error(f"   Progress: {processed_count}/{total_chunks} embeddings processed")
                         logger.error(f"   Current batch_size: {current_batch_size}")
 
-                        # Attempt to restart Ollama service
+                        # Attempt to restart/recover embedding service
                         restart_success = False
                         for restart_attempt in range(2):  # Try 2 restart attempts
-                            logger.info(f"🔄 Ollama restart attempt {restart_attempt + 1}/2...")
+                            logger.info(f"🔄 Embedding service recovery attempt {restart_attempt + 1}/2...")
                             if await self._restart_embedding_service():
-                                logger.info(f"✅ Ollama restarted successfully")
+                                logger.info(f"✅ Embedding service recovered successfully")
                                 restart_success = True
                                 break
                             else:
-                                logger.error(f"❌ Restart attempt {restart_attempt + 1} failed")
+                                logger.error(f"❌ Recovery attempt {restart_attempt + 1} failed")
                                 await asyncio.sleep(5)
 
                         if not restart_success:
-                            logger.error(f"❌ Failed to restart Ollama after 2 attempts")
-                            logger.error(f"🛑 RECOMMENDATION: Manually restart Ollama service")
-                            logger.error(f"   Command: systemctl restart ollama")
-                            logger.error(f"   Or check: ps aux | grep ollama")
+                            logger.error(f"❌ Failed to recover embedding service after 2 attempts")
+                            logger.error(f"🛑 Provider: {EMBEDDING_PROVIDER}, URL: {EMBEDDING_SERVICE_URL}")
                             return None
 
-                        # After restart, wait longer before retry
-                        logger.info(f"⏳ Waiting 15 seconds for Ollama to stabilize...")
-                        await asyncio.sleep(15)
+                        # After recovery, wait before retry
+                        stabilize_delay = 15 if EMBEDDING_PROVIDER == 'ollama' else 3
+                        logger.info(f"⏳ Waiting {stabilize_delay}s for service to stabilize...")
+                        await asyncio.sleep(stabilize_delay)
 
                         # Reset batch size after service recovery (retry with original batch size)
                         logger.info(f"📈 Service recovered - resetting batch_size to {DEFAULT_BATCH_SIZE}")
@@ -1073,8 +1081,7 @@ class FAISSDocumentStore:
                     else:
                         logger.error(f"❌ Batch failed at minimum batch size ({MIN_BATCH_SIZE}) with healthy service")
                         logger.error(f"   Progress: {processed_count}/{total_chunks} embeddings")
-                        logger.error(f"   This indicates a fundamental service issue")
-                        logger.error(f"   Recommendation: Check Ollama logs for detailed errors")
+                        logger.error(f"   Provider: {EMBEDDING_PROVIDER}, URL: {EMBEDDING_SERVICE_URL}")
                         return None
 
                 # Batch succeeded - add to results
@@ -1092,9 +1099,9 @@ class FAISSDocumentStore:
                     logger.debug(f"🏥 Periodic health check at batch {batches_processed}...")
                     is_healthy = await self._check_embedding_service_health()
                     if is_healthy:
-                        logger.debug(f"   ✅ Ollama service healthy")
+                        logger.debug(f"   ✅ Embedding service healthy ({EMBEDDING_PROVIDER})")
                     else:
-                        logger.warning(f"⚠️ Ollama service degrading at batch {batches_processed}")
+                        logger.warning(f"⚠️ Embedding service degrading at batch {batches_processed} ({EMBEDDING_PROVIDER})")
                         logger.warning(f"   This may indicate upcoming failures - monitoring closely")
 
                 # ✅ Delay between batches to prevent service overload and memory buildup
