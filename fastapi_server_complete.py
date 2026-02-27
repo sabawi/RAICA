@@ -10969,22 +10969,22 @@ async def openai_chat_completions(request: OpenAIChatRequest):
         enhanced_prompt = conversation_context + user_prompt if is_followup else user_prompt
         
         if is_streaming:
-            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images)
+            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools)
         else:
-            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images)
+            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools)
         
     except Exception as e:
         logger.error(f"🚨 OpenAI compatibility error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None):
+async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None):
     """Handle non-streaming OpenAI response with proper format"""
     try:
         logger.info(f"🔒 OpenAI Non-streaming Response - falling back to streaming with collect")
         
         # For non-streaming, we'll use streaming mode and collect all chunks
-        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images)
+        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools)
         
         # Collect all streaming content
         response_content = ""
@@ -11400,7 +11400,7 @@ def _format_conversation_for_markdown(messages: list) -> str:
 
 # ALL PDF FORMATTING FUNCTIONS REMOVED - PDF PROCESSING COMPLETELY DISABLED
 
-async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None):
+async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None):
     """Handle streaming OpenAI response with proper format - simplified implementation"""
     try:
         logger.info(f"🔒 OpenAI Streaming Response requested")
@@ -11448,7 +11448,7 @@ async def openai_streaming_response(user_prompt: str, model: str, conversation_i
                 "images": images if images else ["noimage"],  # 🔧 FIX: Use actual images from OpenAI request
                 "tools_calling_model": ServerConfig.DEFAULT_TOOL_CALLING_MODEL,
                 "system": "",
-                "allowed_tools": request.allowed_tools,  # Pass tool whitelist from caller
+                "allowed_tools": allowed_tools,  # Pass tool whitelist from caller
             }
             
             # Choose routing method based on feature flag
