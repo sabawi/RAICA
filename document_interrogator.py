@@ -831,9 +831,12 @@ class FAISSDocumentStore:
                 
                 # 🎯 RELEVANCE FILTERING: Skip very dissimilar results
                 # For FAISS IndexFlatIP, higher scores = more similar
-                # Threshold 130+ includes all passport docs (134.8, 129.9) but may include some noise
-                if score < 130.0:
-                    logger.info(f"⚠️ Skipping low-relevance result: score={score:.1f} < 130.0 (faiss_idx={faiss_idx})")
+                # Score ranges differ by provider:
+                #   - Ollama (mxbai-embed-large): unnormalized, scores ~100-200+
+                #   - OpenAI (text-embedding-3-small): L2-normalized, scores 0.0-1.0
+                min_score = 0.3 if EMBEDDING_PROVIDER != 'ollama' else 130.0
+                if score < min_score:
+                    logger.debug(f"⚠️ Skipping low-relevance result: score={score:.2f} < {min_score} (faiss_idx={faiss_idx})")
                     continue
                 
                 cursor.execute('''
