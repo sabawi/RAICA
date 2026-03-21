@@ -8021,6 +8021,11 @@ async def llama_stream(request: Request):
             email_intercepted = False
             intercepted_email_params = {}
             
+            # Ensure LLM manager is initialized before FORCED IMAGE PROCESSING check
+            # (initialize() is idempotent — safe to call even if already done)
+            if not llm_manager._initialized:
+                await llm_manager.initialize()
+
             # ###########################################################################
             # TWO-STAGE TOOL CALLING ALGORITHM (exactly like original Flask implementation)
             if (tools_in_use):
