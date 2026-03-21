@@ -8174,9 +8174,9 @@ The above image analysis was automatically performed on newly uploaded images. T
                 # 🖼️ Build user message with image presence indicator
                 user_message_content = f"""Examine the intent of the user's prompt and apply the system directives to make the appropriate calls to the tools' functions."""
 
-                # 🖼️ CRITICAL: Explicitly indicate when images are present
-                # Use images_available (survives forced processing reset) OR image_exists
-                if image_exists or images_available:
+                # 🖼️ Indicate image presence to tool-calling LLM ONLY if image_to_text was not already
+                # called by the FORCED IMAGE PROCESSING block. Avoids a duplicate vision model call.
+                if (image_exists or images_available) and "image_to_text" not in tools_called:
                     image_count = len([img for img in data.get("images", []) if img != "noimage"])
                     user_message_content += f"""\n\n🖼️ IMPORTANT: User has provided {image_count} image(s). You MUST call image_to_text() with image="user_provided_image_data" to analyze the image(s)."""
 
