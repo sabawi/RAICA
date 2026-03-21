@@ -8062,8 +8062,8 @@ async def llama_stream(request: Request):
                             
                             # Load and execute image_to_text tool
                             try:
-                                from user_tools.tool_discovery import get_user_tool_by_name, load_user_tools
-                                user_tools = load_user_tools()
+                                from user_tools.tool_discovery import get_user_tool_by_name, discover_user_tools
+                                user_tools = await discover_user_tools()  # use async version — load_user_tools() calls asyncio.run() which fails inside async context
                                 image_tool = get_user_tool_by_name(user_tools, "image_to_text")
                                 
                                 if image_tool:
@@ -8089,29 +8089,37 @@ async def llama_stream(request: Request):
                                         execution_time = time.time() - start_time
                                         
                                         if result.get('success'):
-                                            processed_count = result.get('processed_images', 0)
-                                            logger.info(f"🖼️ FORCED IMAGE PROCESSING COMPLETE: {processed_count} images processed in {execution_time:.1f}s")
-                                            
-                                            # Format the results for primary LLM context
+                                            # Extract description: image_to_text returns top-level 'description';
+                                            # batch format (if ever used) returns a 'results' list of dicts.
                                             image_descriptions = []
+
+                                            # Batch format (results list)
                                             for img_result in result.get('results', []):
                                                 if img_result.get('description'):
                                                     filename = img_result.get('filename', 'image')
                                                     description = img_result.get('description')
                                                     image_descriptions.append(f"[{filename}]: {description}")
-                                            
+
+                                            # Single-image format — top-level 'description' key (image_to_text default)
+                                            if not image_descriptions and result.get('description'):
+                                                image_descriptions.append(result['description'])
+
+                                            processed_count = len(image_descriptions) or result.get('processed_images', 0)
+                                            logger.info(f"🖼️ FORCED IMAGE PROCESSING COMPLETE: {processed_count} images processed in {execution_time:.1f}s")
+
                                             if image_descriptions:
-                                                # Generate timestamp for chronological ordering
                                                 import datetime
                                                 timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                                                
                                                 forced_image_processing_result = f"""
 🖼️ IMAGE PROCESSING RESULTS [{timestamp}]:
 {chr(10).join(image_descriptions)}
 
 The above image analysis was automatically performed on newly uploaded images. This visual content is now available for your response."""
-                                            
-                                            # Add to tools results for primary LLM - will be appended to existing context
+                                                logger.info(f"🖼️ Image description extracted: {len(image_descriptions[0])} chars")
+                                            else:
+                                                logger.warning("🖼️ FORCED IMAGE PROCESSING: success=True but no description extracted")
+
+                                            # Add to tools results for primary LLM
                                             tools_called.append("image_to_text")
                                             tools_results_list.append(f"Tool: image_to_text\nResult: {forced_image_processing_result}\n")
                                             
