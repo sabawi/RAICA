@@ -95,6 +95,7 @@ class LLMManager:
         self.primary_provider: Optional[LLMProvider] = None
         self.tool_calling_provider: Optional[LLMProvider] = None
         self.arbitrator_provider: Optional[LLMProvider] = None
+        self.image_processing_provider: Optional[Any] = None
         self.config = None
         self._initialized = False
         logger.info("🎛️ LLM Manager initialized")
@@ -131,7 +132,18 @@ class LLMManager:
                 )
             else:
                 logger.info("🧠 Arbitrator disabled - skipping arbitrator provider")
-            
+
+            # Initialize image processing (vision) provider if configured
+            # Note: actual vision inference is handled by the image_to_text user tool;
+            # this attribute signals to the FORCED IMAGE PROCESSING block that vision is available.
+            vision_config = self.config.get('vision', {})
+            vision_model = vision_config.get('config', {}).get('model')
+            if vision_config and vision_model:
+                self.image_processing_provider = vision_config  # truthy — vision is available
+                logger.info(f"🖼️ Image processing provider configured: {vision_model}")
+            else:
+                logger.info("🖼️ Vision config not found — image processing unavailable")
+
             self._initialized = True
             logger.info("✅ LLM Manager initialization complete")
             
