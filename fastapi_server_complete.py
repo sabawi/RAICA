@@ -8015,7 +8015,8 @@ async def llama_stream(request: Request):
             tools_results_list = []  # Use list for O(1) append vs O(n²) string concatenation
             tools_called = []  # Track all tools that were called
             complete_llm_response = ""  # Initialize for both Ollama and OpenAI paths
-            
+            images_available = False  # Survives image_exists reset inside tools_in_use block; always defined here for non-tools path
+
             # 🎯 EMAIL INTERCEPTION STATE  
             email_intercepted = False
             intercepted_email_params = {}
@@ -9650,8 +9651,8 @@ END OF CONTEXT
                     "stream": True
                 }
                 
-                # Add images if they exist
-                if image_exists:
+                # Add images if they exist (use images_available to survive forced-processing reset when tools_in_use=True)
+                if image_exists or images_available:
                     stream_payload["images"] = data.get("images")
                 
                 logger.info(f"🤖 PRIMARY LLM: {model} | Input: {len(in_prompt)} bytes | Tools: {len(tools_called)}")
@@ -9853,8 +9854,8 @@ END OF CONTEXT
                         'think': think_enabled  # Pass think parameter from configuration
                     }
 
-                    # Add images if present for vision models
-                    if image_exists and stream_payload.get("images"):
+                    # Add images if present for vision models (use images_available to survive forced-processing reset)
+                    if (image_exists or images_available) and stream_payload.get("images"):
                         manager_kwargs['images'] = stream_payload["images"]
 
                     try:
