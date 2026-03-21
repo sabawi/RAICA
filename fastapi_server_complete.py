@@ -8988,8 +8988,9 @@ The above image analysis was automatically performed on newly uploaded images. T
                                     formatted_result = f"Tool: {function_name}\nResult: {result}\n\n"
                                     formatted_tools_results_list.append(formatted_result)
 
-                                # 🔧 FIX: Replace tuple list with formatted string list for arbitrator
-                                tools_results_list = formatted_tools_results_list
+                                # 🔧 FIX: Append formatted results to preserve any pre-existing entries
+                                # (e.g., FORCED IMAGE PROCESSING result added before regular tool calling)
+                                tools_results_list = tools_results_list + formatted_tools_results_list
 
                             else:
                                 # 🔧 FIX v1.0.0.44: Parse tool calls from content when tool_calls is empty
@@ -9066,7 +9067,8 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         formatted_result = f"Tool: {fn_name}\nResult: {result}\n\n"
                                         formatted_tools_results_list.append(formatted_result)
 
-                                    tools_results_list = formatted_tools_results_list
+                                    # Append to preserve any pre-existing entries (e.g., FORCED IMAGE PROCESSING result)
+                                    tools_results_list = tools_results_list + formatted_tools_results_list
 
                                 else:
                                     # Genuinely no tool calls - check if we should force data gathering
