@@ -115,6 +115,7 @@ yfinance==0.2.65
 
 # LLM Provider Dependencies (added 2025-10-26)
 google-generativeai==0.8.5
+tiktoken>=0.5.0  # Accurate token counting for OpenAI-compatible endpoint (added 2026-05-05)
 
 # Document Interrogation System Dependencies (added 2025-08-12)
 faiss-cpu>=1.7.0
@@ -164,3 +165,11 @@ schedule>=1.1.0
 # Website Deployment Agent Dependencies (added 2025-11-23)
 anthropic>=0.21.0      # LLM for requirement analysis and architecture design
 paramiko>=3.0.0        # SSH connection and file transfer for deployment
+
+# CATA Agent Dependencies (added 2026-03-01)
+langgraph>=0.0.1
+langchain>=0.1.0
+langchain-community>=0.0.10
+docker>=7.0.0
+chromadb>=0.4.0
+litellm>=1.0.0

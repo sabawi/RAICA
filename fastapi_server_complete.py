@@ -256,6 +256,15 @@ def _cleanup_openai_conversations():
     for k in expired:
         del openai_conversations[k]
 
+def _count_tokens(text: str) -> int:
+    """Count tokens using tiktoken if available, else fall back to word-count estimate."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except (ImportError, Exception):
+        return len(text.split())
+
 # PDF PROCESSING COMPLETELY DISABLED
 CONVERSATION_PDF_AVAILABLE = False
 
@@ -826,7 +835,7 @@ class AsyncToolManager:
                 else:
                     return f"No Wikipedia page found for: {query}"
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_wikipedia_query
             )
         except Exception as e:
@@ -859,7 +868,7 @@ class AsyncToolManager:
                 Sector: {info.get('sector', 'N/A')}
                 Market Cap: {info.get('marketCap', 'N/A')}"""
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_stock_data
             )
         except Exception as e:
@@ -1748,7 +1757,7 @@ class AsyncToolManager:
             # Parallel fetching should complete much faster now
             try:
                 return await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(thread_pool, sync_news_query),
+                    asyncio.get_running_loop().run_in_executor(thread_pool, sync_news_query),
                     timeout=60.0  # Maximum 60 seconds for entire news operation (parallel fetch)
                 )
             except asyncio.TimeoutError:
@@ -1860,7 +1869,7 @@ class AsyncToolManager:
                 print("Web search completed", flush=True)
                 return res
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_web_search
             )
         except Exception as e:
@@ -2020,7 +2029,7 @@ class AsyncToolManager:
                 print("Website lookup completed", flush=True)
                 return res
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_website_lookup
             )
         except Exception as e:
@@ -2300,7 +2309,7 @@ class AsyncToolManager:
                 print(f"Website extraction completed: {len(final_response)} chars", flush=True)
                 return final_response
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_website_extraction
             )
         except Exception as e:
@@ -2400,7 +2409,7 @@ class AsyncToolManager:
                 except Exception as e:
                     return f"❌ Error: Email sending failed: {str(e)}"
             
-            return await asyncio.get_event_loop().run_in_executor(
+            return await asyncio.get_running_loop().run_in_executor(
                 thread_pool, sync_email_send
             )
             
@@ -2471,7 +2480,7 @@ async def lifespan(app: FastAPI):
     
     # Test Ollama connection using connection pool
     try:
-        response_data = await pooled_get('http://127.0.0.1:11434/api/tags', timeout=5)
+        response_data = await pooled_get(_get_ollama_health_url(), timeout=5)
         if response_data['status_code'] == 200:
             logger.info("Ollama service is available")
         else:
@@ -2557,10 +2566,7 @@ async def log_requests(request: Request, call_next):
     if logging.root.disabled:
         return await call_next(request)
     
-    # Priority: Environment variables > Config file > Defaults
-    debug_config = config_loader.load_config().get('debug', {})
-    log_requests_enabled = os.getenv('LOG_REQUESTS', str(debug_config.get('log_requests', True))).lower() in ('true', '1', 'yes')
-    log_timing_enabled = os.getenv('LOG_TIMING', str(debug_config.get('log_timing', True))).lower() in ('true', '1', 'yes')
+    # Reuse module-level debug config (loaded once at startup) instead of reloading per request
     
     if not log_requests_enabled and not log_timing_enabled:
         return await call_next(request)
@@ -2595,16 +2601,22 @@ async def execute_query(query: str, params: Optional[tuple] = None) -> List[Dict
             result = await cursor.fetchall()
             return result
 
+def _get_ollama_health_url():
+    """Derive health check URL from ServerConfig.OLLAMA_URL instead of hardcoding."""
+    from urllib.parse import urlparse
+    parsed = urlparse(ServerConfig.OLLAMA_URL)
+    return f"{parsed.scheme}://{parsed.netloc}/api/tags"
+
 async def run_cpu_intensive_task(func, *args, **kwargs):
     """Run CPU-intensive tasks in thread pool"""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(thread_pool, func, *args, **kwargs)
 
 async def check_ollama_health() -> bool:
     """Check if Ollama service is healthy using connection pool"""
     try:
         async with http_pool.get_session() as session:
-            async with session.get('http://127.0.0.1:11434/api/tags', timeout=aiohttp.ClientTimeout(total=5)) as response:
+            async with session.get(_get_ollama_health_url(), timeout=aiohttp.ClientTimeout(total=5)) as response:
                 return response.status == 200
     except Exception as e:
         logger.warning(f"Ollama health check failed: {e}")
@@ -3453,7 +3465,7 @@ async def _original_processing_fallback(
                         max_length=max_context_window
                     )
                 
-                tools_results_summary = await asyncio.get_event_loop().run_in_executor(
+                tools_results_summary = await asyncio.get_running_loop().run_in_executor(
                     thread_pool, sync_text_chunking
                 )
                 logger.info(f"TextChunker() was called and returned tools_results_summary size of {len(tools_results_summary)} bytes. From {len(full_tools_text)}")
@@ -9509,7 +9521,7 @@ Generate the corrected tool calls:"""
                                     max_length=max_context_window
                                 )
                             
-                            tools_results_summary = await asyncio.get_event_loop().run_in_executor(
+                            tools_results_summary = await asyncio.get_running_loop().run_in_executor(
                                 thread_pool, sync_text_chunking
                             )
                             logger.info(f"TextChunker() was called and returned tools_results_summary size of {len(tools_results_summary)} bytes. From {len(full_tools_text)}")
@@ -10686,7 +10698,7 @@ async def list_ollama_models():
     """List available Ollama models"""
     try:
         async with http_pool.get_session() as session:
-            async with session.get('http://127.0.0.1:11434/api/tags') as response:
+            async with session.get(_get_ollama_health_url()) as response:
                 if response.status == 200:
                     data = await response.json()
                     return ApiResponse(
@@ -11095,9 +11107,9 @@ async def openai_non_streaming_response(user_prompt: str, model: str, conversati
                 }
             ],
             "usage": {
-                "prompt_tokens": len(user_prompt.split()),
-                "completion_tokens": len(response_content.split()),
-                "total_tokens": len(user_prompt.split()) + len(response_content.split())
+                "prompt_tokens": _count_tokens(user_prompt),
+                "completion_tokens": _count_tokens(response_content),
+                "total_tokens": _count_tokens(user_prompt) + _count_tokens(response_content)
             }
         }
         
@@ -11125,9 +11137,9 @@ async def openai_non_streaming_response(user_prompt: str, model: str, conversati
                 "type": type(e).__name__
             },
             "usage": {
-                "prompt_tokens": len(user_prompt.split()),
+                "prompt_tokens": _count_tokens(user_prompt),
                 "completion_tokens": 0,
-                "total_tokens": len(user_prompt.split())
+                "total_tokens": _count_tokens(user_prompt)
             }
         }
 
