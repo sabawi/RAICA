@@ -45,6 +45,10 @@ from concurrent.futures import ThreadPoolExecutor
 import aiohttp
 import requests
 
+# Load .env file for secrets (DB_PASSWORD, API keys, etc.) before any os.getenv() calls
+from dotenv import load_dotenv
+load_dotenv()
+
 # HTTP Connection Pooling
 from http_pool_manager import http_pool, init_http_pool, cleanup_http_pool
 from http_helpers import pooled_get, pooled_post, requests_compatible_get, requests_compatible_post
