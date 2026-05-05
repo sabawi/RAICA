@@ -142,7 +142,12 @@ class ServerConfig:
     # Database configuration
     DB_HOST = os.getenv('DB_HOST', 'localhost')
     DB_USER = os.getenv('DB_USER', 'root')  
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'Down2earth!')
+    DB_PASSWORD = os.getenv('DB_PASSWORD')
+
+    # Fail-fast: DB_PASSWORD is required
+    if DB_PASSWORD is None:
+        print("CRITICAL: DB_PASSWORD environment variable is not set. Server cannot start.", flush=True)
+        raise RuntimeError("DB_PASSWORD environment variable is required. Set it before starting the server.")
     DB_NAME = os.getenv('DB_NAME', 'mystocks')
     DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '10'))
     
@@ -242,6 +247,14 @@ simple_cache = {}
 
 # Simple conversation memory for OpenAI compatibility endpoint (in-memory only)
 openai_conversations = {}
+OPENAI_CONVERSATION_TTL = 3600  # 1 hour TTL to prevent unbounded memory growth
+
+def _cleanup_openai_conversations():
+    """Remove expired entries from openai_conversations to prevent memory leak."""
+    now = time.time()
+    expired = [k for k, v in openai_conversations.items() if now - v.get('_created', 0) > OPENAI_CONVERSATION_TTL]
+    for k in expired:
+        del openai_conversations[k]
 
 # PDF PROCESSING COMPLETELY DISABLED
 CONVERSATION_PDF_AVAILABLE = False
@@ -866,7 +879,8 @@ class AsyncToolManager:
                     # Try to parse as dict first, fall back to string
                     try:
                         data = json.loads(args) if args.startswith('{') else {'filter': args}
-                    except:
+                    except Exception as e:
+                        logger.warning(f"JSON parse failed for news filter args: {e}")
                         data = {'filter': args}
                 else:
                     data = args if isinstance(args, dict) else {'filter': str(args)}
@@ -1539,11 +1553,11 @@ class AsyncToolManager:
                             # Use XML parser for RSS feeds to avoid warnings
                             try:
                                 soup = BeautifulSoup(response.text, 'xml')
-                            except:
+                            except Exception:
                                 # Fallback to lxml if available, then html.parser
                                 try:
                                     soup = BeautifulSoup(response.text, 'lxml')
-                                except:
+                                except Exception:
                                     soup = BeautifulSoup(response.text, 'html.parser')
                             
                             # Extract RSS items
@@ -1756,11 +1770,12 @@ class AsyncToolManager:
                 if isinstance(args, str):
                     try:
                         data = json.loads(args) if args.startswith('{') else {'query': args}
-                    except:
+                    except Exception as e:
+                        logger.warning(f"JSON parse failed for web search args: {e}")
                         data = {'query': args}
                 else:
                     data = args if isinstance(args, dict) else {'query': str(args)}
-                
+
                 query = data.get('query', '').strip()
                 print(f"Web search query: {query}", flush=True)
                 
@@ -1864,7 +1879,8 @@ class AsyncToolManager:
                 if isinstance(args, str):
                     try:
                         data = json.loads(args) if args.startswith('{') else {'url': args}
-                    except:
+                    except Exception as e:
+                        logger.warning(f"JSON parse failed for website lookup args: {e}")
                         data = {'url': args}
                 else:
                     data = args if isinstance(args, dict) else {'url': str(args)}
@@ -1891,7 +1907,7 @@ class AsyncToolManager:
                             mime = magic.Magic(mime=True)
                             content_type = mime.from_buffer(full_response.content[:1024])
                             return content_type == 'application/pdf'
-                        except:
+                        except Exception:
                             return False
                     except Exception as e:
                         print(f"PDF detection error for {url}: {e}")
@@ -2078,7 +2094,7 @@ class AsyncToolManager:
                     if not page_text.strip():
                         try:
                             page_text = page.extract_text(extraction_mode="layout")
-                        except:
+                        except Exception:
                             pass
 
                     if page_text.strip():
@@ -2229,7 +2245,8 @@ class AsyncToolManager:
                 if isinstance(args, str):
                     try:
                         data = json.loads(args) if args.startswith('{') else {'url': args}
-                    except:
+                    except Exception as e:
+                        logger.warning(f"JSON parse failed for website extraction args: {e}")
                         data = {'url': args}
                 else:
                     data = args if isinstance(args, dict) else {'url': str(args)}
@@ -2394,6 +2411,8 @@ class AsyncToolManager:
 # CACHE FUNCTIONS
 # ==============================================================================
 
+MAX_CACHE_SIZE = 1000  # Prevent unbounded memory growth with LRU eviction
+
 def cache_get(key: str) -> Optional[str]:
     """Get value from simple cache"""
     if key in simple_cache:
@@ -2405,7 +2424,10 @@ def cache_get(key: str) -> Optional[str]:
     return None
 
 def cache_set(key: str, value: str, ttl: int = 3600):
-    """Set value in simple cache"""
+    """Set value in simple cache with LRU eviction when max size exceeded"""
+    if len(simple_cache) >= MAX_CACHE_SIZE and key not in simple_cache:
+        oldest_key = min(simple_cache, key=lambda k: simple_cache[k]['expires'])
+        del simple_cache[oldest_key]
     simple_cache[key] = {
         'value': value,
         'expires': time.time() + ttl
@@ -2584,7 +2606,8 @@ async def check_ollama_health() -> bool:
         async with http_pool.get_session() as session:
             async with session.get('http://127.0.0.1:11434/api/tags', timeout=aiohttp.ClientTimeout(total=5)) as response:
                 return response.status == 200
-    except:
+    except Exception as e:
+        logger.warning(f"Ollama health check failed: {e}")
         return False
 
 def _format_source_block(source_url: str, title: str, content: str, source_num: int, timestamp: str = None) -> str:
@@ -2686,7 +2709,7 @@ def _extract_content_date(content: str) -> str:
                                 target_date = now - timedelta(days=amount*30)  # Approximate
 
                             return target_date.strftime('%B %d, %Y')
-                        except:
+                        except Exception:
                             continue
                     else:
                         match = match[0] if isinstance(match, tuple) else match
@@ -2699,7 +2722,7 @@ def _extract_content_date(content: str) -> str:
                         try:
                             parsed_date = datetime.strptime(match, fmt)
                             break
-                        except:
+                        except Exception:
                             continue
 
                     if parsed_date:
@@ -2711,7 +2734,7 @@ def _extract_content_date(content: str) -> str:
                         if min_date <= parsed_date <= max_date:
                             return parsed_date.strftime('%B %d, %Y')
 
-                except:
+                except Exception:
                     continue
 
     return None
@@ -2795,7 +2818,7 @@ def _extract_domain(url: str) -> str:
         if domain.startswith('www.'):
             domain = domain[4:]
         return domain.title()
-    except:
+    except Exception:
         return "Unknown Source"
 
 def _validate_article_url(url: str) -> bool:
@@ -2850,7 +2873,7 @@ def _parse_rss_articles(rss_content: str, feed_url: str, max_articles: int = 5) 
         # Parse with XML parser for better RSS handling
         try:
             soup = BeautifulSoup(rss_content, 'xml')
-        except:
+        except Exception:
             # Fallback to html parser
             soup = BeautifulSoup(rss_content, 'html.parser')
         
@@ -3029,7 +3052,7 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
                     return (formatted_source, 1)
                 else:
                     return ("", 0)
-            except:
+            except Exception:
                 return ("", 0)
             
     except Exception as e:
@@ -4552,7 +4575,7 @@ FAILED TOOLS REQUIRING REGENERATION:
                         end_idx = tool_result.find('",', start_idx)
                         if start_idx > 0 and end_idx > 0:
                             previously_generated_code = tool_result[start_idx:end_idx].replace('\\n', '\n').replace('\\"', '"')
-                except:
+                except Exception:
                     pass
             
         # Extract specific error details from latest_error or original_result
@@ -9951,9 +9974,9 @@ END OF CONTEXT
                                                         chunk_json = json.loads(line)
                                                         if 'response' in chunk_json:
                                                             complete_llm_response += chunk_json['response']
-                                                    except:
+                                                    except Exception:
                                                         pass
-                                        except:
+                                        except Exception:
                                             pass
                         
                     # Output condition: PRIMARY LLM completed
@@ -10728,7 +10751,7 @@ async def get_metrics():
         import psutil
         cpu_percent = psutil.cpu_percent(interval=0.1)
         memory = psutil.virtual_memory()
-    except:
+    except Exception:
         cpu_percent = 0
         memory = None
     
