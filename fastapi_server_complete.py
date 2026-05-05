@@ -7931,6 +7931,14 @@ async def llama_stream(request: Request):
                     
                     # Expand user path (~)
                     file_path = os.path.expanduser(file_path)
+
+                    # Path traversal protection: only allow files within project directory
+                    resolved = os.path.realpath(file_path)
+                    ALLOWED_BASE = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+                    if not resolved.startswith(ALLOWED_BASE + os.sep):
+                        logger.error(f"🖼️ Image {i+1}: Path traversal blocked: {file_path} -> {resolved}")
+                        processed_images.append("noimage")
+                        continue
                     
                     if not os.path.exists(file_path):
                         logger.error(f"🖼️ Image {i+1}: File not found: {file_path}")
@@ -8848,8 +8856,6 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                 modified_args_dict = _apply_smart_file_decisions(function_args_dict, phase1_results, logger)
                                                 modified_args_dict = _apply_smart_file_decisions_for_sandboxed_executor(modified_args_dict, phase1_results, logger)
 
-                                                modified_args_dict = _apply_smart_file_decisions_for_sandboxed_executor(modified_args_dict, phase1_results, logger)
-
                                                 
                                                 # Convert back to the format expected by tool_manager
                                                 if isinstance(function_args, str):
@@ -9451,7 +9457,13 @@ Generate the corrected tool calls:"""
             elif tool_results_size == 0:
                 # Always warn about empty results even in concise mode
                 logger.warning(f"🚨 tools_results is EMPTY - Primary LLM will have no tool context!")
-            max_context_window = 65536  # 64k bytes
+            # Use actual model context window from config instead of hardcoded 65536
+            try:
+                primary_config = config_loader.get_llm_config('primary')
+                config_context_tokens = primary_config.get('config', {}).get('context_window_size', 32768)
+                max_context_window = config_context_tokens * 4  # tokens to bytes estimate
+            except Exception:
+                max_context_window = ServerConfig.MAX_CONTEXT_WINDOW  # fallback
             max_context_tokens = max_context_window / 4  # estimating 4 bytes per token
             # Truncate base64 data before sending to LLM context to prevent streaming back
             truncated_tools_results = truncate_base64_for_logging(tools_results)
@@ -10979,6 +10991,13 @@ async def openai_chat_completions(request: OpenAIChatRequest):
                             elif image_url.startswith('file://'):
                                 # Extract local file path
                                 file_path = image_url[7:]  # Remove 'file://' prefix
+                                file_path = os.path.expanduser(file_path)
+                                # Path traversal protection: only allow files within project directory
+                                resolved = os.path.realpath(file_path)
+                                ALLOWED_BASE = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+                                if not resolved.startswith(ALLOWED_BASE + os.sep):
+                                    logger.error(f"🖼️ Path traversal blocked: {file_path} -> {resolved}")
+                                    continue
                                 if os.path.exists(file_path):
                                     try:
                                         with open(file_path, 'rb') as f:
@@ -11085,7 +11104,7 @@ async def openai_non_streaming_response(user_prompt: str, model: str, conversati
     except Exception as e:
         logger.error(f"🚨 OpenAI non-streaming error: {str(e)}")
         logger.error(traceback.format_exc())
-        # Return a simple response if collection fails
+        error_detail = str(e)[:1000]  # Truncate for safe inclusion in response
         return {
             "id": f"chatcmpl-{int(time.time())}",
             "object": "chat.completion",
@@ -11096,15 +11115,19 @@ async def openai_non_streaming_response(user_prompt: str, model: str, conversati
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": "Hello there! I'm working properly with tools enabled."
+                        "content": f"Error processing request: {error_detail}"
                     },
-                    "finish_reason": "stop"
+                    "finish_reason": "error"
                 }
             ],
+            "error": {
+                "message": error_detail,
+                "type": type(e).__name__
+            },
             "usage": {
                 "prompt_tokens": len(user_prompt.split()),
-                "completion_tokens": 10,
-                "total_tokens": len(user_prompt.split()) + 10
+                "completion_tokens": 0,
+                "total_tokens": len(user_prompt.split())
             }
         }
 

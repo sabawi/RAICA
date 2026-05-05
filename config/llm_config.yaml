@@ -71,11 +71,11 @@ llm:
   primary:
     type: ollama
     config:
-      model: deepseek-v3.1:671b-cloud # deepseek-v3.1:671b-cloud
+      model: deepseek-v3.1:671b-cloud #deepseek-v4-pro:cloud #minimax-m2.7:cloud 
       timeout: 600
       temperature: 0.7
       max_tokens: 16384
-      context_window_size: 16384
+      context_window_size: 32768
       stream: true
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
@@ -176,7 +176,7 @@ code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models
   # ============================================================
-  selected_model: glm-4.7
+  selected_model: deepseek-v4-pro:cloud
 
   # Classification model override (for tasks requiring strict JSON output)
   # Kimi is great at code generation but returns thinking tags instead of pure JSON
@@ -287,7 +287,7 @@ code_generation:
       retry_delay: 2
     ollama:
       # Single ollama config - use Kimi-k2 as default
-      model: Kimi-k2.5:cloud
+      model: Kimi-k2.6:cloud
       base_url: http://127.0.0.1:11434
       timeout: 600
       temperature: 0.0
