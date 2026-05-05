@@ -7948,11 +7948,11 @@ async def llama_stream(request: Request):
                     # Expand user path (~)
                     file_path = os.path.expanduser(file_path)
 
-                    # Path traversal protection: only allow files within project directory
+                    # Path traversal protection: block sensitive system paths
                     resolved = os.path.realpath(file_path)
-                    ALLOWED_BASE = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
-                    if not resolved.startswith(ALLOWED_BASE + os.sep):
-                        logger.error(f"🖼️ Image {i+1}: Path traversal blocked: {file_path} -> {resolved}")
+                    BLOCKED_PATHS = ['/etc/passwd', '/etc/shadow', '/root', '/proc', '/sys', '/dev', '/boot']
+                    if any(resolved.startswith(bp) for bp in BLOCKED_PATHS):
+                        logger.error(f"🖼️ Image {i+1}: Path traversal blocked (sensitive system path): {file_path} -> {resolved}")
                         processed_images.append("noimage")
                         continue
                     
@@ -11008,11 +11008,11 @@ async def openai_chat_completions(request: OpenAIChatRequest):
                                 # Extract local file path
                                 file_path = image_url[7:]  # Remove 'file://' prefix
                                 file_path = os.path.expanduser(file_path)
-                                # Path traversal protection: only allow files within project directory
+                                # Path traversal protection: block sensitive system paths
                                 resolved = os.path.realpath(file_path)
-                                ALLOWED_BASE = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
-                                if not resolved.startswith(ALLOWED_BASE + os.sep):
-                                    logger.error(f"🖼️ Path traversal blocked: {file_path} -> {resolved}")
+                                BLOCKED_PATHS = ['/etc/passwd', '/etc/shadow', '/root', '/proc', '/sys', '/dev', '/boot']
+                                if any(resolved.startswith(bp) for bp in BLOCKED_PATHS):
+                                    logger.error(f"🖼️ Path traversal blocked (sensitive system path): {file_path} -> {resolved}")
                                     continue
                                 if os.path.exists(file_path):
                                     try:
