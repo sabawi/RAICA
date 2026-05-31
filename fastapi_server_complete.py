@@ -1797,8 +1797,18 @@ class AsyncToolManager:
                 
                 today = datetime.now()
                 todayStr = today.strftime("%A, %B %d, %Y %I:%M:%S %p")
-                max_results = 3
-                
+
+                # 🔬 Deep Research depth — config-driven (config/llm_config.yaml: deep_research.search).
+                # Defaults mirror the previous hardcoded behavior so a missing config never regresses search.
+                try:
+                    _dr_search_cfg = config_loader.load_config().get('deep_research', {}).get('search', {})
+                except Exception as _dr_e:
+                    logger.warning(f"⚠️ deep_research.search config unavailable ({_dr_e}); using legacy defaults")
+                    _dr_search_cfg = {}
+                max_results = _dr_search_cfg.get('web_max_results', 3)
+                per_page_char_budget = _dr_search_cfg.get('per_page_char_budget', 2000)
+                per_page_max_blocks = _dr_search_cfg.get('per_page_max_blocks', 5)
+
                 # DuckDuckGo search function (from original)
                 def ducducgo(query, max_results=3):
                     try:
@@ -1854,8 +1864,8 @@ class AsyncToolManager:
                             if text and len(text) > 50:  # Only meaningful content
                                 texts.append(text)
                         
-                        result = '\n\n'.join(texts[:5])  # Limit to first 5 meaningful paragraphs
-                        return result[:2000] + "..." if len(result) > 2000 else result  # Limit size
+                        result = '\n\n'.join(texts[:per_page_max_blocks])  # config: deep_research.search.per_page_max_blocks
+                        return result[:per_page_char_budget] + "..." if len(result) > per_page_char_budget else result  # config: deep_research.search.per_page_char_budget
                         
                     except Exception as e:
                         return f"Error extracting content: {str(e)}"
@@ -3233,40 +3243,114 @@ async def _attempt_partial_optimization(tool_results, user_prompt, preserver, va
         logger.error(f"🚨 Partial optimization error: {e}")
         return None
 
-def _is_research_query(user_prompt: str, tools_called: List[str]) -> bool:
+# Module-level cache for research classification, keyed by prompt hash, so the
+# LLM classifier runs at most once per distinct prompt (keeps it off the hot path).
+_research_classification_cache: Dict[str, bool] = {}
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
     """
-    Determine if a query is research-oriented and requires higher accuracy.
-    
-    Research queries typically:
-    - Use academic/scientific tools (published_papers_search, wikipedia_query)
-    - Contain research-related keywords
-    - Request deep analysis or comprehensive information
+    Parse a JSON object from an LLM response (handles markdown fences and surrounding prose).
+
+    This is structural parsing only — it extracts JSON the LLM emitted; it does NOT
+    interpret meaning from text. RAICA acts on the LLM's structured verdict.
     """
-    # Check for research-oriented tools
-    research_tools = ['published_papers_search', 'wikipedia_query', 'document_search']
-    has_research_tools = any(tool in tools_called for tool in research_tools)
-    
-    # Check for research keywords in prompt
-    research_keywords = [
-        'research', 'study', 'analysis', 'scientific', 'academic', 'paper', 'papers',
-        'theory', 'theoretical', 'quantum', 'physics', 'chemistry', 'biology',
-        'deep research', 'comprehensive', 'investigate', 'examine', 'analyze',
-        'reconciling', 'general relativity', 'quantum mechanics', 'literature review'
-    ]
-    
-    prompt_lower = user_prompt.lower()
-    has_research_keywords = any(keyword in prompt_lower for keyword in research_keywords)
-    
-    # Check for academic phrases
-    academic_phrases = [
-        'current status of', 'state of the art', 'recent developments',
-        'latest findings', 'peer reviewed', 'scholarly', 'empirical'
-    ]
-    has_academic_phrases = any(phrase in prompt_lower for phrase in academic_phrases)
-    
-    # Determine if research query
-    is_research = has_research_tools or has_research_keywords or has_academic_phrases
-    
+    import json
+    import re
+    s = (text or "").strip()
+    if s.startswith("```json"):
+        s = s[7:]
+    elif s.startswith("```"):
+        s = s[3:]
+    if s.endswith("```"):
+        s = s[:-3]
+    s = s.strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        m = re.search(r'\{.*\}', s, re.DOTALL)
+        if m:
+            return json.loads(m.group(0))
+        raise
+
+
+async def _is_research_query(user_prompt: str, tools_called: List[str]) -> bool:
+    """
+    Determine if a query is research-oriented (needs maximum context-preservation
+    accuracy) using an LLM classifier — NOT hardcoded keyword lists.
+
+    Per the RAICA generalization directive, the LLM decides semantically whether a
+    request is research-oriented. RAICA only parses the LLM's JSON verdict.
+
+    Behavior:
+    - Controlled by config: deep_research.research_classifier.enabled
+    - Result cached per distinct prompt to avoid repeated LLM calls on the hot path
+    - On classifier failure OR when disabled: fail SAFE to research=True
+      (preserve maximum context — protects accuracy, never silently lossy)
+    """
+    import hashlib
+    cache_key = hashlib.sha256((user_prompt or "").encode('utf-8')).hexdigest()
+    if cache_key in _research_classification_cache:
+        return _research_classification_cache[cache_key]
+
+    # Authoritative source: config/llm_config.yaml -> deep_research.research_classifier
+    try:
+        classifier_cfg = config_loader.load_config().get('deep_research', {}).get('research_classifier', {})
+    except Exception:
+        classifier_cfg = {}
+    classifier_enabled = classifier_cfg.get('enabled', True)
+
+    if not classifier_enabled:
+        logger.info("🔬 Research classifier disabled by config → defaulting to research=True (max context preservation)")
+        _research_classification_cache[cache_key] = True
+        return True
+
+    # Use the PRIMARY model for classification. The arbitrator/coder model returns prose
+    # instead of structured output, so it cannot be relied on for a verdict. We ask for a
+    # single VERDICT token (robust to any extra prose the model adds) rather than JSON.
+    tools_context = ", ".join(tools_called) if tools_called else "none"
+    classifier_prompt = (
+        "You are a request classifier for a research platform. Decide whether the user's request "
+        "is RESEARCH-oriented — it benefits from maximum factual accuracy and preserving gathered "
+        "source material (scientific, academic, technical, financial, news/current-events, "
+        "analytical, or fact-finding) — or GENERAL (casual conversation, simple commands, "
+        "formatting, code edits, chit-chat).\n\n"
+        f"User request:\n{(user_prompt or '')[:1500]}\n\n"
+        f"Tools the system used for this request: {tools_context}\n\n"
+        "Answer with ONLY one line, exactly:\n"
+        "VERDICT: RESEARCH\n"
+        "or\n"
+        "VERDICT: GENERAL"
+    )
+
+    try:
+        import re as _re
+        chunks = []
+        async for chunk in llm_manager.generate_stream(
+            classifier_prompt, temperature=0.0, max_tokens=200, stream=False
+        ):
+            chunks.append(chunk)
+        response = "".join(chunks)
+
+        # Parse the LLM's own verdict token (structured output — not interpreting user text).
+        m = _re.search(r'VERDICT:\s*(RESEARCH|GENERAL)', response, _re.IGNORECASE)
+        if m:
+            is_research = (m.group(1).upper() == "RESEARCH")
+        else:
+            # Tolerant fallback: a bare RESEARCH/GENERAL token anywhere in the reply.
+            tokens = _re.findall(r'\b(RESEARCH|GENERAL)\b', response, _re.IGNORECASE)
+            if tokens:
+                is_research = (tokens[0].upper() == "RESEARCH")
+            else:
+                raise ValueError(f"no verdict token in classifier reply: {response[:160]!r}")
+        logger.info(f"🔬 Research classifier: is_research={is_research} (verdict parsed from primary model)")
+    except Exception as e:
+        # Fail SAFE: preserve maximum context to protect accuracy. This is conservative
+        # degradation on infra failure, not a guess about the request's meaning.
+        logger.warning(f"🔬 Research classifier unavailable ({e}) → failing safe to research=True")
+        is_research = True
+
+    _research_classification_cache[cache_key] = is_research
     return is_research
 
 async def process_with_safe_optimization(
@@ -3311,8 +3395,8 @@ async def process_with_safe_optimization(
     # Calculate tool results size
     total_tool_size = sum(len(str(result.get('result', ''))) for result in tool_results)
     
-    # Content-aware threshold determination
-    is_research_query = _is_research_query(user_prompt, tools_called)
+    # Content-aware threshold determination (LLM-driven classification)
+    is_research_query = await _is_research_query(user_prompt, tools_called)
     threshold = 0.95 if is_research_query else 0.90
     
     # Check if optimization is actually needed
@@ -6515,11 +6599,14 @@ def _fill_template_placeholders(content: str, user_prompt: str, tools_results: s
             actual_phone = match.group(0).strip()
             break
     
-    email_patterns = [
-        r'sabawi@gmail\.com',
-        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    ]
-    
+    # Owner email is prioritized when present, but sourced from env (GMAIL_PRIMARY_EMAIL)
+    # rather than hardcoded as PII. Falls back to the generic email pattern if unset.
+    email_patterns = []
+    _owner_email = os.getenv('GMAIL_PRIMARY_EMAIL', '').strip()
+    if _owner_email:
+        email_patterns.append(re.escape(_owner_email))
+    email_patterns.append(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+
     for pattern in email_patterns:
         match = re.search(pattern, search_text, re.IGNORECASE)
         if match:
@@ -6810,7 +6897,7 @@ async def _detect_html_email_request(tools_results: str, user_prompt: str) -> di
         # If email not found in tools_results, extract from user prompt
         to_email = email_match.group(1) if email_match else None
         if not to_email:
-            # Extract email from user prompt patterns like "to sabawi@gmail.com"
+            # Extract email from user prompt patterns like "to user@example.com"
             user_email_patterns = [
                 r'to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',
                 r'email.*?to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',

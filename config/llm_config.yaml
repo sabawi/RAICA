@@ -71,21 +71,21 @@ llm:
   primary:
     type: ollama
     config:
-      model: deepseek-v3.1:671b-cloud #deepseek-v4-pro:cloud #minimax-m2.7:cloud 
-      timeout: 600
+      model: deepseek-v4-pro:cloud #kimi-k2.6:cloud #minimax-m2.7:cloud 
+      timeout: 1200
       temperature: 0.7
-      max_tokens: 16384
-      context_window_size: 32768
+      max_tokens: 32768
+      context_window_size: 131072
       stream: true
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
     type: openai
     config:
-      model: qwen3.5:397b-cloud
+      model: qwen3-coder-next:cloud
       timeout: 120
-      context_window_size: 4096
+      context_window_size: 32768
       temperature: 0.1
-      max_tokens: 1024
+      max_tokens: 2048
       stream: false
       api_key: "ollama"
       base_url: http://127.0.0.1:11434/v1
@@ -160,7 +160,7 @@ arbitrator:
   enabled: true
   type: openai
   config:
-    model: qwen3.5:397b-cloud
+    model: qwen3-coder-next:cloud
     timeout: 60
     context_window_size: 4096
     temperature: 0.1
@@ -172,6 +172,24 @@ optimization:
   enabled: true
   rollout_percentage: 100.0
   detailed_logging: true
+# ============================================================
+# DEEP RESEARCH ENGINE (Stage 0 foundations)
+# Source of truth for research depth and the LLM-driven research
+# classifier. No depth limits are hardcoded in code anymore.
+# ============================================================
+deep_research:
+  enabled: true
+  search:
+    web_max_results: 8          # web results per search (legacy hardcoded value was 3)
+    per_page_char_budget: 6000  # max chars extracted per page (legacy value was 2000)
+    per_page_max_blocks: 12     # max text blocks/paragraphs per page (legacy value was 5)
+  research_classifier:
+    # LLM-driven replacement for the old keyword-based _is_research_query().
+    # When enabled, an LLM decides (semantically) whether a request is
+    # research-oriented so the optimizer preserves more source context.
+    # If disabled or unreachable, the system fails SAFE to research=True
+    # (maximum context preservation) — it never silently drops accuracy.
+    enabled: true
 code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models
@@ -287,12 +305,12 @@ code_generation:
       retry_delay: 2
     ollama:
       # Single ollama config - use Kimi-k2 as default
-      model: Kimi-k2.6:cloud
+      model: kimi-k2.6:cloud
       base_url: http://127.0.0.1:11434
-      timeout: 600
-      temperature: 0.0
+      timeout: 1200
+      temperature: 0.7
       max_tokens: 32768
-      context_window: 32768
+      context_window: 131072
       retry_attempts: 2
       retry_delay: 2
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
