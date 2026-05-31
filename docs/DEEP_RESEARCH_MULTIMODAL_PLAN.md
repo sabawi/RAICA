@@ -256,6 +256,9 @@ Per CLAUDE.md, **no stage is "done" until you test it end-to-end as a user and c
 ### Stage 0 — DONE (v1.0.0.63, verified 2026-05-31)
 Web-search depth de-hardcoded (3→8 results, 6000 char/page) and keyword research-detector replaced with an LLM classifier. Verified live on a complex "Sumerian Problem" research request: 27 source blocks / 112 KB delivered intact; final answer passed a grounding audit (0 fabricated URLs). See `CHANGELOG_v1.0.0.63.md`.
 
+### Stages 1 & 2 — DONE (v1.0.0.64, verified 2026-05-31)
+Implemented as the decoupled `research/` package (`gate.py`, `engine.py`, `synthesis.py`, `pipeline.py`) wired into `/v1` `generate_stream` with auto-detection and live progress streaming. Stage 1: plan → concurrent multi-backend dispatch → iterative gather loop. Stage 2: credibility grading → multi-model synthesis → arbitration → claim verification, with a Research Audit footer. Verified end-to-end live ("dark matter vs. modified gravity"): 21 evidence items / 220 sources / 575 KB → 2-model arbitration → 28/28 claims supported, even-handed with conflicts surfaced. Acceptance criteria C1–C3 addressed. Includes a token-budget fix for >1 MB evidence overflow and a TL;DR/Conclusion structure fix. See `CHANGELOG_v1.0.0.64.md`. Follow-ups: system-prompt refactor for research calls; verifier corroboration-threshold tuning.
+
 ### Concrete acceptance criteria derived from the Stage 0 live test
 The Stage 0 answer was hallucination-safe but exposed three *credibility* gaps. These are now the acceptance bar for Stages 1–2:
 

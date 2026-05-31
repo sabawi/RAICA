@@ -1,14 +1,15 @@
-# RAICA - RAG AI Context Agency v1.0.0.63
+# RAICA - RAG AI Context Agency v1.0.0.64
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.63-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.63)
+[![Version](https://img.shields.io/badge/version-1.0.0.64-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.64)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
 
 ## 🚀 Features
 
+- **🔬 NEW: Deep Research Mode**: Auto-detected for thorough/comprehensive requests — plans sub-questions, searches many sources over multiple rounds, grades source credibility, synthesizes across multiple models with arbitration, and verifies every claim against the gathered evidence. Streams live progress and an answer with a source-credibility + claim-verification audit.
 - **⚙️ NEW: POST-LLM Workflow Engine**: Executes complex, multi-step tasks like file creation and email sending *after* the primary LLM has generated its final, polished response.
 - **🔌 NEW: Plugin System**: Create custom LLM tools in 5 minutes - just 2 files (YAML + Python)
 - **🚀 Intelligent Email Management**: Advanced email retrieval and optimization with 84% context reduction
@@ -96,7 +97,7 @@ pip install -r requirements.txt
 python fastapi_server_complete.py
 ```
 
-## ⭐ About RAICA v1.0.0.63
+## ⭐ About RAICA v1.0.0.64
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -723,7 +724,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.63 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.64 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

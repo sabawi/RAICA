@@ -8161,6 +8161,66 @@ async def llama_stream(request: Request):
                 await llm_manager.initialize()
 
             # ###########################################################################
+            # 🔬 DEEP RESEARCH ROUTING (opt-in, auto-detected by a high-precision LLM gate)
+            # If the gate fires, run the multi-round research + synthesis + verification
+            # pipeline and stream its progress + audited answer, bypassing the normal flow.
+            # Any error BEFORE streaming falls through to the normal flow (no regression).
+            # ###########################################################################
+            try:
+                _dr_root = config_loader.load_config().get('deep_research', {})
+                _dr_engine_cfg = _dr_root.get('engine', {})
+                _dr_on = (tools_in_use and _dr_root.get('enabled', False)
+                          and _dr_engine_cfg.get('enabled', False))
+            except Exception as _dr_cfg_err:
+                logger.warning(f"🔬 Deep research config unavailable: {_dr_cfg_err}")
+                _dr_on = False
+
+            if _dr_on:
+                from research.gate import deep_research_gate
+                from research.pipeline import run_deep_research_pipeline
+                _gate = await deep_research_gate(llm_manager.generate_stream, actual_user_prompt)
+                if _gate.get('triggered'):
+                    logger.info(f"🔬 DEEP RESEARCH MODE engaged — {_gate.get('rationale')}")
+
+                    def _dr_chunk(text):
+                        return (json.dumps({"model": model, "response": text, "done": False}) + "\n").encode("utf-8")
+
+                    await tool_manager._load_user_tools_async()
+
+                    async def _dr_dispatch(name, query):
+                        fn = tool_manager.available_functions.get(name)
+                        return await fn(query) if fn else f"[no such tool: {name}]"
+
+                    _dr_q = asyncio.Queue()
+
+                    async def _dr_progress(msg):
+                        await _dr_q.put(msg)
+
+                    yield _dr_chunk("### 🔬 Deep Research Mode\n_This runs multi-round research with "
+                                    "source-credibility grading and claim verification — it takes a few minutes._\n\n")
+                    _dr_task = asyncio.create_task(run_deep_research_pipeline(
+                        llm_manager.generate_stream, _dr_dispatch, _dr_engine_cfg,
+                        actual_user_prompt, on_progress=_dr_progress))
+                    # Stream progress lines as they arrive; stop once the pipeline finishes.
+                    while True:
+                        try:
+                            _m = await asyncio.wait_for(_dr_q.get(), timeout=0.5)
+                            yield _dr_chunk(f"> {_m}\n")
+                        except asyncio.TimeoutError:
+                            pass
+                        if _dr_task.done() and _dr_q.empty():
+                            break
+                    try:
+                        _dr_result = await _dr_task
+                        yield _dr_chunk("\n---\n\n")
+                        yield _dr_chunk(_dr_result["answer"])
+                    except Exception as _dr_run_err:
+                        logger.error(f"🔬 Deep research pipeline failed mid-run: {_dr_run_err}")
+                        yield _dr_chunk(f"\n\n⚠️ Deep research could not be completed: {_dr_run_err}")
+                    yield (json.dumps({"model": model, "response": "", "done": True}) + "\n").encode("utf-8")
+                    return
+
+            # ###########################################################################
             # TWO-STAGE TOOL CALLING ALGORITHM (exactly like original Flask implementation)
             if (tools_in_use):
                 # Tool execution phase initiated

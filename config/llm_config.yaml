@@ -190,6 +190,49 @@ deep_research:
     # If disabled or unreachable, the system fails SAFE to research=True
     # (maximum context preservation) — it never silently drops accuracy.
     enabled: true
+  # ---- Stage 1: Deep Research Engine ----
+  engine:
+    enabled: true
+    planner:
+      # LLM decomposes a research request into sub-questions + per-question source
+      # strategy. max_sub_questions caps planner breadth; the LLM proposes fewer when apt.
+      max_sub_questions: 6
+    loop:
+      # Iterative gather loop ceilings (LLM proposes within these; RAICA clamps).
+      max_rounds_ceiling: 4
+      wall_clock_seconds: 240
+    sources:
+      # Tool names (must exist in AsyncToolManager.available_functions) the planner may
+      # choose from. The LLM picks per sub-question; RAICA only dispatches what's listed.
+      allowed:
+        - search_web
+        - get_news_summaries
+        - wikipedia_query
+        - published_papers_search
+        - get_sec_filings
+        - document_search
+    # ---- Stage 2: synthesis, verification, arbitration ----
+    synthesis:
+      # Grounded draft from the evidence pool. Credibility-aware: scholarly claims must
+      # lean on higher-tier sources; low-tier sources are reported as "claimed by X".
+      credibility_grading: true
+      # A deep run can gather >1MB of evidence, overflowing the model context window.
+      # The evidence fed to each LLM call is budgeted to this many TOKENS (measured with
+      # tiktoken), shared fairly across sources (small sources kept whole, leftover given
+      # to large ones, which are truncated only if needed). Keep below the primary model
+      # window (131072 tokens) minus headroom for instructions + the generated answer.
+      evidence_token_budget: 110000
+    verification:
+      enabled: true
+      # A claim needs at least this many independent sources to be labeled "supported".
+      min_corroborating_sources: 2
+    arbitration:
+      # Run synthesis on multiple models and reconcile disagreements. Set enabled:false
+      # to skip the extra model cost (single-model synthesis still gets verified).
+      enabled: true
+      models:
+        - deepseek-v4-pro:cloud
+        - gpt-oss:120b-cloud
 code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models
