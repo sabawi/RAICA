@@ -120,7 +120,15 @@ class ResearchSynthesizer:
         return sorted(domains)
 
     async def grade_sources(self, evidence: List[Dict[str, Any]]) -> Dict[str, str]:
-        """LLM grades each source domain into a credibility tier. No hardcoded lists."""
+        """
+        LLM grades each source domain into a credibility tier. No hardcoded lists.
+
+        For low_credibility domains the LLM also returns a SPECIFIC reason (what exactly makes
+        it low-credibility), captured into self.credibility_reasons[domain] for the footnote.
+        Returns the tier map {domain: tier}; reasons are a side-channel to keep the tier dict
+        compatible with all existing consumers.
+        """
+        self.credibility_reasons: Dict[str, str] = {}
         domains = self._unique_domains(evidence)
         if not domains or not self._grading_on:
             return {}
@@ -132,24 +140,40 @@ class ResearchSynthesizer:
             "- reputable: established institutions, governments (.gov), universities (.edu), major "
             "news organizations, encyclopedias\n"
             "- popular: general-interest blogs/magazines/explainer sites (not scholarly, but not fringe)\n"
-            "- low_credibility: fringe, pseudoscience, conspiracy, or self-published advocacy sites\n\n"
-            "Respond with STRICT JSON only mapping each domain to its tier, e.g.:\n"
-            '{"arxiv.org": "peer_reviewed", "somefringeblog.com": "low_credibility"}'
+            "- low_credibility: fringe, pseudoscience, conspiracy, partisan/polemical advocacy, or "
+            "self-published opinion sites\n\n"
+            "For each domain return an object {\"tier\": <tier>, \"reason\": <reason>}. The reason is "
+            "REQUIRED for low_credibility (and helpful for popular) — state the SPECIFIC concern in "
+            "one short phrase, e.g. 'partisan conservative opinion site', 'advocacy org pushing "
+            "anti-Islam polemics', 'self-published, cites no evidence', 'known for pseudoscience'. "
+            "For peer_reviewed/reputable, reason may be an empty string.\n\n"
+            "Respond with STRICT JSON only, e.g.:\n"
+            '{"arxiv.org": {"tier": "peer_reviewed", "reason": ""}, '
+            '"someblog.com": {"tier": "low_credibility", "reason": "self-published, no sourcing"}}'
         )
         prompt = "DOMAINS:\n" + "\n".join(f"- {d}" for d in domains)
         # Grading is non-essential context: on ANY failure (call or parse) fall back to
         # 'unknown' for every domain so synthesis can still proceed.
         try:
             raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
-                                        temperature=0.0, max_tokens=1500, stream=False)
+                                        temperature=0.0, max_tokens=3000, stream=False)
             data = extract_json_object(raw)
         except Exception as e:  # noqa: BLE001
             logger.warning("🏷️ Credibility grading failed (%s) → all 'unknown'", e)
             return {d: "unknown" for d in domains}
         graded = {}
         for d in domains:
-            tier = str(data.get(d, "unknown")).strip().lower()
+            entry = data.get(d, "unknown")
+            # Accept both the new object form {tier,reason} and a bare tier string (resilience).
+            if isinstance(entry, dict):
+                tier = str(entry.get("tier", "unknown")).strip().lower()
+                reason = str(entry.get("reason", "")).strip()
+            else:
+                tier = str(entry).strip().lower()
+                reason = ""
             graded[d] = tier if tier in VALID_TIERS else "unknown"
+            if graded[d] == "low_credibility" and reason:
+                self.credibility_reasons[d] = reason
         tally: Dict[str, int] = {}
         for t in graded.values():
             tally[t] = tally.get(t, 0) + 1
@@ -223,6 +247,17 @@ class ResearchSynthesizer:
             "- COVER EVERY substantive point, finding, argument, example, and nuance the evidence "
             "supports that is relevant to the request — do NOT limit yourself to a handful of points. "
             "If the evidence supports ten relevant points, cover all ten. Leave no important angle out.\n"
+            "- USE ALL SUBSTANTIVE EVIDENCE REGARDLESS OF SOURCE TIER. A point's importance is decided "
+            "by its substance and relevance, NOT by the credibility tier of the source that raised it. "
+            "Draw on popular and low-credibility sources for the substantive points, claims, and angles "
+            "they contribute — just attribute them appropriately (see credibility rules). Do not silently "
+            "drop a point merely because its source is not peer-reviewed.\n"
+            "- THIS IS RESEARCH, NOT A CONSENSUS SUMMARY. Do NOT retreat to generalities or only the "
+            "safe, universally-accepted narrative. Surface the contested, minority, heterodox, and "
+            "controversial positions present in the evidence — controversial is NOT the same as wrong, "
+            "and in research the prevailing narrative is itself open to challenge. Include important "
+            "in-research and dissenting points, clearly framed as contested, with who argues them and "
+            "on what basis. Omitting a substantive controversial point is a FAILURE of the report.\n"
             "- EXPAND AND ENRICH — never cut, trim, or summarize for brevity. For each point, develop it "
             "FULLY: explain the underlying reasoning, mechanisms, historical/scientific context, "
             "supporting examples, competing interpretations, caveats, and implications that the sources "
@@ -233,13 +268,18 @@ class ResearchSynthesizer:
             "- The ONLY hard limit on length is the evidence itself: greater depth must come from drawing "
             "on MORE of the gathered evidence — NEVER from speculation, repetition, filler, or padding. "
             "Accuracy and grounding are never sacrificed for length.\n\n"
-            "GROUNDING & CREDIBILITY RULES (strict):\n"
+            "GROUNDING & CREDIBILITY RULES (strict — these govern ATTRIBUTION, never EXCLUSION):\n"
             "- Ground every factual claim in the evidence; cite as clickable [Title](URL) using ONLY URLs "
             "present in the evidence. Never invent URLs, facts, dates, or names.\n"
-            "- Respect source credibility: support scholarly/scientific claims with peer_reviewed or "
-            "reputable sources. Content from low_credibility sources must be presented as an ATTRIBUTED "
-            "claim (e.g. 'X claims …') and clearly framed/debunked — never as fact.\n"
-            "- Where sources CONFLICT, explicitly say so and present both sides with citations.\n"
+            "- Calibrate CONFIDENCE to source credibility, but never use credibility to EXCLUDE a "
+            "substantive point. Present well-established findings as established (citing peer_reviewed/"
+            "reputable sources). Present contested or low-credibility-sourced claims as ATTRIBUTED "
+            "positions (e.g. 'X argues …', 'According to Y …') with appropriate context about the "
+            "source's standing — include and explain them, do not merely dismiss them. Reserve outright "
+            "'debunking' for claims the evidence actually refutes; for the rest, present the debate fairly "
+            "and let the reader weigh it.\n"
+            "- Where sources CONFLICT, explicitly say so and present both/all sides with citations — the "
+            "disagreement itself is valuable research content.\n"
             "- Do NOT overstate your sourcing (e.g. do not call popular/low-credibility sources "
             "'peer-reviewed'). If evidence is thin or absent for part of the request, say so plainly.\n"
             "- STRUCTURE: open with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for "
@@ -405,6 +445,7 @@ class ResearchSynthesizer:
         return {
             "final_answer": final_answer,
             "credibility": credibility,
+            "credibility_reasons": getattr(self, "credibility_reasons", {}),
             "verification": verification,
             "metadata": {
                 "arbitrated": arbitrated,

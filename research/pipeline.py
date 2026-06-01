@@ -15,13 +15,25 @@ Dependency-injected so it stays decoupled from the server and unit-testable:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from research.engine import DeepResearchEngine
 from research.synthesis import ResearchSynthesizer
 
 logger = logging.getLogger(__name__)
+
+_URL_RE = re.compile(r'https?://[a-zA-Z0-9./_%?=&:+~#-]+')
+
+
+def _domain_of(url: str) -> str:
+    try:
+        net = urlparse(url).netloc.lower()
+        return net[4:] if net.startswith("www.") else net
+    except Exception:
+        return ""
 
 
 def _credibility_tally(credibility: Optional[Dict[str, str]]) -> str:
@@ -107,11 +119,40 @@ def _flagged_claims_section(verification: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _low_cred_cited_section(answer_text: str, credibility: Dict[str, str],
+                            reasons: Dict[str, str]) -> str:
+    """
+    Footnote each LOW-CREDIBILITY source the ANSWER actually CITED, with the specific
+    credibility concern. Cross-references the answer's URLs against the graded low-cred
+    domains so the reader knows whether the answer leaned on sketchy sources (and why).
+    """
+    credibility = credibility or {}
+    reasons = reasons or {}
+    low_cred_domains = {d for d, t in credibility.items() if str(t).lower() == "low_credibility"}
+    if not low_cred_domains or not answer_text:
+        return ""
+    # Which low-cred domains are actually cited in the answer body?
+    cited = {}
+    for url in _URL_RE.findall(answer_text):
+        d = _domain_of(url.rstrip(".,);"))
+        if d in low_cred_domains and d not in cited:
+            cited[d] = url.rstrip(".,);")
+    if not cited:
+        return ""
+    lines = ["\n\n**⚠️ Low-credibility sources cited in this answer** — the response references the "
+             "following sources that were graded low-credibility; weigh them accordingly:"]
+    for d in sorted(cited):
+        reason = reasons.get(d, "graded low-credibility")
+        lines.append(f"- **{d}** — _{reason}_  ({cited[d]})")
+    return "\n".join(lines)
+
+
 def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, Any],
-                         total_seconds: float) -> str:
+                         total_seconds: float, answer_text: str = "") -> str:
     engine_meta = engine_meta or {}
     synth_result = synth_result or {}
     cred = synth_result.get("credibility") or {}
+    cred_reasons = synth_result.get("credibility_reasons") or {}
     verification = synth_result.get("verification") or {}
     vc = verification.get("verdict_counts") or {}
     meta = synth_result.get("metadata") or {}
@@ -127,6 +168,7 @@ def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, An
         f"- **Synthesis:** {'arbitrated across ' if meta.get('arbitrated') else ''}{models}\n"
         f"- **Stop reason:** {engine_meta.get('stop_reason', 'n/a')}\n"
         f"- **⏱️ Timing:** {_timing_breakdown(engine_meta, meta, total_seconds)}"
+        + _low_cred_cited_section(answer_text, cred, cred_reasons)
         + _flagged_claims_section(verification)
     )
 
@@ -174,8 +216,9 @@ async def run_deep_research_pipeline(
                   "Please try again.")
     if config.get("output", {}).get("include_audit_footer", True):
         # The footer is cosmetic — never let a footer error discard a hard-won answer.
+        # Pass the answer body so the footer can footnote low-cred sources it actually cited.
         try:
-            answer += _verification_footer(engine_meta, stage2, total_seconds)
+            answer += _verification_footer(engine_meta, stage2, total_seconds, answer_text=answer)
         except Exception as e:  # noqa: BLE001
             logger.warning("🔎 Research audit footer failed to render (%s) — answer kept", e)
     await emit("Done.")
