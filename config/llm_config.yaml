@@ -193,6 +193,10 @@ deep_research:
   # ---- Stage 1: Deep Research Engine ----
   engine:
     enabled: true
+    output:
+      # Clients that want only the clean answer can suppress the framing.
+      stream_progress: false        # live "> Planning… > Round k…" lines + the Deep Research header
+      include_audit_footer: true   # the "### 🔎 Research Audit" footer (sources/credibility/claims)
     planner:
       # LLM decomposes a research request into sub-questions + per-question source
       # strategy. max_sub_questions caps planner breadth; the LLM proposes fewer when apt.
@@ -222,17 +226,44 @@ deep_research:
       # to large ones, which are truncated only if needed). Keep below the primary model
       # window (131072 tokens) minus headroom for instructions + the generated answer.
       evidence_token_budget: 110000
+      # Max tokens for the generated answer. Deep research has rich evidence to draw on;
+      # give the model room to elaborate fully (kept well within the model window).
+      max_answer_tokens: 16000   # 8000 - 16000 (8000 truncated drafts mid-output — see 2026-06-01 test)
     verification:
       enabled: true
       # A claim needs at least this many independent sources to be labeled "supported".
       min_corroborating_sources: 2
+      # Output token budget for the verification JSON. Must be generous: a long, rich answer
+      # contains many claims, and a small budget truncates extraction (under-sampling the
+      # answer — e.g. only 12 claims checked for a 37K-char answer at the old 4000 cap).
+      max_tokens: 12000
+      # Model that EXTRACTS + VERIFIES claims against the evidence. null = primary.
+      # More mechanical than arbitration, so a lower quality-risk place to use a faster model.
+      # NOTE (2026-06-01 test): gemma4:31b here checked half as many claims (13 vs 26) and
+      # flagged none (rubber-stamped all 'supported') vs deepseek catching an unverified one.
+      # ~19s faster but weakened the hallucination safety net — keep at null.
+      verify_model: null # setting it to null will default to primary model
     arbitration:
       # Run synthesis on multiple models and reconcile disagreements. Set enabled:false
       # to skip the extra model cost (single-model synthesis still gets verified).
-      enabled: true
+      #
+      # DISABLED (2026-06-01): the reconcile step received the drafts but NOT the evidence
+      # pool, so its "enrich/preserve against the evidence" instructions were impossible to
+      # follow — it collapsed two rich evidence-grounded drafts (~31-33K chars) to ~21K.
+      # Two-model arbitration only pays off when the draft models are PEERS in depth/breadth;
+      # deepseek-v4-pro and gpt-oss-120b are not. So we now do single-model synthesis on the
+      # primary (full evidence in-context) + verification. Revisit only with on-par models.
+      enabled: false
       models:
         - deepseek-v4-pro:cloud
         - gpt-oss:120b-cloud
+      # Model that RECONCILES the drafts. null = use the primary model (deepseek-v4-pro).
+      # The reconcile step is the heaviest Stage-2 LLM call AND the hardest reasoning
+      # (long-context merge + conflict detection), so trading it to a smaller/faster model
+      # is a speed-vs-quality experiment — measure both. Set back to null to revert.
+      # NOTE (2026-06-01 test): gemma4:31b here cut the final answer ~55% (9.7K vs 21K chars)
+      # — it summarized instead of merging, killing the elaboration goal. Keep at null.
+      arbitration_model: null   # setting it to null will default to primary model
 code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models

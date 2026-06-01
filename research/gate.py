@@ -43,7 +43,7 @@ Examples (request -> verdict):
 
 async def deep_research_gate(generate_stream: GenerateStream, user_request: str) -> Dict[str, Any]:
     """Decide whether to route a request into the deep-research pipeline. Fails safe to fast path."""
-    prompt = (
+    system_prompt = (
         "You are a precise router for a research assistant. Decide whether the user's request "
         "warrants DEEP RESEARCH — a slow, expensive pipeline that plans sub-questions, searches "
         "many sources over multiple rounds, cross-checks claims, and reconciles conflicting "
@@ -56,12 +56,13 @@ async def deep_research_gate(generate_stream: GenerateStream, user_request: str)
         "summarizing one source, casual questions, coding, math, email, or anything quick.\n"
         "When unsure, prefer the FAST path (false). A wrong 'true' wastes minutes of the user's time.\n\n"
         f"{_FEWSHOT}\n"
-        f"USER REQUEST:\n{user_request}\n\n"
         "Respond with STRICT JSON only, no prose:\n"
         '{"deep_research": true|false, "confidence": "high|medium|low", "rationale": "<one sentence>"}'
     )
+    prompt = f"USER REQUEST:\n{user_request}"
     try:
-        raw = await _collect_stream(generate_stream, prompt, temperature=0.0, max_tokens=200, stream=False)
+        raw = await _collect_stream(generate_stream, prompt, system_prompt=system_prompt,
+                                    temperature=0.0, max_tokens=200, stream=False)
         data = extract_json_object(raw)
         deep = bool(data.get("deep_research", False))
         conf = str(data.get("confidence", "low")).strip().lower()

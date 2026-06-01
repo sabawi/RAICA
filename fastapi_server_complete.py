@@ -8175,50 +8175,80 @@ async def llama_stream(request: Request):
                 logger.warning(f"🔬 Deep research config unavailable: {_dr_cfg_err}")
                 _dr_on = False
 
+            # Gate + setup are guarded so ANY failure here (import error, gate exception,
+            # tool-load error) falls through to the normal flow instead of 500-ing the request.
+            _dr_triggered = False
             if _dr_on:
-                from research.gate import deep_research_gate
-                from research.pipeline import run_deep_research_pipeline
-                _gate = await deep_research_gate(llm_manager.generate_stream, actual_user_prompt)
-                if _gate.get('triggered'):
-                    logger.info(f"🔬 DEEP RESEARCH MODE engaged — {_gate.get('rationale')}")
+                try:
+                    from research.gate import deep_research_gate
+                    from research.pipeline import run_deep_research_pipeline
+                    _gate = await deep_research_gate(llm_manager.generate_stream, actual_user_prompt)
+                    _dr_triggered = bool(_gate.get('triggered'))
+                except Exception as _dr_gate_err:
+                    logger.warning(f"🔬 Deep research gate/setup failed ({_dr_gate_err}) → normal flow")
+                    _dr_triggered = False
 
-                    def _dr_chunk(text):
-                        return (json.dumps({"model": model, "response": text, "done": False}) + "\n").encode("utf-8")
+            if _dr_triggered:
+                logger.info(f"🔬 DEEP RESEARCH MODE engaged — {_gate.get('rationale')}")
 
+                def _dr_chunk(text):
+                    return (json.dumps({"model": model, "response": text, "done": False}) + "\n").encode("utf-8")
+
+                def _dr_done_chunk():
+                    return (json.dumps({"model": model, "response": "", "done": True}) + "\n").encode("utf-8")
+
+                _dr_show = _dr_engine_cfg.get("output", {}).get("stream_progress", True)
+                try:
                     await tool_manager._load_user_tools_async()
 
                     async def _dr_dispatch(name, query):
                         fn = tool_manager.available_functions.get(name)
-                        return await fn(query) if fn else f"[no such tool: {name}]"
+                        if not fn:
+                            return f"[no such tool: {name}]"
+                        try:
+                            return await fn(query)
+                        except Exception as _tool_err:  # one tool failing must not abort the round
+                            logger.warning(f"🔬 tool '{name}' raised: {_tool_err}")
+                            return f"[tool '{name}' error: {_tool_err}]"
 
                     _dr_q = asyncio.Queue()
 
                     async def _dr_progress(msg):
                         await _dr_q.put(msg)
 
-                    yield _dr_chunk("### 🔬 Deep Research Mode\n_This runs multi-round research with "
-                                    "source-credibility grading and claim verification — it takes a few minutes._\n\n")
+                    # Clients can suppress the framing (header/progress) via config — clean answer only.
+                    if _dr_show:
+                        yield _dr_chunk("### 🔬 Deep Research Mode\n_This runs multi-round research with "
+                                        "source-credibility grading and claim verification — it takes a few minutes._\n\n")
                     _dr_task = asyncio.create_task(run_deep_research_pipeline(
                         llm_manager.generate_stream, _dr_dispatch, _dr_engine_cfg,
-                        actual_user_prompt, on_progress=_dr_progress))
-                    # Stream progress lines as they arrive; stop once the pipeline finishes.
-                    while True:
-                        try:
-                            _m = await asyncio.wait_for(_dr_q.get(), timeout=0.5)
-                            yield _dr_chunk(f"> {_m}\n")
-                        except asyncio.TimeoutError:
-                            pass
-                        if _dr_task.done() and _dr_q.empty():
-                            break
+                        actual_user_prompt, on_progress=(_dr_progress if _dr_show else None)))
+                    # Stream progress lines as they arrive (when enabled); stop once the pipeline finishes.
+                    if _dr_show:
+                        while True:
+                            try:
+                                _m = await asyncio.wait_for(_dr_q.get(), timeout=0.5)
+                                yield _dr_chunk(f"> {_m}\n")
+                            except asyncio.TimeoutError:
+                                pass
+                            if _dr_task.done() and _dr_q.empty():
+                                break
                     try:
                         _dr_result = await _dr_task
-                        yield _dr_chunk("\n---\n\n")
-                        yield _dr_chunk(_dr_result["answer"])
+                        _dr_answer = (_dr_result or {}).get("answer") or \
+                            "⚠️ Deep research returned no answer. Please try again."
+                        if _dr_show:
+                            yield _dr_chunk("\n---\n\n")
+                        yield _dr_chunk(_dr_answer)
                     except Exception as _dr_run_err:
-                        logger.error(f"🔬 Deep research pipeline failed mid-run: {_dr_run_err}")
+                        logger.error(f"🔬 Deep research pipeline failed mid-run: {_dr_run_err}", exc_info=True)
                         yield _dr_chunk(f"\n\n⚠️ Deep research could not be completed: {_dr_run_err}")
-                    yield (json.dumps({"model": model, "response": "", "done": True}) + "\n").encode("utf-8")
-                    return
+                except Exception as _dr_outer_err:
+                    # Last-resort guard: never leave the stream without a terminating chunk.
+                    logger.error(f"🔬 Deep research fatal error: {_dr_outer_err}", exc_info=True)
+                    yield _dr_chunk(f"\n\n⚠️ Deep research could not be started: {_dr_outer_err}")
+                yield _dr_done_chunk()
+                return
 
             # ###########################################################################
             # TWO-STAGE TOOL CALLING ALGORITHM (exactly like original Flask implementation)

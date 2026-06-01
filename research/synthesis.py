@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -93,6 +94,26 @@ class ResearchSynthesizer:
         arb = self._cfg.get("arbitration", {})
         return list(arb.get("models", [])) if arb.get("enabled", False) else []
 
+    @property
+    def _max_answer_tokens(self) -> int:
+        return int(self._cfg.get("synthesis", {}).get("max_answer_tokens", 16000))
+
+    @property
+    def _arbitration_model(self) -> Optional[str]:
+        # Model that reconciles the drafts; None → primary (via generate_stream default).
+        return self._cfg.get("arbitration", {}).get("arbitration_model") or None
+
+    @property
+    def _verify_model(self) -> Optional[str]:
+        # Model that extracts + verifies claims; None → primary.
+        return self._cfg.get("verification", {}).get("verify_model") or None
+
+    @property
+    def _verify_max_tokens(self) -> int:
+        # Output budget for the verification JSON. Long answers have many claims, so this
+        # must be generous or claim extraction gets truncated (under-sampling the answer).
+        return int(self._cfg.get("verification", {}).get("max_tokens", 12000))
+
     # ---- step 1: credibility grading (C2/C3) ----
     def _unique_domains(self, evidence: List[Dict[str, Any]]) -> List[str]:
         domains = {d for e in evidence for u in e.get("urls", []) if (d := _domain_of(u))}
@@ -103,24 +124,27 @@ class ResearchSynthesizer:
         domains = self._unique_domains(evidence)
         if not domains or not self._grading_on:
             return {}
-        prompt = (
-            "Grade each source domain below into exactly ONE credibility tier for use in a "
-            "research report:\n"
+        system_prompt = (
+            "Grade each source domain the user provides into exactly ONE credibility tier for use "
+            "in a research report:\n"
             "- peer_reviewed: academic journals/preprint servers/databases (e.g. arxiv, pubmed, "
             "doi.org, core.ac.uk, journal sites)\n"
             "- reputable: established institutions, governments (.gov), universities (.edu), major "
             "news organizations, encyclopedias\n"
             "- popular: general-interest blogs/magazines/explainer sites (not scholarly, but not fringe)\n"
             "- low_credibility: fringe, pseudoscience, conspiracy, or self-published advocacy sites\n\n"
-            "DOMAINS:\n" + "\n".join(f"- {d}" for d in domains) + "\n\n"
             "Respond with STRICT JSON only mapping each domain to its tier, e.g.:\n"
             '{"arxiv.org": "peer_reviewed", "somefringeblog.com": "low_credibility"}'
         )
-        raw = await _collect_stream(self._gen, prompt, temperature=0.0, max_tokens=1500, stream=False)
+        prompt = "DOMAINS:\n" + "\n".join(f"- {d}" for d in domains)
+        # Grading is non-essential context: on ANY failure (call or parse) fall back to
+        # 'unknown' for every domain so synthesis can still proceed.
         try:
+            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                        temperature=0.0, max_tokens=1500, stream=False)
             data = extract_json_object(raw)
         except Exception as e:  # noqa: BLE001
-            logger.warning("🏷️ Credibility grading unparseable (%s) → all 'unknown'", e)
+            logger.warning("🏷️ Credibility grading failed (%s) → all 'unknown'", e)
             return {d: "unknown" for d in domains}
         graded = {}
         for d in domains:
@@ -191,29 +215,49 @@ class ResearchSynthesizer:
     async def synthesize(self, user_request: str, evidence: List[Dict[str, Any]],
                          credibility: Dict[str, str], model: Optional[str] = None) -> str:
         doc = self._evidence_document(evidence, credibility)
-        prompt = (
-            "You are a meticulous research writer. Using ONLY the evidence below, write a "
-            "comprehensive, well-structured answer to the user's request.\n\n"
-            "RULES (strict):\n"
-            "- Ground every factual claim in the evidence; cite as clickable [Title](URL) using "
-            "ONLY URLs present in the evidence. Never invent URLs, facts, dates, or names.\n"
+        system_prompt = (
+            "You are an expert research writer producing an authoritative, in-depth report. A large "
+            "body of evidence has been gathered for you — your job is to convey as much of its insight "
+            "as possible to an avid, curious reader. Using ONLY the evidence provided, write the answer.\n\n"
+            "🎯 PRIMARY DIRECTIVE — MAXIMIZE DEPTH AND COVERAGE:\n"
+            "- COVER EVERY substantive point, finding, argument, example, and nuance the evidence "
+            "supports that is relevant to the request — do NOT limit yourself to a handful of points. "
+            "If the evidence supports ten relevant points, cover all ten. Leave no important angle out.\n"
+            "- EXPAND AND ENRICH — never cut, trim, or summarize for brevity. For each point, develop it "
+            "FULLY: explain the underlying reasoning, mechanisms, historical/scientific context, "
+            "supporting examples, competing interpretations, caveats, and implications that the sources "
+            "provide. Write well-developed multi-sentence paragraphs, not terse bullets.\n"
+            "- MAINTAIN 100% of the depth, coverage, and detail available in the evidence. Brevity is NOT "
+            "a goal here; thoroughness and enlightenment are. A longer, richer, more informative answer "
+            "is BETTER, as long as every sentence earns its place with real substance.\n"
+            "- The ONLY hard limit on length is the evidence itself: greater depth must come from drawing "
+            "on MORE of the gathered evidence — NEVER from speculation, repetition, filler, or padding. "
+            "Accuracy and grounding are never sacrificed for length.\n\n"
+            "GROUNDING & CREDIBILITY RULES (strict):\n"
+            "- Ground every factual claim in the evidence; cite as clickable [Title](URL) using ONLY URLs "
+            "present in the evidence. Never invent URLs, facts, dates, or names.\n"
             "- Respect source credibility: support scholarly/scientific claims with peer_reviewed or "
-            "reputable sources. Content from low_credibility sources must be presented as an "
-            "ATTRIBUTED claim (e.g. 'X claims …') and clearly framed/debunked — never as fact.\n"
+            "reputable sources. Content from low_credibility sources must be presented as an ATTRIBUTED "
+            "claim (e.g. 'X claims …') and clearly framed/debunked — never as fact.\n"
             "- Where sources CONFLICT, explicitly say so and present both sides with citations.\n"
             "- Do NOT overstate your sourcing (e.g. do not call popular/low-credibility sources "
             "'peer-reviewed'). If evidence is thin or absent for part of the request, say so plainly.\n"
             "- STRUCTURE: open with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for "
-            "skim readers), then the detailed sections, and ALWAYS end with a **## Conclusion** that "
-            "recaps the key findings and directly answers the user's request.\n\n"
-            f"USER REQUEST:\n{user_request}\n\n"
-            f"EVIDENCE:\n{doc}"
+            "skim readers), then the detailed sections (as many as the material warrants), and ALWAYS "
+            "end with a **## Conclusion** that recaps the key findings and directly answers the request."
         )
-        kwargs = {"temperature": 0.3, "max_tokens": 8000, "stream": False}
+        prompt = f"USER REQUEST:\n{user_request}\n\nEVIDENCE:\n{doc}"
+        kwargs = {"system_prompt": system_prompt, "temperature": 0.4,
+                  "max_tokens": self._max_answer_tokens, "stream": False}
         if model:
             kwargs["model"] = model
         draft = await _collect_stream(self._gen, prompt, **kwargs)
-        logger.info("📝 Synthesized draft (%s): %d chars", model or "primary", len(draft))
+        _out_tok = _tok_count(draft)
+        _cap = self._max_answer_tokens
+        logger.info("📝 Synthesized draft (%s): %d chars, ~%d output tokens / %d cap (%d%% of cap)%s",
+                    model or "primary", len(draft), _out_tok, _cap,
+                    round(100 * _out_tok / max(1, _cap)),
+                    "  ⚠️ AT CAP — output may be truncated" if _out_tok >= _cap * 0.98 else "")
         return draft
 
     # ---- step 3: multi-model arbitration (C1) ----
@@ -222,42 +266,77 @@ class ResearchSynthesizer:
             f"===== DRAFT {i+1} (model: {d['model']}) =====\n{d['draft']}"
             for i, d in enumerate(drafts)
         )
-        prompt = (
-            "Multiple independent draft answers to the same research request are shown below. "
+        system_prompt = (
+            "Multiple independent draft answers to the same research request will be provided. "
             "Produce a SINGLE reconciled final answer that:\n"
             "- OPENS with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for skim readers);\n"
-            "- keeps only claims that the drafts agree on or that carry stronger citations;\n"
+            "- is COMPREHENSIVE and MUST be AT LEAST AS LONG AND DETAILED as the most thorough draft "
+            "(do NOT compress or summarize) — take the UNION of the drafts: merge ALL complementary "
+            "explanations, context, and detail from every draft rather than reducing to their common "
+            "subset. Only drop content that is unsupported or contradicted by the evidence;\n"
+            "- ENRICHES the key points: on the 2-4 most important points relevant to the user's "
+            "request, ADD an extra sentence or two of supporting explanation, mechanism, context, or "
+            "implication that the evidence supports — give the reader a little more depth and insight "
+            "at the spots that matter most (without padding minor points or repeating yourself, and "
+            "never adding anything not grounded in the evidence);\n"
             "- where the drafts materially DISAGREE, presents the disagreement explicitly rather "
             "than silently picking one side;\n"
             "- preserves all clickable [Title](URL) citations;\n"
             "- ALWAYS ends the main body with a **## Conclusion** that recaps the key findings and "
             "directly answers the request;\n"
             "- THEN, only if the drafts disagreed, appends a short **## Notable Source Conflicts** "
-            "section AFTER the Conclusion.\n\n"
-            f"USER REQUEST:\n{user_request}\n\n{labeled}"
+            "section AFTER the Conclusion."
         )
-        final = await _collect_stream(self._gen, prompt, temperature=0.2, max_tokens=8000, stream=False)
-        logger.info("⚖️ Arbitrated %d drafts → final answer (%d chars)", len(drafts), len(final))
+        prompt = f"USER REQUEST:\n{user_request}\n\n{labeled}"
+        kwargs = {"system_prompt": system_prompt, "temperature": 0.2,
+                  "max_tokens": self._max_answer_tokens, "stream": False}
+        if self._arbitration_model:
+            kwargs["model"] = self._arbitration_model
+        final = await _collect_stream(self._gen, prompt, **kwargs)
+        _out_tok = _tok_count(final)
+        _cap = self._max_answer_tokens
+        logger.info("⚖️ Arbitrated %d drafts (%s) → final answer (%d chars, ~%d output tokens / %d cap, %d%% of cap)%s",
+                    len(drafts), self._arbitration_model or "primary", len(final), _out_tok, _cap,
+                    round(100 * _out_tok / max(1, _cap)),
+                    "  ⚠️ AT CAP — output may be truncated" if _out_tok >= _cap * 0.98 else "")
         return final
 
     # ---- step 4: claim extraction + cross-source verification (C1) ----
     async def verify(self, user_request: str, answer: str,
                      evidence: List[Dict[str, Any]], credibility: Dict[str, str]) -> Dict[str, Any]:
         doc = self._evidence_document(evidence, credibility)
-        prompt = (
-            "Extract the distinct, checkable factual CLAIMS made in the ANSWER, then verify each "
-            "against the EVIDENCE. For every claim assign:\n"
+        system_prompt = (
+            "You are a rigorous fact-checker. Extract EVERY distinct, checkable factual CLAIM made in "
+            "the ANSWER — be EXHAUSTIVE, not selective. Long answers contain many claims; go through the "
+            "answer section by section and capture each substantive factual assertion (statistics, "
+            "dates, causal/mechanistic statements, attributions, named findings). Do NOT sample or "
+            "summarize — aim for complete coverage of the answer's factual content. Then verify each "
+            "claim against the EVIDENCE. For every claim assign:\n"
             f"- verdict: 'supported' (>= {self._min_sources} independent sources in the evidence agree), "
-            "'contradicted' (evidence sources disagree), or 'unverified' (not found in evidence)\n"
+            "'contradicted' (evidence sources disagree), or 'unverified' (not corroborated by the evidence)\n"
+            "- flag_reason: ONLY for contradicted/unverified claims, classify WHY (this matters — it "
+            "distinguishes a possible error in the answer from the answer faithfully reporting a claim "
+            "from a weak source):\n"
+            "    * 'contradicted_by_evidence' — the evidence actively disagrees with the claim (possible error)\n"
+            "    * 'not_in_evidence' — the answer asserts something the gathered sources simply don't cover "
+            "(possibly ungrounded — scrutinize)\n"
+            "    * 'attributed_to_low_credibility' — the answer is CORRECTLY presenting this as an attributed "
+            "claim from a low-credibility/polemical source (e.g. 'Source X claims …'); the answer is being "
+            "honest, the flag is about the SOURCE's reliability, not the answer's accuracy\n"
+            "  (for 'supported' claims, set flag_reason to null)\n"
             "- confidence: 0.0-1.0\n"
             "- citations: list of supporting/contradicting URLs taken ONLY from the evidence\n"
-            "- note: one short sentence (e.g. flag a source conflict or weak/low-credibility support)\n\n"
-            f"USER REQUEST:\n{user_request}\n\nANSWER:\n{answer}\n\nEVIDENCE:\n{doc}\n\n"
+            "- note: one short sentence explaining the verdict/flag\n\n"
             "Respond with STRICT JSON only:\n"
-            '{"claims": [{"text": "...", "verdict": "supported", "confidence": 0.9, '
+            '{"claims": [{"text": "...", "verdict": "supported", "flag_reason": null, "confidence": 0.9, '
             '"citations": ["https://..."], "note": "..."}]}'
         )
-        raw = await _collect_stream(self._gen, prompt, temperature=0.0, max_tokens=4000, stream=False)
+        prompt = f"USER REQUEST:\n{user_request}\n\nANSWER:\n{answer}\n\nEVIDENCE:\n{doc}"
+        kwargs = {"system_prompt": system_prompt, "temperature": 0.0,
+                  "max_tokens": self._verify_max_tokens, "stream": False}
+        if self._verify_model:
+            kwargs["model"] = self._verify_model
+        raw = await _collect_stream(self._gen, prompt, **kwargs)
         try:
             data = extract_json_object(raw)
             claims = data.get("claims", []) if isinstance(data, dict) else []
@@ -268,7 +347,7 @@ class ResearchSynthesizer:
         for c in claims:
             v = str(c.get("verdict", "unverified")).lower()
             counts[v] = counts.get(v, 0) + 1
-        logger.info("🔬 Verified %d claims: %s", len(claims), counts)
+        logger.info("🔬 Verified %d claims (%s): %s", len(claims), self._verify_model or "primary", counts)
         return {"claims": claims, "verdict_counts": counts}
 
     # ---- orchestration ----
@@ -281,31 +360,48 @@ class ResearchSynthesizer:
         if not evidence:
             raise ValueError("synthesis requires a non-empty evidence pool")
 
+        timings: Dict[str, float] = {}
+
         await emit("Grading source credibility…")
+        _t = time.monotonic()
         credibility = await self.grade_sources(evidence)
+        timings["grade"] = round(time.monotonic() - _t, 1)
 
         models = self._arbitration_models
         if models:
             await emit(f"Synthesizing with {len(models)} models ({', '.join(models)})…")
+            _t = time.monotonic()
             drafts_raw = await asyncio.gather(*[
                 self.synthesize(user_request, evidence, credibility, model=m) for m in models
             ])
+            timings["synthesize"] = round(time.monotonic() - _t, 1)
             drafts = [{"model": m, "draft": d} for m, d in zip(models, drafts_raw)]
             await emit("Reconciling drafts (arbitration)…")
+            _t = time.monotonic()
             final_answer = await self.arbitrate(user_request, drafts)
+            timings["arbitrate"] = round(time.monotonic() - _t, 1)
             arbitrated = True
         else:
             await emit("Synthesizing answer…")
+            _t = time.monotonic()
             final_answer = await self.synthesize(user_request, evidence, credibility)
+            timings["synthesize"] = round(time.monotonic() - _t, 1)
             drafts = [{"model": "primary", "draft": final_answer}]
             arbitrated = False
 
         if self._verify_on:
             await emit("Verifying claims against sources…")
-            verification = await self.verify(user_request, final_answer, evidence, credibility)
+            _t = time.monotonic()
+            try:
+                verification = await self.verify(user_request, final_answer, evidence, credibility)
+            except Exception as e:  # noqa: BLE001 — a verify failure must NOT discard a good answer
+                logger.warning("🔬 Verification failed (%s) — returning answer without audit", e)
+                verification = {"claims": [], "verdict_counts": {}}
+            timings["verify"] = round(time.monotonic() - _t, 1)
         else:
             verification = {"claims": [], "verdict_counts": {}}
 
+        logger.info("⏱️ Stage 2 timings (s): %s", timings)
         return {
             "final_answer": final_answer,
             "credibility": credibility,
@@ -315,5 +411,6 @@ class ResearchSynthesizer:
                 "models": models or ["primary"],
                 "claims_checked": len(verification.get("claims", [])),
                 "verdict_counts": verification.get("verdict_counts", {}),
+                "timings": timings,
             },
         }

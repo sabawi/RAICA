@@ -111,9 +111,10 @@ class ResearchPlanner:
     def _max_rounds_ceiling(self) -> int:
         return int(self._cfg.get("loop", {}).get("max_rounds_ceiling", 4))
 
-    def _build_prompt(self, user_request: str) -> str:
+    def _build_prompt(self, user_request: str) -> tuple[str, str]:
+        """Returns (system_prompt, user_prompt). Instructions go in system; data in user."""
         allowed = ", ".join(self._allowed_sources) or "search_web"
-        return (
+        system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
             "satisfy the request. For each sub-question, choose which research SOURCES are "
@@ -127,11 +128,12 @@ class ResearchPlanner:
             "- Assign each sub-question a priority (1 = highest).\n"
             "- Propose max_rounds (1-" f"{self._max_rounds_ceiling}" ") for an iterative gather loop, "
             "and a clear stop_condition describing when research is sufficient.\n\n"
-            f"USER REQUEST:\n{user_request}\n\n"
             "Respond with STRICT JSON only, no prose, in exactly this shape:\n"
             '{"sub_questions": [{"id": "q1", "question": "...", "sources": ["search_web"], '
             '"priority": 1}], "max_rounds": 3, "stop_condition": "..."}'
         )
+        user = f"USER REQUEST:\n{user_request}"
+        return system, user
 
     def _normalize(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         """Validate + clamp the LLM's plan to configured limits. RAICA owns the limits."""
@@ -182,9 +184,10 @@ class ResearchPlanner:
 
     async def plan(self, user_request: str) -> Dict[str, Any]:
         """Produce a validated research plan. Raises on planner failure (fail loud, no guessing)."""
-        prompt = self._build_prompt(user_request)
+        system_prompt, prompt = self._build_prompt(user_request)
         raw = await _collect_stream(
-            self._generate_stream, prompt, temperature=0.1, max_tokens=1200, stream=False
+            self._generate_stream, prompt, system_prompt=system_prompt,
+            temperature=0.1, max_tokens=1200, stream=False
         )
         plan = extract_json_object(raw)
         normalized = self._normalize(plan)
@@ -283,14 +286,10 @@ class DeepResearchEngine:
         """Ask the LLM whether coverage is sufficient and, if not, what to search next."""
         allowed = ", ".join(sorted(self._allowed_sources)) or "search_web"
         sq_list = "\n".join(f"- {sq['id']}: {sq['question']}" for sq in plan["sub_questions"])
-        prompt = (
+        system_prompt = (
             "You are the coverage assessor for a deep-research engine. Given the user's request, "
             "the planned sub-questions, the stop_condition, and a summary of evidence gathered so "
             "far, decide whether research is SUFFICIENT or NEEDS_MORE.\n\n"
-            f"USER REQUEST:\n{user_request}\n\n"
-            f"STOP CONDITION:\n{plan.get('stop_condition', '')}\n\n"
-            f"SUB-QUESTIONS:\n{sq_list}\n\n"
-            f"EVIDENCE GATHERED (compact signals only):\n{self._coverage_summary(evidence)}\n\n"
             f"If NEEDS_MORE, propose targeted next_queries using ONLY these sources: {allowed}. "
             "Each next query must address a specific gap (an unanswered sub-question or a claim "
             "with too few independent sources). Do not repeat queries already run.\n\n"
@@ -298,11 +297,20 @@ class DeepResearchEngine:
             '{"status": "sufficient" | "needs_more", "gaps": ["..."], '
             '"next_queries": [{"sub_question_id": "q1", "source": "search_web", "query": "..."}]}'
         )
-        raw = await _collect_stream(self._gen, prompt, temperature=0.1, max_tokens=900, stream=False)
+        prompt = (
+            f"USER REQUEST:\n{user_request}\n\n"
+            f"STOP CONDITION:\n{plan.get('stop_condition', '')}\n\n"
+            f"SUB-QUESTIONS:\n{sq_list}\n\n"
+            f"EVIDENCE GATHERED (compact signals only):\n{self._coverage_summary(evidence)}"
+        )
+        # On ANY assessment failure (call or parse), stop the loop gracefully — we already
+        # have the evidence gathered so far; never lose a round to a transient assess error.
         try:
+            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                        temperature=0.1, max_tokens=900, stream=False)
             data = extract_json_object(raw)
-        except Exception as e:  # noqa: BLE001 — unparseable assessment => stop (don't loop blindly)
-            logger.warning("🧪 Gap-assessment unparseable (%s) → treating as sufficient", e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("🧪 Gap-assessment failed (%s) → treating as sufficient", e)
             return {"status": "sufficient", "gaps": [], "next_queries": []}
         status = "needs_more" if str(data.get("status", "")).lower() == "needs_more" else "sufficient"
         return {"status": status, "gaps": data.get("gaps", []),
@@ -322,8 +330,10 @@ class DeepResearchEngine:
         start = time.monotonic()
         await emit("Planning sub-questions…")
         plan = await self._planner.plan(user_request)
+        plan_seconds = round(time.monotonic() - start, 1)
         max_rounds = plan["max_rounds"]
         await emit(f"Planned {len(plan['sub_questions'])} sub-questions (up to {max_rounds} rounds).")
+        gather_start = time.monotonic()
 
         evidence: List[Dict[str, Any]] = []
         executed: set = set()
@@ -370,12 +380,14 @@ class DeepResearchEngine:
             round_num += 1
 
         elapsed = round(time.monotonic() - start, 1)
+        gather_seconds = round(time.monotonic() - gather_start, 1)
         total_chars = sum(e["chars"] for e in evidence)
         all_urls = sorted({u for e in evidence for u in e["urls"]})
         logger.info(
             "🧭 Deep research complete: %d rounds, %d evidence items, %d chars, %d unique URLs, "
-            "%.1fs (stop: %s)",
-            round_num, len(evidence), total_chars, len(all_urls), elapsed, stop_reason,
+            "%.1fs (plan %.1fs + gather %.1fs, stop: %s)",
+            round_num, len(evidence), total_chars, len(all_urls), elapsed,
+            plan_seconds, gather_seconds, stop_reason,
         )
         return {
             "plan": plan,
@@ -386,6 +398,8 @@ class DeepResearchEngine:
                 "total_chars": total_chars,
                 "unique_urls": len(all_urls),
                 "elapsed_seconds": elapsed,
+                "plan_seconds": plan_seconds,
+                "gather_seconds": gather_seconds,
                 "stop_reason": stop_reason,
             },
         }
