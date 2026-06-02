@@ -71,7 +71,7 @@ llm:
   primary:
     type: ollama
     config:
-      model: deepseek-v4-pro:cloud #kimi-k2.6:cloud #minimax-m2.7:cloud 
+      model: deepseek-v4-pro:cloud #kimi-k2.6:cloud #minimax-m2.7:cloud
       timeout: 1200
       temperature: 0.7
       max_tokens: 32768
@@ -193,6 +193,13 @@ deep_research:
   # ---- Stage 1: Deep Research Engine ----
   engine:
     enabled: true
+    # Model for ALL deep-research pipeline LLM calls (gate, planner, roster, grade, synthesize,
+    # verify). Split from the global `primary`: deep research is factual/structured work where
+    # deepseek-v4-flash:cloud tested equal-or-better AND 2-3x faster, and it offloads the high-
+    # frequency planner/roster/verify calls from the heavily-loaded pro endpoint (the throttling
+    # source). The NORMAL chat path (e.g. Ask answering a hard reasoning puzzle) still uses the
+    # global `primary` (pro), which flash cannot match on multi-step reasoning. null = use primary.
+    model: deepseek-v4-flash:cloud
     output:
       # Clients that want only the clean answer can suppress the framing.
       stream_progress: false        # live "> Planning… > Round k…" lines + the Deep Research header

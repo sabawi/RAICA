@@ -142,10 +142,16 @@ class ResearchPlanner:
             "qualifier (especially boundary cases, e.g. for 'earliest' the genuinely oldest/least-famous "
             "items), plus sub-questions for the per-item attributes the request asks for.\n"
             "- Propose max_rounds (1-" f"{self._max_rounds_ceiling}" ") for an iterative gather loop, "
-            "and a clear stop_condition describing when research is sufficient.\n\n"
+            "and a clear stop_condition describing when research is sufficient.\n"
+            "- Propose min_rounds (1-" f"{self._max_rounds_ceiling}" "): the MINIMUM rounds to run before "
+            "the loop may stop early. For ENUMERATION requests set min_rounds to at least 2 (ideally 3) — "
+            "a single round rarely surfaces the COMPLETE set of items, so enumeration must keep gathering "
+            "across multiple rounds before concluding. For simple/single-fact requests, min_rounds 1 is fine. "
+            "Also make the stop_condition enumeration-aware: for a list/table, research is NOT sufficient "
+            "until the full roster of qualifying items appears corroborated across sources.\n\n"
             "Respond with STRICT JSON only, no prose, in exactly this shape:\n"
             '{"sub_questions": [{"id": "q1", "question": "...", "sources": ["search_web"], '
-            '"priority": 1}], "max_rounds": 3, "stop_condition": "..."}'
+            '"priority": 1}], "max_rounds": 3, "min_rounds": 1, "stop_condition": "..."}'
         )
         user = f"USER REQUEST:\n{user_request}"
         return system, user
@@ -190,27 +196,72 @@ class ResearchPlanner:
             max_rounds = 3
         max_rounds = max(1, min(max_rounds, self._max_rounds_ceiling))
 
+        # min_rounds: floor before the loop may stop early (planner sets ≥2 for enumeration).
+        try:
+            min_rounds = int(plan.get("min_rounds", 1))
+        except (TypeError, ValueError):
+            min_rounds = 1
+        min_rounds = max(1, min(min_rounds, max_rounds))  # never exceed max_rounds
+
         return {
             "sub_questions": normalized,
+            "min_rounds": min_rounds,
             "max_rounds": max_rounds,
             "stop_condition": str(plan.get("stop_condition", "")).strip()
                               or "All sub-questions have at least two corroborating sources.",
         }
 
+    def _fallback_plan(self, user_request: str) -> Dict[str, Any]:
+        """
+        Minimal plan used when the planner LLM returns empty/unparseable output twice.
+        Keeps deep research alive (gather still runs) instead of crashing the whole request.
+        Searches the request directly across the broadly-useful sources.
+        """
+        allowed = set(self._allowed_sources)
+        srcs = [s for s in ("search_web", "wikipedia_query", "published_papers_search") if s in allowed] \
+            or ([next(iter(allowed))] if allowed else ["search_web"])
+        logger.warning("🧭 Planner unavailable — using fallback single-sub-question plan")
+        return {
+            "sub_questions": [{"id": "q1", "question": user_request[:500], "sources": srcs, "priority": 1}],
+            "min_rounds": 1,
+            "max_rounds": min(2, self._max_rounds_ceiling),
+            "stop_condition": "Sufficient relevant sources gathered for the request.",
+        }
+
     async def plan(self, user_request: str) -> Dict[str, Any]:
-        """Produce a validated research plan. Raises on planner failure (fail loud, no guessing)."""
+        """
+        Produce a validated research plan. The planner LLM call can transiently return empty/
+        garbage (observed: deepseek-v4-pro:cloud failing twice in a ~30s window, yet 4/4 reliable
+        minutes later — a transient cloud blip, NOT a model-quality issue, so we do NOT swap models).
+        Defense: up to 3 attempts with backoff between them (so a retry doesn't land in the same
+        failure window), then a minimal fallback plan rather than crashing the whole run.
+        """
         system_prompt, prompt = self._build_prompt(user_request)
-        raw = await _collect_stream(
-            self._generate_stream, prompt, system_prompt=system_prompt,
-            temperature=0.1, max_tokens=1200, stream=False
-        )
-        plan = extract_json_object(raw)
-        normalized = self._normalize(plan)
-        logger.info(
-            "🧭 Research plan: %d sub-questions, max_rounds=%d",
-            len(normalized["sub_questions"]), normalized["max_rounds"],
-        )
-        return normalized
+        max_attempts = 3
+        backoffs = [3, 6]  # seconds to wait before retry 2 and retry 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                raw = await _collect_stream(
+                    self._generate_stream, prompt, system_prompt=system_prompt,
+                    temperature=0.1, max_tokens=1200, stream=False
+                )
+                plan = extract_json_object(raw)
+                normalized = self._normalize(plan)
+                logger.info(
+                    "🧭 Research plan: %d sub-questions, rounds=%d-%d",
+                    len(normalized["sub_questions"]), normalized["min_rounds"], normalized["max_rounds"],
+                )
+                return normalized
+            except Exception as e:  # noqa: BLE001 — empty/garbage planner output is transient
+                if attempt < max_attempts:
+                    wait = backoffs[attempt - 1]
+                    logger.warning("🧭 Planner attempt %d/%d failed (%s) — retrying in %ds",
+                                   attempt, max_attempts, e, wait)
+                    await asyncio.sleep(wait)
+                else:
+                    logger.warning("🧭 Planner attempt %d/%d failed (%s) — using fallback",
+                                   attempt, max_attempts, e)
+        return self._fallback_plan(user_request)
 
 
 class DeepResearchEngine:
@@ -347,7 +398,9 @@ class DeepResearchEngine:
         plan = await self._planner.plan(user_request)
         plan_seconds = round(time.monotonic() - start, 1)
         max_rounds = plan["max_rounds"]
-        await emit(f"Planned {len(plan['sub_questions'])} sub-questions (up to {max_rounds} rounds).")
+        min_rounds = plan.get("min_rounds", 1)
+        await emit(f"Planned {len(plan['sub_questions'])} sub-questions "
+                   f"(rounds: {min_rounds}-{max_rounds}).")
         gather_start = time.monotonic()
 
         evidence: List[Dict[str, Any]] = []
@@ -376,10 +429,18 @@ class DeepResearchEngine:
                 stop_reason = "wall_clock"
                 break
 
+            # Always ask the assessor what to search next; but honor the min_rounds floor —
+            # for enumeration the planner sets ≥2 so a single round's thin evidence can't end
+            # gathering before the full roster is surfaced. Below the floor, a "sufficient"
+            # verdict is overridden and we keep gathering.
             assessment = await self._assess(user_request, plan, evidence)
-            if assessment["status"] == "sufficient":
+            below_floor = round_num < min_rounds
+            if assessment["status"] == "sufficient" and not below_floor:
                 stop_reason = "sufficient"
                 break
+            if assessment["status"] == "sufficient" and below_floor:
+                logger.info("🧭 Round %d: assessor said sufficient but below min_rounds=%d — continuing",
+                            round_num, min_rounds)
 
             next_queries = assessment.get("next_queries") or []
             tasks = [
@@ -389,6 +450,14 @@ class DeepResearchEngine:
                 for q in next_queries
                 if q.get("source") in self._allowed_sources and (q.get("query") or "").strip()
             ]
+            # Below the floor with no proposed queries: re-issue the plan's sub-questions to
+            # broaden the pool (dedup skips already-run source+query pairs) rather than stopping.
+            if not tasks and below_floor:
+                tasks = [
+                    {"sub_question_id": sq["id"], "question": sq["question"],
+                     "source": src, "query": sq["question"]}
+                    for sq in plan["sub_questions"] for src in sq["sources"]
+                ]
             if not tasks:
                 stop_reason = "no_further_queries"
                 break

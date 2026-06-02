@@ -147,6 +147,32 @@ def _low_cred_cited_section(answer_text: str, credibility: Dict[str, str],
     return "\n".join(lines)
 
 
+def _grounding_caveat(verification: Dict[str, Any]) -> str:
+    """
+    Honest grounding signal: if a large fraction of the answer's claims could not be
+    corroborated by the gathered evidence, the answer likely over-reached its sources
+    (e.g. an enumeration that listed items the thin evidence didn't actually support).
+    Surfaces a caveat so the reader knows the breadth came at the cost of grounding.
+    """
+    vc = (verification or {}).get("verdict_counts") or {}
+    supported = int(vc.get("supported", 0))
+    unverified = int(vc.get("unverified", 0))
+    contradicted = int(vc.get("contradicted", 0))
+    total = supported + unverified + contradicted
+    if total < 8:  # too few claims to judge reliability
+        return ""
+    weak_frac = (unverified + contradicted) / total
+    if weak_frac >= 0.30:  # ≥30% of claims not solidly grounded
+        return (
+            f"\n\n**⚠️ Grounding caveat:** {round(weak_frac * 100)}% of this answer's claims "
+            f"({unverified + contradicted} of {total}) could not be corroborated by the gathered "
+            "evidence. The answer may reach beyond what the sources solidly support — treat the "
+            "less-grounded portions (see flags above) as tentative, and consider a follow-up query "
+            "for deeper sourcing."
+        )
+    return ""
+
+
 def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, Any],
                          total_seconds: float, answer_text: str = "") -> str:
     engine_meta = engine_meta or {}
@@ -168,6 +194,7 @@ def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, An
         f"- **Synthesis:** {'arbitrated across ' if meta.get('arbitrated') else ''}{models}\n"
         f"- **Stop reason:** {engine_meta.get('stop_reason', 'n/a')}\n"
         f"- **⏱️ Timing:** {_timing_breakdown(engine_meta, meta, total_seconds)}"
+        + _grounding_caveat(verification)
         + _low_cred_cited_section(answer_text, cred, cred_reasons)
         + _flagged_claims_section(verification)
     )

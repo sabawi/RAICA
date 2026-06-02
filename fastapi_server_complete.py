@@ -8169,11 +8169,28 @@ async def llama_stream(request: Request):
             try:
                 _dr_root = config_loader.load_config().get('deep_research', {})
                 _dr_engine_cfg = _dr_root.get('engine', {})
+                # Per-request opt-out: a client (e.g. a NewX scheduled bot whose scope doesn't
+                # need multi-round research) can send {"deep_research": false} to skip the gate
+                # entirely. Server-authoritative — not prompt-dependent. Default true = unchanged.
+                _dr_client_allowed = data.get('deep_research', True)
                 _dr_on = (tools_in_use and _dr_root.get('enabled', False)
-                          and _dr_engine_cfg.get('enabled', False))
+                          and _dr_engine_cfg.get('enabled', False)
+                          and bool(_dr_client_allowed))
+                if tools_in_use and not _dr_client_allowed:
+                    logger.info("🔬 Deep research disabled for this request (client deep_research=false)")
             except Exception as _dr_cfg_err:
                 logger.warning(f"🔬 Deep research config unavailable: {_dr_cfg_err}")
                 _dr_on = False
+
+            # Model split: deep-research LLM calls use deep_research.engine.model (flash) instead
+            # of the global primary (pro). This wrapper injects that model into every deep-research
+            # generate_stream call; the normal chat path keeps calling llm_manager.generate_stream
+            # directly (pro). null/unset → falls back to primary (no override).
+            _dr_model = (_dr_engine_cfg.get("model") if _dr_on else None)
+            def _dr_generate_stream(prompt, **kwargs):
+                if _dr_model and "model" not in kwargs:
+                    kwargs["model"] = _dr_model
+                return llm_manager.generate_stream(prompt, **kwargs)
 
             # Gate + setup are guarded so ANY failure here (import error, gate exception,
             # tool-load error) falls through to the normal flow instead of 500-ing the request.
@@ -8182,7 +8199,7 @@ async def llama_stream(request: Request):
                 try:
                     from research.gate import deep_research_gate
                     from research.pipeline import run_deep_research_pipeline
-                    _gate = await deep_research_gate(llm_manager.generate_stream, actual_user_prompt)
+                    _gate = await deep_research_gate(_dr_generate_stream, actual_user_prompt)
                     _dr_triggered = bool(_gate.get('triggered'))
                 except Exception as _dr_gate_err:
                     logger.warning(f"🔬 Deep research gate/setup failed ({_dr_gate_err}) → normal flow")
@@ -8221,7 +8238,7 @@ async def llama_stream(request: Request):
                         yield _dr_chunk("### 🔬 Deep Research Mode\n_This runs multi-round research with "
                                         "source-credibility grading and claim verification — it takes a few minutes._\n\n")
                     _dr_task = asyncio.create_task(run_deep_research_pipeline(
-                        llm_manager.generate_stream, _dr_dispatch, _dr_engine_cfg,
+                        _dr_generate_stream, _dr_dispatch, _dr_engine_cfg,
                         actual_user_prompt, on_progress=(_dr_progress if _dr_show else None)))
                     # Stream progress lines as they arrive (when enabled); stop once the pipeline finishes.
                     if _dr_show:

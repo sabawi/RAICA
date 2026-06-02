@@ -329,7 +329,7 @@ class ResearchSynthesizer:
             )
             prompt = f"USER REQUEST:\n{user_request}\n\nEVIDENCE (breadth-first snippets):\n{snippets}"
             raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
-                                        temperature=0.0, max_tokens=2000, stream=False)
+                                        temperature=0.0, max_tokens=6000, stream=False)
             data = extract_json_object(raw)
             if not isinstance(data, dict) or not data.get("is_enumeration"):
                 return None
@@ -338,7 +338,42 @@ class ResearchSynthesizer:
                 return None
             noun = str(data.get("item_noun", "items")).strip() or "items"
             scope = str(data.get("scope", "")).strip()
-            logger.info("📋 Enumeration detected: %d %s%s — roster extracted",
+
+            # SELF-AUDIT PASS: the first extraction reliably drops qualifying items that ARE in
+            # the evidence (observed: Natufian/Halaf present but excluded; 17→12 run-to-run swing).
+            # Re-scan the SAME breadth-first evidence given the current roster and ask only "what is
+            # MISSING?", then merge. Best-effort — failure keeps the initial roster.
+            try:
+                audit_system = (
+                    "You are auditing a roster of items extracted from research evidence for "
+                    "COMPLETENESS. Given the request scope, the current roster, and the full evidence, "
+                    "find every ADDITIONAL distinct item that fits the scope and appears in the evidence "
+                    "but is MISSING from the current roster (including items mentioned only in passing or "
+                    "as background). Do not repeat items already in the roster; do not add items outside "
+                    "the scope. If the roster is already complete, return an empty list.\n"
+                    'Respond with STRICT JSON only: {"missing_items": ["item", ...]}'
+                )
+                audit_prompt = (
+                    f"REQUEST SCOPE: {scope or user_request}\n\n"
+                    f"CURRENT ROSTER ({len(items)} {noun}):\n" + "\n".join(f"- {it}" for it in items) +
+                    f"\n\nEVIDENCE (breadth-first snippets):\n{snippets}"
+                )
+                araw = await _collect_stream(self._gen, audit_prompt, system_prompt=audit_system,
+                                             temperature=0.0, max_tokens=3000, stream=False)
+                adata = extract_json_object(araw)
+                missing = [str(x).strip() for x in (adata.get("missing_items") or []) if str(x).strip()] \
+                    if isinstance(adata, dict) else []
+                # Merge, case-insensitively de-duplicated, preserving order.
+                seen = {it.lower() for it in items}
+                added = [m for m in missing if m.lower() not in seen]
+                if added:
+                    items.extend(added)
+                    logger.info("📋 Roster self-audit added %d missing item(s): %s",
+                                len(added), ", ".join(added[:8]) + ("…" if len(added) > 8 else ""))
+            except Exception as audit_err:  # noqa: BLE001 — keep initial roster on audit failure
+                logger.warning("📋 Roster self-audit failed (%s) — keeping initial roster", audit_err)
+
+            logger.info("📋 Enumeration detected: %d %s%s — roster extracted (after self-audit)",
                         len(items), noun, f" ({scope})" if scope else "")
             checklist = "\n".join(f"- {it}" for it in items)
             return (
