@@ -49,6 +49,41 @@ def _tok_count(text: str) -> int:
     return max(1, len(text) // 4)  # ~4 chars/token fallback
 
 
+def _salvage_claim_objects(raw: str) -> List[Dict[str, Any]]:
+    """
+    Recover complete claim objects from a verification reply whose JSON was truncated mid-array
+    (common for very long/enumerated answers). Scans for balanced top-level {...} blocks inside
+    the "claims" array and json-loads each independently, skipping the incomplete trailing one.
+    Best-effort; returns [] on total failure.
+    """
+    import json as _json
+    text = raw or ""
+    start = text.find('"claims"')
+    if start == -1:
+        return []
+    objs: List[Dict[str, Any]] = []
+    depth = 0
+    buf_start = -1
+    # Walk from the start of the claims array, capturing each balanced object.
+    for i in range(text.find('[', start) + 1 if text.find('[', start) != -1 else start, len(text)):
+        ch = text[i]
+        if ch == '{':
+            if depth == 0:
+                buf_start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and buf_start != -1:
+                try:
+                    obj = _json.loads(text[buf_start:i + 1])
+                    if isinstance(obj, dict):
+                        objs.append(obj)
+                except Exception:  # noqa: BLE001 — skip a malformed/partial object
+                    pass
+                buf_start = -1
+    return objs
+
+
 def _tok_truncate(text: str, max_tokens: int) -> str:
     if max_tokens <= 0:
         return ""
@@ -97,6 +132,10 @@ class ResearchSynthesizer:
     @property
     def _max_answer_tokens(self) -> int:
         return int(self._cfg.get("synthesis", {}).get("max_answer_tokens", 16000))
+
+    @property
+    def _enumeration_two_pass(self) -> bool:
+        return bool(self._cfg.get("synthesis", {}).get("enumeration_two_pass", True))
 
     @property
     def _arbitration_model(self) -> Optional[str]:
@@ -184,13 +223,21 @@ class ResearchSynthesizer:
     def _evidence_token_budget(self) -> int:
         return int(self._cfg.get("synthesis", {}).get("evidence_token_budget", 110000))
 
-    def _allocate_token_budget(self, evidence: List[Dict[str, Any]]) -> List[int]:
+    @property
+    def _verify_evidence_budget(self) -> int:
+        # Smaller evidence budget for verify so the verify INPUT leaves room for the output JSON
+        # within the model window. Falls back to ~55% of the synthesis budget if unset.
+        return int(self._cfg.get("verification", {}).get(
+            "evidence_token_budget", max(1, int(self._evidence_token_budget * 0.55))))
+
+    def _allocate_token_budget(self, evidence: List[Dict[str, Any]],
+                               budget: Optional[int] = None) -> List[int]:
         """
         Fair token allocation across sources so the evidence document fits the model window:
         small sources are kept whole; leftover budget is split among the large ones (which are
         truncated only if still over). Returns a per-item token cap aligned with `evidence`.
         """
-        budget = self._evidence_token_budget
+        budget = self._evidence_token_budget if budget is None else budget
         sizes = [_tok_count(e.get("content", "")) for e in evidence]
         if sum(sizes) <= budget:
             return sizes  # everything fits — no truncation
@@ -214,8 +261,9 @@ class ResearchSynthesizer:
 
     # ---- shared: build the annotated evidence document (budgeted to the model window) ----
     def _evidence_document(self, evidence: List[Dict[str, Any]],
-                           credibility: Dict[str, str]) -> str:
-        caps = self._allocate_token_budget(evidence)
+                           credibility: Dict[str, str],
+                           budget: Optional[int] = None) -> str:
+        caps = self._allocate_token_budget(evidence, budget=budget)
         blocks = []
         truncated = 0
         for e, cap in zip(evidence, caps):
@@ -235,9 +283,80 @@ class ResearchSynthesizer:
                         self._evidence_token_budget, truncated, len(evidence), _tok_count(doc))
         return doc
 
+    # ---- step 1.5 (optional): enumeration roster extraction ----
+    def _breadth_first_snippets(self, evidence: List[Dict[str, Any]],
+                                per_source_tokens: int = 1200) -> str:
+        """
+        A breadth-FIRST view: a bounded slice of EVERY source (not the tail-truncated, depth-first
+        evidence document). Used only for roster extraction so boundary items mentioned in any
+        source survive — even sources the main evidence budget would truncate away.
+        """
+        blocks = []
+        for i, e in enumerate(evidence, 1):
+            content = _tok_truncate(str(e.get("content", "")), per_source_tokens)
+            blocks.append(f"[SOURCE {i} | {e.get('source')}]\n{content}")
+        return "\n\n".join(blocks)
+
+    async def _extract_roster(self, user_request: str,
+                              evidence: List[Dict[str, Any]]) -> Optional[str]:
+        """
+        For LIST/TABLE/'earliest/all' requests, extract the COMPLETE roster of qualifying items
+        from a breadth-first view of ALL evidence (before depth-truncation can drop boundary items).
+
+        Returns a markdown checklist string to inject into synthesis, or None if this is not an
+        enumeration request, the feature is disabled, or anything fails (→ normal single-pass path).
+        Best-effort and fully fail-safe: never raises.
+        """
+        if not self._enumeration_two_pass:
+            return None
+        try:
+            snippets = self._breadth_first_snippets(evidence)
+            system_prompt = (
+                "You analyze a research request and its evidence. FIRST decide whether the request "
+                "asks to LIST, TABULATE, ENUMERATE, or otherwise produce a SET OF ITEMS (a table, "
+                "'list all/the …', 'the earliest/oldest/first …', a catalog). If it does NOT, return "
+                '{\"is_enumeration\": false}.\n'
+                "If it DOES: scan ALL the evidence and extract the COMPLETE roster of distinct items "
+                "that fit the request's scope qualifier — be exhaustive, INCLUDING boundary cases and "
+                "items mentioned only in passing or as background. Honor the qualifier exactly (e.g. "
+                "for 'earliest', include the genuinely oldest items even if less famous; do NOT include "
+                "items that fall outside the qualifier). Each item = one entry; do not merge distinct "
+                "items.\n"
+                "Respond with STRICT JSON only:\n"
+                '{\"is_enumeration\": true, \"item_noun\": \"<what the items are, e.g. civilizations>\", '
+                '\"scope\": \"<the qualifier, e.g. earliest in the Near East>\", '
+                '\"items\": [\"item 1\", \"item 2\", ...]}'
+            )
+            prompt = f"USER REQUEST:\n{user_request}\n\nEVIDENCE (breadth-first snippets):\n{snippets}"
+            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                        temperature=0.0, max_tokens=2000, stream=False)
+            data = extract_json_object(raw)
+            if not isinstance(data, dict) or not data.get("is_enumeration"):
+                return None
+            items = [str(x).strip() for x in (data.get("items") or []) if str(x).strip()]
+            if len(items) < 2:  # not a meaningful list → use normal path
+                return None
+            noun = str(data.get("item_noun", "items")).strip() or "items"
+            scope = str(data.get("scope", "")).strip()
+            logger.info("📋 Enumeration detected: %d %s%s — roster extracted",
+                        len(items), noun, f" ({scope})" if scope else "")
+            checklist = "\n".join(f"- {it}" for it in items)
+            return (
+                f"REQUIRED ITEM ROSTER ({len(items)} {noun}"
+                f"{' — ' + scope if scope else ''}). This roster was extracted from the FULL evidence "
+                "set. You MUST produce one entry/row for EVERY item below — do not omit any, do not add "
+                "items not relevant to the request. If the detailed evidence for an item is thin, still "
+                "include it with what is known and mark missing cells 'unknown':\n"
+                f"{checklist}"
+            )
+        except Exception as e:  # noqa: BLE001 — best-effort; fall back to normal synthesis
+            logger.warning("📋 Roster extraction failed (%s) — using normal single-pass synthesis", e)
+            return None
+
     # ---- step 2: grounded, credibility-aware synthesis (C3) ----
     async def synthesize(self, user_request: str, evidence: List[Dict[str, Any]],
-                         credibility: Dict[str, str], model: Optional[str] = None) -> str:
+                         credibility: Dict[str, str], model: Optional[str] = None,
+                         roster: Optional[str] = None) -> str:
         doc = self._evidence_document(evidence, credibility)
         system_prompt = (
             "You are an expert research writer producing an authoritative, in-depth report. A large "
@@ -268,6 +387,26 @@ class ResearchSynthesizer:
             "- The ONLY hard limit on length is the evidence itself: greater depth must come from drawing "
             "on MORE of the gathered evidence — NEVER from speculation, repetition, filler, or padding. "
             "Accuracy and grounding are never sacrificed for length.\n\n"
+            "📋 ENUMERATION COMPLETENESS — when the request asks to LIST, TABULATE, ENUMERATE, or "
+            "otherwise produce a set of items (a table, a list of X, 'all the …', a catalog):\n"
+            "- COMPLETENESS HERE MEANS BREADTH OF ITEMS (rows/entries), NOT depth on a few. First cover "
+            "EVERY qualifying item the evidence supports — be exhaustive in the ROW set — THEN add per-item "
+            "detail. Never trade breadth of items for depth on a subset: a table with all the items and "
+            "moderate per-row detail is FAR more complete than a few items described lavishly.\n"
+            "- MATCH THE SCOPE QUALIFIER EXACTLY. If the request says 'earliest', 'first', 'oldest', "
+            "'smallest', 'all', a date range, or any other qualifier, the item set MUST honor it. Do NOT "
+            "drift to the famous/well-documented items while omitting ones that actually fit the qualifier "
+            "(e.g. for 'earliest', include the genuinely earliest items even if the evidence on them is "
+            "thinner, and do NOT pad the list with later items that no longer fit). Items at the boundary "
+            "of the qualifier are exactly the ones most likely to be wrongly dropped — include them.\n"
+            "- MINE THE EVIDENCE FOR EVERY QUALIFYING ITEM, including ones mentioned only in passing or "
+            "as background to another item. If an item appears anywhere in the evidence and fits the "
+            "request, it gets its own entry/row — do not fold it into another item's description.\n"
+            "- For a TABLE, populate EVERY requested column for EVERY row; if a cell's value is unknown "
+            "from the evidence, write 'unknown'/'uncertain' rather than dropping the row or the column.\n"
+            "- If you can identify qualifying items but the evidence is too thin to fully detail them, "
+            "STILL list them (with what is known + a note that detail is limited) rather than omitting "
+            "them — an acknowledged-but-thin entry is more complete than a silent omission.\n\n"
             "GROUNDING & CREDIBILITY RULES (strict — these govern ATTRIBUTION, never EXCLUSION):\n"
             "- Ground every factual claim in the evidence; cite as clickable [Title](URL) using ONLY URLs "
             "present in the evidence. Never invent URLs, facts, dates, or names.\n"
@@ -286,7 +425,10 @@ class ResearchSynthesizer:
             "skim readers), then the detailed sections (as many as the material warrants), and ALWAYS "
             "end with a **## Conclusion** that recaps the key findings and directly answers the request."
         )
-        prompt = f"USER REQUEST:\n{user_request}\n\nEVIDENCE:\n{doc}"
+        # For enumeration requests, the pre-extracted roster (from the FULL evidence set) is
+        # injected so every qualifying item gets a row even if its detail evidence was truncated.
+        roster_block = f"\n\n{roster}\n" if roster else ""
+        prompt = f"USER REQUEST:\n{user_request}{roster_block}\n\nEVIDENCE:\n{doc}"
         kwargs = {"system_prompt": system_prompt, "temperature": 0.4,
                   "max_tokens": self._max_answer_tokens, "stream": False}
         if model:
@@ -344,7 +486,9 @@ class ResearchSynthesizer:
     # ---- step 4: claim extraction + cross-source verification (C1) ----
     async def verify(self, user_request: str, answer: str,
                      evidence: List[Dict[str, Any]], credibility: Dict[str, str]) -> Dict[str, Any]:
-        doc = self._evidence_document(evidence, credibility)
+        # Use a SMALLER evidence budget for verify so input doesn't fill the window and starve
+        # the output JSON (a full-budget evidence doc left only ~5K output room → 0 claims).
+        doc = self._evidence_document(evidence, credibility, budget=self._verify_evidence_budget)
         system_prompt = (
             "You are a rigorous fact-checker. Extract EVERY distinct, checkable factual CLAIM made in "
             "the ANSWER — be EXHAUSTIVE, not selective. Long answers contain many claims; go through the "
@@ -381,8 +525,14 @@ class ResearchSynthesizer:
             data = extract_json_object(raw)
             claims = data.get("claims", []) if isinstance(data, dict) else []
         except Exception as e:  # noqa: BLE001
-            logger.warning("🔬 Claim verification unparseable (%s)", e)
-            claims = []
+            # The verify JSON can be huge for long/enumerated answers and may get truncated mid-array.
+            # Salvage every COMPLETE claim object rather than discarding the whole audit (→ 0 claims).
+            claims = _salvage_claim_objects(raw)
+            if claims:
+                logger.warning("🔬 Claim verification JSON truncated (%s) — salvaged %d complete claims",
+                               e, len(claims))
+            else:
+                logger.warning("🔬 Claim verification unparseable (%s)", e)
         counts: Dict[str, int] = {}
         for c in claims:
             v = str(c.get("verdict", "unverified")).lower()
@@ -407,12 +557,20 @@ class ResearchSynthesizer:
         credibility = await self.grade_sources(evidence)
         timings["grade"] = round(time.monotonic() - _t, 1)
 
+        # Optional enumeration roster (None for non-list requests → unchanged single-pass path).
+        _t = time.monotonic()
+        roster = await self._extract_roster(user_request, evidence)
+        if roster is not None:
+            await emit("Enumeration request — extracted complete item roster from all evidence…")
+            timings["roster"] = round(time.monotonic() - _t, 1)
+
         models = self._arbitration_models
         if models:
             await emit(f"Synthesizing with {len(models)} models ({', '.join(models)})…")
             _t = time.monotonic()
             drafts_raw = await asyncio.gather(*[
-                self.synthesize(user_request, evidence, credibility, model=m) for m in models
+                self.synthesize(user_request, evidence, credibility, model=m, roster=roster)
+                for m in models
             ])
             timings["synthesize"] = round(time.monotonic() - _t, 1)
             drafts = [{"model": m, "draft": d} for m, d in zip(models, drafts_raw)]
@@ -424,7 +582,7 @@ class ResearchSynthesizer:
         else:
             await emit("Synthesizing answer…")
             _t = time.monotonic()
-            final_answer = await self.synthesize(user_request, evidence, credibility)
+            final_answer = await self.synthesize(user_request, evidence, credibility, roster=roster)
             timings["synthesize"] = round(time.monotonic() - _t, 1)
             drafts = [{"model": "primary", "draft": final_answer}]
             arbitrated = False

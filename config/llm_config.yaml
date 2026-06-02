@@ -229,14 +229,26 @@ deep_research:
       # Max tokens for the generated answer. Deep research has rich evidence to draw on;
       # give the model room to elaborate fully (kept well within the model window).
       max_answer_tokens: 16000   # 8000 - 16000 (8000 truncated drafts mid-output — see 2026-06-01 test)
+      # Two-pass enumeration: for LIST/TABLE/"earliest/all" requests, first extract the COMPLETE
+      # item roster from a breadth-first view of ALL evidence (before token-budget truncation can
+      # drop boundary items), then synthesize a row for every item. Fixes enumeration-completeness
+      # gaps (e.g. a "earliest civilizations" table that dropped the Neolithic cultures because
+      # their evidence got truncated). Detection + roster are best-effort: on disable or ANY
+      # failure, synthesis falls back to the normal single-pass path (no behavior change for
+      # non-enumeration queries).
+      enumeration_two_pass: true
     verification:
       enabled: true
       # A claim needs at least this many independent sources to be labeled "supported".
       min_corroborating_sources: 2
-      # Output token budget for the verification JSON. Must be generous: a long, rich answer
-      # contains many claims, and a small budget truncates extraction (under-sampling the
-      # answer — e.g. only 12 claims checked for a 37K-char answer at the old 4000 cap).
-      max_tokens: 12000
+      # Output token budget for the verification JSON (maps to Ollama num_predict via
+      # research/_collect_stream). A long answer yields a large claim list; the salvage parser
+      # recovers complete claims if the JSON is still cut off, so verify never returns 0.
+      max_tokens: 16000
+      # Token budget for the EVIDENCE document sent to the verifier. Kept well below the full
+      # synthesis budget so the verify INPUT does not fill the context window and starve the
+      # output (a 110K-token evidence doc left only ~5K output room → truncated, 0 claims).
+      evidence_token_budget: 60000
       # Model that EXTRACTS + VERIFIES claims against the evidence. null = primary.
       # More mechanical than arbitration, so a lower quality-risk place to use a faster model.
       # NOTE (2026-06-01 test): gemma4:31b here checked half as many claims (13 vs 26) and

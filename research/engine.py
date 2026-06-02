@@ -70,7 +70,16 @@ def extract_json_object(text: str) -> Dict[str, Any]:
 
 
 async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs) -> str:
-    """Run an injected streaming LLM call and return the full text."""
+    """
+    Run an injected streaming LLM call and return the full text.
+
+    Maps our `max_tokens` intent to `num_predict` as well: the Ollama provider reads ONLY
+    `num_predict` (it ignores `max_tokens`), so without this our output-length config would be
+    silently dropped and every call would fall back to the model default. OpenAI/Gemini providers
+    read `max_tokens` and ignore the extra `num_predict`, so this is safe across providers.
+    """
+    if "max_tokens" in kwargs and "num_predict" not in kwargs:
+        kwargs["num_predict"] = kwargs["max_tokens"]
     chunks: List[str] = []
     async for chunk in generate_stream(prompt, **kwargs):
         chunks.append(chunk)
@@ -126,6 +135,12 @@ class ResearchPlanner:
             "news for current events, wikipedia for background, search_web for general/web coverage, "
             "get_sec_filings for company filings, document_search for the user's own documents.\n"
             "- Assign each sub-question a priority (1 = highest).\n"
+            "- ENUMERATION REQUESTS: if the request asks to LIST/TABULATE/ENUMERATE a set of items "
+            "(a table, 'all the …', 'the earliest/oldest/first …', a catalog), make sure the "
+            "sub-questions will surface the COMPLETE set of qualifying items — not just the famous ones. "
+            "Include a sub-question aimed at discovering the full roster of items that fit the request's "
+            "qualifier (especially boundary cases, e.g. for 'earliest' the genuinely oldest/least-famous "
+            "items), plus sub-questions for the per-item attributes the request asks for.\n"
             "- Propose max_rounds (1-" f"{self._max_rounds_ceiling}" ") for an iterative gather loop, "
             "and a clear stop_condition describing when research is sufficient.\n\n"
             "Respond with STRICT JSON only, no prose, in exactly this shape:\n"
