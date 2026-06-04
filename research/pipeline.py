@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-from research.engine import DeepResearchEngine
+from research.engine import DeepResearchEngine, _collect_stream, extract_json_object
 from research.synthesis import ResearchSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -200,6 +200,45 @@ def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, An
     )
 
 
+async def _normalize_research_request(
+    generate_stream: Callable, config: Dict[str, Any], user_request: str
+) -> str:
+    """
+    Phase 0 (orchestration retrofit): LLM-extract the RESEARCH-and-writing intent from a possibly
+    compound request, stripping delivery/packaging directives (generate PDF/HTML, save file, email,
+    post to social/publishing) and recipient addresses. The research + synthesis stages must focus
+    solely on producing the CONTENT; delivery is handled downstream (POST-LLM execution / the
+    orchestrator). This prevents the synthesizer from refusing a whole task because it "cannot send
+    email / create PDFs". Returns the cleaned research request; on ANY failure returns the original
+    request unchanged (no regression — never worse than legacy behavior).
+    """
+    system_prompt = (
+        "You normalize a user's request for a RESEARCH-AND-WRITING engine whose ONLY job is to "
+        "research a topic and write the requested written content (academic paper, report, brief, "
+        "etc.). Downstream systems handle ALL delivery and packaging — generating PDF/HTML files, "
+        "saving files, sending email, posting to social or publishing platforms. The research engine "
+        "must NEVER attempt or refuse any of those.\n\n"
+        "From the USER REQUEST, extract ONLY the research-and-writing instructions: topic, scope, the "
+        "required sections/structure/format of the WRITTEN content, length, and citation/accuracy "
+        "requirements. REMOVE every instruction about delivering, emailing, file formats (PDF/HTML), "
+        "saving, or posting, and remove recipient addresses. Keep the substantive content "
+        "requirements as close to verbatim as possible. Do not add requirements that were not asked.\n\n"
+        "Respond with STRICT JSON only: {\"research_request\": \"<the cleaned request>\"}"
+    )
+    prompt = f"USER REQUEST:\n{user_request}"
+    try:
+        raw = await _collect_stream(generate_stream, prompt, system_prompt=system_prompt,
+                                    temperature=0.0, max_tokens=2000, stream=False)
+        data = extract_json_object(raw)
+        cleaned = (data.get("research_request") or "").strip()
+        if cleaned:
+            return cleaned
+        logger.warning("🔬 research-request normalization returned empty → using original request")
+    except Exception as e:  # noqa: BLE001 — normalization is best-effort; never abort a research run
+        logger.warning("🔬 research-request normalization failed (%s) → using original request", e)
+    return user_request
+
+
 async def run_deep_research_pipeline(
     generate_stream: Callable,
     dispatch_tool: Callable,
@@ -218,8 +257,19 @@ async def run_deep_research_pipeline(
             await on_progress(msg)
 
     pipeline_start = time.monotonic()
+
+    # Phase 0: strip delivery/packaging directives so research + synthesis focus on the CONTENT
+    # only (delivery is handled downstream). The full original request stays with the caller for
+    # the orchestrator/POST-LLM action phase. Toggle: deep_research.engine.normalize_request.
+    research_request = user_request
+    if config.get("normalize_request", True):
+        research_request = await _normalize_research_request(generate_stream, config, user_request)
+        if research_request != user_request:
+            logger.info("🔬 Research request normalized (delivery/action directives stripped)")
+            await emit("Scoping the research (delivery handled separately)…")
+
     engine = DeepResearchEngine(generate_stream, dispatch_tool, config)
-    stage1 = await engine.run(user_request, on_progress=on_progress)
+    stage1 = await engine.run(research_request, on_progress=on_progress)
     evidence: List[Dict[str, Any]] = stage1["evidence"]
     engine_meta = stage1["metadata"]
 
@@ -234,7 +284,7 @@ async def run_deep_research_pipeline(
         }
 
     synthesizer = ResearchSynthesizer(generate_stream, config)
-    stage2 = await synthesizer.run(user_request, evidence, on_progress=on_progress)
+    stage2 = await synthesizer.run(research_request, evidence, on_progress=on_progress)
 
     total_seconds = round(time.monotonic() - pipeline_start, 1)
     answer = (stage2.get("final_answer") or "").rstrip()

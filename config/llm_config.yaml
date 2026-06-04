@@ -200,6 +200,13 @@ deep_research:
     # source). The NORMAL chat path (e.g. Ask answering a hard reasoning puzzle) still uses the
     # global `primary` (pro), which flash cannot match on multi-step reasoning. null = use primary.
     model: deepseek-v4-flash:cloud
+    # Phase 0 (orchestration retrofit): before researching, LLM-extract the RESEARCH-and-writing
+    # intent from a possibly-compound request, stripping delivery/packaging directives (generate
+    # PDF/HTML, save file, email, post to social/publishing) and recipient addresses. The research
+    # + synthesis stages must produce the CONTENT only; delivery is handled downstream by POST-LLM
+    # execution / the orchestrator. This prevents the synthesizer from refusing a whole task because
+    # it "cannot send email / create PDFs". false = pass the raw request through (legacy behavior).
+    normalize_request: true
     output:
       # Clients that want only the clean answer can suppress the framing.
       stream_progress: false        # live "> Planning… > Round k…" lines + the Deep Research header
