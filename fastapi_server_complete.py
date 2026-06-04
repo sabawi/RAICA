@@ -230,6 +230,12 @@ class OpenAIChatRequest(BaseModel):
     images: Optional[List[str]] = Field(default=None, description="Image data - file paths or base64")
     # Tool whitelist: only these tools may be called (sent by NewX AI connector)
     allowed_tools: Optional[List[str]] = Field(default=None, description="Whitelist of allowed tool names")
+    # Deep-research opt-out (server-authoritative): a client (e.g. a NewX scheduled
+    # bot whose scope doesn't need multi-round research) can send deep_research=false
+    # to skip the deep-research gate. None = unset → default behavior (gate decides).
+    # Deliberate exception to the zero-trust "ignore everything" policy below, like
+    # allowed_tools — it can only RESTRICT, never enable anything not already enabled.
+    deep_research: Optional[bool] = Field(default=None, description="Client opt-out for the deep-research gate")
 
     class Config:
         extra = "ignore"  # Ignore all other fields for security
@@ -11249,22 +11255,22 @@ async def openai_chat_completions(request: OpenAIChatRequest):
         enhanced_prompt = conversation_context + user_prompt if is_followup else user_prompt
         
         if is_streaming:
-            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools)
+            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research)
         else:
-            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools)
+            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research)
         
     except Exception as e:
         logger.error(f"🚨 OpenAI compatibility error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None):
+async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None):
     """Handle non-streaming OpenAI response with proper format"""
     try:
         logger.info(f"🔒 OpenAI Non-streaming Response - falling back to streaming with collect")
-        
+
         # For non-streaming, we'll use streaming mode and collect all chunks
-        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools)
+        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools, deep_research=deep_research)
         
         # Collect all streaming content
         response_content = ""
@@ -11684,7 +11690,7 @@ def _format_conversation_for_markdown(messages: list) -> str:
 
 # ALL PDF FORMATTING FUNCTIONS REMOVED - PDF PROCESSING COMPLETELY DISABLED
 
-async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None):
+async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None):
     """Handle streaming OpenAI response with proper format - simplified implementation"""
     try:
         logger.info(f"🔒 OpenAI Streaming Response requested")
@@ -11734,7 +11740,13 @@ async def openai_streaming_response(user_prompt: str, model: str, conversation_i
                 "system": "",
                 "allowed_tools": allowed_tools,  # Pass tool whitelist from caller
             }
-            
+            # Forward the client's deep-research opt-out so the gate (which reads
+            # data.get('deep_research', True)) can honor it. Only set when explicitly
+            # provided — None leaves the default (gate decides) untouched.
+            if deep_research is not None:
+                native_request_data["deep_research"] = deep_research
+                logger.info(f"🔬 Client deep_research flag forwarded to pipeline: {deep_research}")
+
             # Choose routing method based on feature flag
             if ServerConfig.USE_DIRECT_FUNCTION_CALLS:
                 logger.info(f"🔀 Using DIRECT function calls (faster, no HTTP overhead)")
