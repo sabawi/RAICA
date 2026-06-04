@@ -242,6 +242,11 @@ class OpenAIChatRequest(BaseModel):
     # the firewalled /v1); a client WITH an allowed_tools whitelist (e.g. NewX bots) is denied unless
     # it sends explicit true. Deliberate exception to the zero-trust policy, like allowed_tools.
     allow_delivery: Optional[bool] = Field(default=None, description="Deep-research delivery authorization (explicit override; else auto-trust if no allowed_tools)")
+    # Server-authoritative delivery recipient. When set (e.g. NewX passes the requesting user's own
+    # verified account email), RAICA emails ONLY this address and IGNORES any recipient in the prompt
+    # — so a multi-user-platform bot can't be abused to email arbitrary people. For restricted clients
+    # (those sending allowed_tools) this is REQUIRED to email; if absent, RAICA refuses (fail-closed).
+    delivery_recipient: Optional[str] = Field(default=None, description="Locked delivery recipient (overrides prompt-specified recipients)")
 
     class Config:
         extra = "ignore"  # Ignore all other fields for security
@@ -7283,11 +7288,18 @@ def _dr_delivery_permitted(data: dict) -> bool:
 
 
 async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
-                           user_prompt: str, tool_manager, engine_cfg: dict):
+                           user_prompt: str, tool_manager, engine_cfg: dict,
+                           locked_recipient: str = None, recipient_locked: bool = False):
     """Phase 2 delivery fan-out. Yields human-readable status lines (the caller wraps them as chunks).
     A-hybrid: create a document (PDF/file) from the research paper via sandboxed_executor, then email
     it via secure_email_sender. File lifecycle: KEEP on success (TTL-swept) and KEEP on failure
-    (reported, never deleted — the artifact is expensive)."""
+    (reported, never deleted — the artifact is expensive).
+
+    Recipient policy (security): when recipient_locked is True (restricted client, e.g. a NewX bot),
+    email goes ONLY to locked_recipient (the requesting user's server-authoritative account email);
+    prompt-specified recipients are ignored and, if no valid locked_recipient is supplied, email is
+    refused (fail-closed). When recipient_locked is False (auto-trusted single-user client like
+    OpenWebUI), recipients are resolved from the request as before."""
     import os
     from datetime import datetime as _dt
 
@@ -7363,7 +7375,18 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
                 created_filename = None
 
     if email_action:
-        recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
+        # Recipient policy (security). For a restricted client the recipient is server-authoritative
+        # (the requesting user's own account email); prompt recipients are NEVER honored, so a bot
+        # can't be coerced into emailing arbitrary people. Fail-closed if no valid locked recipient.
+        recipient_note = ""
+        if recipient_locked:
+            import re as _re3
+            _valid_lr = bool(locked_recipient) and _re3.fullmatch(
+                r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', (locked_recipient or '').strip())
+            recipients = [locked_recipient.strip()] if _valid_lr else []
+            recipient_note = " (your account email — for safety, bots can only email you, not addresses named in the request)"
+        else:
+            recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
         if file_action and not created_filename:
             # A document was requested to be emailed but its creation failed — do NOT send an
             # attachment-less email (the "email without a document" failure mode). This is surfaced
@@ -7372,7 +7395,12 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
                    "so there was nothing to attach. The full research paper is in this response; "
                    "please try again to have it emailed.\n")
         elif not recipients:
-            yield "> ⚠️ Email requested but no recipient address found — skipping email.\n"
+            if recipient_locked:
+                yield ("> ❌ **Email not sent** — for safety, this bot can only email the requesting "
+                       "user's own account email, and none was available. (Recipients named in the "
+                       "request are never used.)\n")
+            else:
+                yield "> ⚠️ Email requested but no recipient address found — skipping email.\n"
         else:
             to_email = recipients[0]
             subject = (deliverable_spec or {}).get("title") or doc_title
@@ -7395,7 +7423,7 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
                         yield (f"> 📎 Your document was NOT deleted — saved at "
                                f"sandbox_workspace/{created_filename}. You can download it or retry.\n")
                 else:
-                    yield (f"> ✅ Emailed to {to_email}"
+                    yield (f"> ✅ Emailed to {to_email}{recipient_note}"
                            + (f" with attachment {created_filename}" if created_filename else "") + ".\n")
                     if created_filename:
                         yield "> 🧹 Working copy removed after sending (the document is in your email).\n"
@@ -8501,13 +8529,22 @@ async def llama_stream(request: Request):
                         # The research paper (footer-less answer_body) is the shared context.
                         _dr_actions = (_dr_result or {}).get("actions") or []
                         if _dr_actions and _dr_delivery_permitted(data):
+                            # Recipient policy: a restricted client (one that sends allowed_tools, e.g.
+                            # a NewX bot) may ONLY email the server-authoritative delivery_recipient
+                            # (the requesting user's own account email) — prompt recipients are ignored
+                            # so the bot can't be abused to email arbitrary people. An auto-trusted
+                            # single-user client (no allowed_tools, e.g. OpenWebUI) keeps prompt recipients.
+                            _locked_recipient = data.get("delivery_recipient")
+                            _recipient_locked = data.get("allowed_tools") is not None
                             yield _dr_chunk("\n\n---\n**📦 Delivery**\n")
                             try:
                                 async for _dr_status in _run_dr_delivery(
                                         _dr_actions,
                                         (_dr_result or {}).get("deliverable_spec") or {},
                                         (_dr_result or {}).get("answer_body") or _dr_answer,
-                                        actual_user_prompt, tool_manager, _dr_engine_cfg):
+                                        actual_user_prompt, tool_manager, _dr_engine_cfg,
+                                        locked_recipient=_locked_recipient,
+                                        recipient_locked=_recipient_locked):
                                     yield _dr_chunk(_dr_status)
                             except Exception as _deliv_err:
                                 logger.error(f"📦 Delivery fan-out failed: {_deliv_err}", exc_info=True)
@@ -11509,22 +11546,22 @@ async def openai_chat_completions(request: OpenAIChatRequest):
         enhanced_prompt = conversation_context + user_prompt if is_followup else user_prompt
         
         if is_streaming:
-            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery)
+            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery, delivery_recipient=request.delivery_recipient)
         else:
-            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery)
+            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery, delivery_recipient=request.delivery_recipient)
         
     except Exception as e:
         logger.error(f"🚨 OpenAI compatibility error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None):
+async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None, delivery_recipient: str = None):
     """Handle non-streaming OpenAI response with proper format"""
     try:
         logger.info(f"🔒 OpenAI Non-streaming Response - falling back to streaming with collect")
 
         # For non-streaming, we'll use streaming mode and collect all chunks
-        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools, deep_research=deep_research, allow_delivery=allow_delivery)
+        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools, deep_research=deep_research, allow_delivery=allow_delivery, delivery_recipient=delivery_recipient)
         
         # Collect all streaming content
         response_content = ""
@@ -11944,7 +11981,7 @@ def _format_conversation_for_markdown(messages: list) -> str:
 
 # ALL PDF FORMATTING FUNCTIONS REMOVED - PDF PROCESSING COMPLETELY DISABLED
 
-async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None):
+async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None, delivery_recipient: str = None):
     """Handle streaming OpenAI response with proper format - simplified implementation"""
     try:
         logger.info(f"🔒 OpenAI Streaming Response requested")
@@ -12004,6 +12041,9 @@ async def openai_streaming_response(user_prompt: str, model: str, conversation_i
             if allow_delivery is not None:
                 native_request_data["allow_delivery"] = allow_delivery
                 logger.info(f"📦 Client allow_delivery flag forwarded to pipeline: {allow_delivery}")
+            if delivery_recipient:
+                native_request_data["delivery_recipient"] = delivery_recipient
+                logger.info(f"📦 Locked delivery recipient forwarded to pipeline: {delivery_recipient}")
 
             # Choose routing method based on feature flag
             if ServerConfig.USE_DIRECT_FUNCTION_CALLS:
