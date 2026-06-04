@@ -8224,6 +8224,20 @@ async def llama_stream(request: Request):
                 try:
                     await tool_manager._load_user_tools_async()
 
+                    # Phase 1: build the LIVE tool catalog (name + description, incl. user tools &
+                    # plugins) so the request decomposer grounds its action vocabulary in capabilities
+                    # that actually exist (Principle 6 — open vocabulary via dynamic discovery).
+                    try:
+                        _dr_tool_defs = await tool_manager.get_tools_definitions()
+                        _dr_tool_catalog = [
+                            {"name": _d.get("function", {}).get("name", ""),
+                             "description": _d.get("function", {}).get("description", "")}
+                            for _d in _dr_tool_defs if _d.get("function", {}).get("name")
+                        ]
+                    except Exception as _cat_err:
+                        logger.warning(f"🧩 Could not build tool catalog for decomposition: {_cat_err}")
+                        _dr_tool_catalog = []
+
                     async def _dr_dispatch(name, query):
                         fn = tool_manager.available_functions.get(name)
                         if not fn:
@@ -8245,7 +8259,8 @@ async def llama_stream(request: Request):
                                         "source-credibility grading and claim verification — it takes a few minutes._\n\n")
                     _dr_task = asyncio.create_task(run_deep_research_pipeline(
                         _dr_generate_stream, _dr_dispatch, _dr_engine_cfg,
-                        actual_user_prompt, on_progress=(_dr_progress if _dr_show else None)))
+                        actual_user_prompt, on_progress=(_dr_progress if _dr_show else None),
+                        tool_catalog=_dr_tool_catalog))
                     # Stream progress lines as they arrive (when enabled); stop once the pipeline finishes.
                     if _dr_show:
                         while True:

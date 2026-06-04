@@ -31,6 +31,7 @@ This doc addresses #1 and #2 (orchestration). #3 (backend reliability) and prese
 3. **Reuse, don't rebuild.** Action fan-out targets the **existing POST-LLM execution machinery** + existing tools. No parallel action engine.
 4. **No regression.** Deep Research must keep working at every phase boundary. The terminal "just answer" path remains the default when there are no action directives.
 5. **Zero hardcoded config.** New thresholds/flags live in `config/llm_config.yaml`; fail fast if missing.
+6. **Open action vocabulary via dynamic tool discovery.** `deliverable_spec` and `actions[]` are NOT a closed enum. The decomposition LLM is fed RAICA's **live tool/capability catalog** (`tool_manager.available_functions` + descriptions) and may emit ANY action whose capability currently exists — `render_pdf`, `generate_infographic`, `generate_3_images`, `make_flowchart`, `schedule_meeting`, `post_substack`, … RAICA resolves each action against the registry and **spawns a subagent that runs with the research output in context** to perform it. The vocabulary grows automatically when a new tool is added — **no new branches in the decomposer or orchestrator** (the Generalization Test). If a requested capability has no matching tool, RAICA says so explicitly (no silent guess). Corollary: action/deliverable schemas are **free-form** (`{"type": "<capability>", "args": {…}}`), validated against the live registry — never a struct with fixed per-action fields.
 
 ---
 
@@ -101,6 +102,25 @@ Today POST-LLM execution is gated on flags set during the tool-calling phase (`e
 - When `actions` is empty: unchanged — stream the answer and return (today's behavior).
 
 This keeps **one** action executor (POST-LLM), satisfying "reuse, don't rebuild."
+
+### Decomposition contract (open vocabulary)
+
+The orchestrator's decomposition LLM call is fed the **live tool catalog** and returns free-form JSON:
+
+```json
+{
+  "research_spec":    { "research_request": "<delivery-stripped research+writing intent>" },
+  "deliverable_spec": { "format": "...", "min_words": 0, "style": "...", "sections": ["..."] },
+  "actions": [ { "type": "<capability name from the catalog>", "args": { } } ]
+}
+```
+
+- `actions[].type` is **any capability that exists in `tool_manager.available_functions`** — chosen by the
+  LLM, not from a hardcoded list (Principle 6). New tool → new possible action, with zero decomposer/orchestrator changes.
+- RAICA validates each `type` against the live registry; **unknown capability → reported, not faked.**
+- Each resolved action → a **subagent invocation with the research output as shared context** (PDF/email reuse
+  POST-LLM today; infographic/images/flowchart/meeting/publish are just more registry tools as they're added).
+- Empty `actions` → terminal answer (today's behavior). This is what Phase 1 ships: decompose + log, execute nothing yet.
 
 ---
 

@@ -200,43 +200,80 @@ def _verification_footer(engine_meta: Dict[str, Any], synth_result: Dict[str, An
     )
 
 
-async def _normalize_research_request(
-    generate_stream: Callable, config: Dict[str, Any], user_request: str
-) -> str:
+def _format_tool_catalog(tool_catalog: Optional[List[Dict[str, Any]]]) -> str:
+    """Render the live tool catalog (name + description) for the decomposition prompt. The action
+    vocabulary is grounded in THIS list — the LLM may only name capabilities that exist here."""
+    if not tool_catalog:
+        return "(no delivery/action tools are currently available)"
+    lines = []
+    for t in tool_catalog:
+        name = (t.get("name") or "").strip()
+        desc = (t.get("description") or "").strip().replace("\n", " ")
+        if name:
+            lines.append(f"- {name}: {desc}")
+    return "\n".join(lines) if lines else "(no delivery/action tools are currently available)"
+
+
+async def _decompose_request(
+    generate_stream: Callable, config: Dict[str, Any], user_request: str,
+    tool_catalog: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
-    Phase 0 (orchestration retrofit): LLM-extract the RESEARCH-and-writing intent from a possibly
-    compound request, stripping delivery/packaging directives (generate PDF/HTML, save file, email,
-    post to social/publishing) and recipient addresses. The research + synthesis stages must focus
-    solely on producing the CONTENT; delivery is handled downstream (POST-LLM execution / the
-    orchestrator). This prevents the synthesizer from refusing a whole task because it "cannot send
-    email / create PDFs". Returns the cleaned research request; on ANY failure returns the original
-    request unchanged (no regression — never worse than legacy behavior).
+    Phase 1 (orchestration retrofit): LLM-decompose a possibly-compound request into three parts:
+
+      {"research_request": <delivery-stripped research+writing intent>,
+       "deliverable_spec": {<format/length/style/sections of the written artifact>},
+       "actions":          [{"type": <capability from the live tool catalog>, "args": {...}}, ...]}
+
+    The research engine + synthesizer run ONLY on `research_request` (so they never refuse over
+    "can't email/PDF" — Phase 0 behavior is preserved). `deliverable_spec` + `actions` are returned
+    for the orchestrator's downstream fan-out (Phase 2+), which is NOT executed here.
+
+    OPEN VOCABULARY (Principle 6): `actions[].type` is grounded in the provided `tool_catalog` — the
+    LLM names only capabilities that actually exist; the vocabulary grows as tools are added, with no
+    code change here. On ANY failure this degrades gracefully to {research_request: original,
+    deliverable_spec: {}, actions: []} so a research run is never aborted or made worse than legacy.
     """
+    catalog_text = _format_tool_catalog(tool_catalog)
     system_prompt = (
-        "You normalize a user's request for a RESEARCH-AND-WRITING engine whose ONLY job is to "
-        "research a topic and write the requested written content (academic paper, report, brief, "
-        "etc.). Downstream systems handle ALL delivery and packaging — generating PDF/HTML files, "
-        "saving files, sending email, posting to social or publishing platforms. The research engine "
-        "must NEVER attempt or refuse any of those.\n\n"
-        "From the USER REQUEST, extract ONLY the research-and-writing instructions: topic, scope, the "
-        "required sections/structure/format of the WRITTEN content, length, and citation/accuracy "
-        "requirements. REMOVE every instruction about delivering, emailing, file formats (PDF/HTML), "
-        "saving, or posting, and remove recipient addresses. Keep the substantive content "
-        "requirements as close to verbatim as possible. Do not add requirements that were not asked.\n\n"
-        "Respond with STRICT JSON only: {\"research_request\": \"<the cleaned request>\"}"
+        "You are the request decomposer for a RESEARCH-AND-WRITING engine. The engine's ONLY job is "
+        "to research a topic and write the requested content (paper, report, brief, etc.). Separate "
+        "DELIVERY/PACKAGING — generating files (PDF/HTML), saving, emailing, posting, generating "
+        "images/infographics/diagrams, scheduling, etc. — which is performed AFTER writing by separate "
+        "tools. Decompose the USER REQUEST into STRICT JSON with exactly these keys:\n"
+        "  \"research_request\": the research-and-writing instructions ONLY (topic, scope, required "
+        "sections/structure/format of the WRITTEN content, length, citation/accuracy requirements). "
+        "REMOVE every delivery/packaging instruction (file formats, saving, emailing, posting, image/"
+        "diagram generation, scheduling) and remove recipient addresses. Keep content requirements "
+        "close to verbatim; do not invent requirements.\n"
+        "  \"deliverable_spec\": an object describing the written artifact to produce (e.g. "
+        "{\"format\":\"academic_paper\",\"min_words\":1500,\"style\":\"arXiv\",\"sections\":[...]}). "
+        "Empty object {} if the user only wants a plain answer.\n"
+        "  \"actions\": an array of downstream delivery/packaging actions the user requested, each "
+        "{\"type\": <capability>, \"args\": {...}}. The \"type\" MUST be the name of an AVAILABLE "
+        "CAPABILITY from the list below — never invent capability names. If the user requests "
+        "something with no matching capability, include {\"type\":\"unsupported\","
+        "\"args\":{\"requested\":\"<what they asked>\"}} so it can be reported. Empty array [] if the "
+        "user requested no delivery/packaging.\n\n"
+        "AVAILABLE CAPABILITIES (name: description):\n" + catalog_text + "\n\n"
+        "Respond with STRICT JSON only, no prose."
     )
     prompt = f"USER REQUEST:\n{user_request}"
+    fallback = {"research_request": user_request, "deliverable_spec": {}, "actions": []}
     try:
         raw = await _collect_stream(generate_stream, prompt, system_prompt=system_prompt,
                                     temperature=0.0, max_tokens=2000, stream=False)
         data = extract_json_object(raw)
-        cleaned = (data.get("research_request") or "").strip()
-        if cleaned:
-            return cleaned
-        logger.warning("🔬 research-request normalization returned empty → using original request")
-    except Exception as e:  # noqa: BLE001 — normalization is best-effort; never abort a research run
-        logger.warning("🔬 research-request normalization failed (%s) → using original request", e)
-    return user_request
+        research_request = (data.get("research_request") or "").strip()
+        if not research_request:
+            logger.warning("🔬 request decomposition returned no research_request → using original")
+            return fallback
+        deliverable_spec = data.get("deliverable_spec") if isinstance(data.get("deliverable_spec"), dict) else {}
+        actions = data.get("actions") if isinstance(data.get("actions"), list) else []
+        return {"research_request": research_request, "deliverable_spec": deliverable_spec, "actions": actions}
+    except Exception as e:  # noqa: BLE001 — decomposition is best-effort; never abort a research run
+        logger.warning("🔬 request decomposition failed (%s) → using original request", e)
+        return fallback
 
 
 async def run_deep_research_pipeline(
@@ -245,10 +282,14 @@ async def run_deep_research_pipeline(
     config: Dict[str, Any],
     user_request: str,
     on_progress: Optional[Callable] = None,
+    tool_catalog: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Execute the full deep-research flow. Returns:
-      {"answer": <markdown str for the user>, "engine_metadata": {...}, "synth_metadata": {...}}
+      {"answer": <markdown str for the user>, "engine_metadata": {...}, "synth_metadata": {...},
+       "deliverable_spec": {...}, "actions": [...]}
+    `deliverable_spec`/`actions` come from Phase-1 decomposition and are for the orchestrator's
+    downstream fan-out (Phase 2+); this pipeline does NOT execute them.
     Raises only on planner failure (no evidence to work with); individual source failures
     are tolerated upstream.
     """
@@ -258,15 +299,25 @@ async def run_deep_research_pipeline(
 
     pipeline_start = time.monotonic()
 
-    # Phase 0: strip delivery/packaging directives so research + synthesis focus on the CONTENT
-    # only (delivery is handled downstream). The full original request stays with the caller for
-    # the orchestrator/POST-LLM action phase. Toggle: deep_research.engine.normalize_request.
+    # Phase 1: LLM-decompose the (possibly compound) request into research_request + deliverable_spec
+    # + actions[]. Research + synthesis run ONLY on research_request (Phase 0 behavior preserved — no
+    # refusing over "can't email/PDF"). deliverable_spec/actions are grounded in the live tool catalog
+    # and returned for the orchestrator's downstream fan-out (Phase 2+) — NOT executed here.
+    # Toggle: deep_research.engine.normalize_request.
     research_request = user_request
+    deliverable_spec: Dict[str, Any] = {}
+    actions: List[Dict[str, Any]] = []
     if config.get("normalize_request", True):
-        research_request = await _normalize_research_request(generate_stream, config, user_request)
+        plan = await _decompose_request(generate_stream, config, user_request, tool_catalog)
+        research_request = plan["research_request"]
+        deliverable_spec = plan["deliverable_spec"]
+        actions = plan["actions"]
         if research_request != user_request:
             logger.info("🔬 Research request normalized (delivery/action directives stripped)")
             await emit("Scoping the research (delivery handled separately)…")
+        # Phase 1 observability: log the parsed delivery plan (NOT executed yet — Phase 2).
+        logger.info("🧩 Request decomposed — deliverable_spec=%s, actions=%s",
+                    deliverable_spec or "{}", [a.get("type") for a in actions] or "[]")
 
     engine = DeepResearchEngine(generate_stream, dispatch_tool, config)
     stage1 = await engine.run(research_request, on_progress=on_progress)
@@ -281,6 +332,8 @@ async def run_deep_research_pipeline(
                        "Please try again shortly."),
             "engine_metadata": engine_meta,
             "synth_metadata": {},
+            "deliverable_spec": deliverable_spec,
+            "actions": actions,
         }
 
     synthesizer = ResearchSynthesizer(generate_stream, config)
@@ -301,4 +354,5 @@ async def run_deep_research_pipeline(
     await emit("Done.")
     logger.info("🧪 Deep research pipeline complete in %ss: %s", total_seconds, stage2.get("metadata"))
     return {"answer": answer, "engine_metadata": engine_meta,
-            "synth_metadata": stage2["metadata"], "total_seconds": total_seconds}
+            "synth_metadata": stage2["metadata"], "total_seconds": total_seconds,
+            "deliverable_spec": deliverable_spec, "actions": actions}
