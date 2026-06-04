@@ -1,7 +1,7 @@
 # POST-LLM Execution Architecture
 
-**Version:** 1.0.3.7
-**Last Updated:** October 12, 2025
+**Version:** 1.0.3.7 (architecture); line numbers verified against `fastapi_server_complete.py` v1.0.0.69
+**Last Updated:** 2026-06-03 (line-number refresh)
 **Status:** Production
 
 ## Overview
@@ -45,7 +45,7 @@ The system has **TWO** distinct POST-LLM execution paths. Understanding which pa
 
 ### Path 1: Email Interceptor Path
 
-**Location:** `fastapi_server_complete.py:8947-9152`
+**Location:** `fastapi_server_complete.py:10216-10504` (guard `if email_intercepted and not pending_auto_execution:` at :10222; `email_intercepted` set at :9229)
 
 **Triggers When:**
 - `email_intercepted = True` (secure_email_sender was intercepted during Phase 2)
@@ -83,7 +83,7 @@ if email_intercepted and not pending_auto_execution:
 
 ### Path 2: Legacy POST-LLM Auto-Execution
 
-**Location:** `fastapi_server_complete.py:9156-9186`
+**Location:** `fastapi_server_complete.py:10508-10560` (guard `if pending_auto_execution and verification_result and not is_meta_task:` at :10508; `_execute_missing_tools_post_llm()` called at :10531; `pending_auto_execution` set at :9624)
 
 **Triggers When:**
 - `pending_auto_execution = True` (verifier detected deferred tools)
@@ -121,7 +121,7 @@ if pending_auto_execution and verification_result:
 
 ### How Tools Get Deferred
 
-**Phase 1 Deferral** (`fastapi_server_complete.py:7834-7844`):
+**Phase 1 Deferral** (`fastapi_server_complete.py:8939-8947`):
 ```python
 # During tool execution in Phase 1
 if function_name == "secure_email_sender":
@@ -135,7 +135,7 @@ elif function_name == "sandboxed_executor" and action == 'create_file':
     return (function_name, result, start_time, False, None)
 ```
 
-**Phase 2 Deferral** (`fastapi_server_complete.py:7930-7941`):
+**Phase 2 Deferral** (`fastapi_server_complete.py:9092-9193`):
 ```python
 # During Phase 2 execution
 if function_name == 'sandboxed_executor' and action == 'create_file':
@@ -149,7 +149,7 @@ elif function_name == 'secure_email_sender':
 
 ### Verifier Detection
 
-**How Verifier Detects Deferred Tools** (`fastapi_server_complete.py:5544-5557`):
+**How Verifier Detects Deferred Tools** (`fastapi_server_complete.py:5963-5976`):
 
 ```python
 # Extract SPECIFIC tool's result section
@@ -261,7 +261,7 @@ if "deferred" in tool_result.lower():
 
 **Before Fix:** POST-LLM execution never triggered because `openai_direct_stream` was **returning early** when PRIMARY LLM completed.
 
-**Code Location:** `fastapi_server_complete.py:10019-10047`
+**Code Location:** `fastapi_server_complete.py:11434-11435` (the `if native_json.get("done", False):` / "Stream completion detected" handling inside `openai_direct_stream`)
 
 **Bug Pattern:**
 ```python
@@ -308,7 +308,7 @@ if native_json.get("done", False):
 
 **Additional Fix:** `_execute_missing_tools_post_llm` missing imports
 
-**Location:** `fastapi_server_complete.py:6531-6533`
+**Location:** `fastapi_server_complete.py:7211-7212` (inside `_execute_missing_tools_post_llm`, def at :7200)
 
 ```python
 # Import required modules for this function
@@ -447,8 +447,8 @@ default_subject = _generate_dynamic_title(user_prompt, tools_results)
 
 Tools are hardcoded to defer in specific scenarios. To modify:
 
-**Phase 1 Deferral:** `fastapi_server_complete.py:7834-7844`
-**Phase 2 Deferral:** `fastapi_server_complete.py:7930-7941`
+**Phase 1 Deferral:** `fastapi_server_complete.py:8939-8947`
+**Phase 2 Deferral:** `fastapi_server_complete.py:9092-9193`
 
 ### Email Interceptor Toggle
 
