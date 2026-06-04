@@ -236,6 +236,12 @@ class OpenAIChatRequest(BaseModel):
     # Deliberate exception to the zero-trust "ignore everything" policy below, like
     # allowed_tools — it can only RESTRICT, never enable anything not already enabled.
     deep_research: Optional[bool] = Field(default=None, description="Client opt-out for the deep-research gate")
+    # Deep-research delivery authorization (server-authoritative, 3-way — see _dr_delivery_permitted):
+    # explicit true/false wins (NewX sets this from its per-user privilege system); if unset, a client
+    # with NO allowed_tools whitelist is auto-trusted (interactive internal clients like OpenWebUI on
+    # the firewalled /v1); a client WITH an allowed_tools whitelist (e.g. NewX bots) is denied unless
+    # it sends explicit true. Deliberate exception to the zero-trust policy, like allowed_tools.
+    allow_delivery: Optional[bool] = Field(default=None, description="Deep-research delivery authorization (explicit override; else auto-trust if no allowed_tools)")
 
     class Config:
         extra = "ignore"  # Ignore all other fields for security
@@ -7197,6 +7203,215 @@ Generate parameters now:"""
         logger.error(f"❌ ARBITRATOR PARAM GEN: Failed: {e}")
         raise
 
+# ==============================================================================
+# DEEP RESEARCH — PHASE 2 DELIVERY FAN-OUT (A-hybrid: direct dispatch of existing tools)
+# Gated by the trusted-client `allow_delivery` flag. Reuses sandboxed_executor (file/PDF) and
+# secure_email_sender. Transitional thin adapter — the final cut generalizes to dynamic registry
+# dispatch over ANY tool. NEVER touches the normal/NewX flows (allow_delivery is off there).
+# ==============================================================================
+
+# First-cut capability adapter (transitional — see DEEP_RESEARCH_ORCHESTRATION_INTEGRATION.md §4).
+# The decomposer's open-vocabulary action types are grounded in the live tool catalog; here we map
+# the two capability CLASSES the legacy tooling already implements. Final cut = dynamic dispatch.
+_DR_FILE_CAPS = {"pdf_generator", "sandboxed_executor", "create_file", "save_file",
+                 "generate_pdf", "render_pdf", "export_pdf", "html_generator", "document_generator"}
+_DR_EMAIL_CAPS = {"secure_email_sender", "email", "send_email", "send_mail"}
+
+
+def _sweep_old_delivery_files(retention_hours: float) -> int:
+    """Best-effort TTL cleanup of sandbox_workspace so delivery artifacts don't accumulate. Removes
+    files older than retention_hours. Never raises into the caller. Returns count removed."""
+    import os
+    import time as _time
+    removed = 0
+    try:
+        base = os.path.join(os.getcwd(), "sandbox_workspace")
+        if not os.path.isdir(base):
+            return 0
+        cutoff = _time.time() - max(0.0, float(retention_hours)) * 3600.0
+        for name in os.listdir(base):
+            path = os.path.join(base, name)
+            try:
+                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            logger.info(f"📦 Delivery TTL sweep removed {removed} file(s) older than {retention_hours}h")
+    except Exception as e:  # noqa: BLE001 — housekeeping must never break delivery
+        logger.warning(f"📦 Delivery TTL sweep failed: {e}")
+    return removed
+
+
+def _resolve_email_recipients(action_args: dict, user_prompt: str) -> list:
+    """Recipient(s) for an email delivery action: prefer the decomposer's structured args
+    (to/to_email/recipient/recipients/email), else fall back to addresses found in the user prompt."""
+    import re as _re
+    email_re = _re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+    cands = []
+    for key in ("to", "to_email", "recipient", "recipients", "email"):
+        v = (action_args or {}).get(key)
+        if isinstance(v, str):
+            cands.append(v)
+        elif isinstance(v, list):
+            cands.extend([x for x in v if isinstance(x, str)])
+    emails = [e for c in cands for e in email_re.findall(c)]
+    if not emails:
+        emails = email_re.findall(user_prompt or "")
+    seen, out = set(), []
+    for e in emails:
+        if e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
+def _dr_delivery_permitted(data: dict) -> bool:
+    """3-way deep-research delivery authorization (mechanism only — policy lives in the client):
+      1. Explicit `allow_delivery` present → obey it (true/false). NewX sets this from its per-user
+         privilege system, so it always governs NewX (NewX requests always carry allowed_tools).
+      2. No `allowed_tools` whitelist at all → auto-trust → permit. Interactive internal clients
+         (e.g. OpenWebUI). Safe because /v1 is internal-only, firewalled at the deployment boundary.
+      3. Otherwise (an allowed_tools whitelist is present, even empty, and no explicit flag) → deny.
+    NewX bots always send an allowed_tools whitelist, so they are NEVER auto-trusted — they require
+    the explicit flag, keeping them locked unless the acting user is privileged."""
+    explicit = data.get("allow_delivery", None)
+    if explicit is not None:
+        return bool(explicit)
+    return data.get("allowed_tools", None) is None
+
+
+async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
+                           user_prompt: str, tool_manager, engine_cfg: dict):
+    """Phase 2 delivery fan-out. Yields human-readable status lines (the caller wraps them as chunks).
+    A-hybrid: create a document (PDF/file) from the research paper via sandboxed_executor, then email
+    it via secure_email_sender. File lifecycle: KEEP on success (TTL-swept) and KEEP on failure
+    (reported, never deleted — the artifact is expensive)."""
+    import os
+    from datetime import datetime as _dt
+
+    actions = actions or []
+    file_action = next((a for a in actions if isinstance(a, dict) and a.get("type") in _DR_FILE_CAPS), None)
+    email_action = next((a for a in actions if isinstance(a, dict) and a.get("type") in _DR_EMAIL_CAPS), None)
+    unwired = [a.get("type") for a in actions if isinstance(a, dict)
+               and a.get("type") not in _DR_FILE_CAPS and a.get("type") not in _DR_EMAIL_CAPS
+               and a.get("type") != "unsupported"]
+    unsupported = [(a.get("args", {}) or {}).get("requested", a.get("type"))
+                   for a in actions if isinstance(a, dict) and a.get("type") == "unsupported"]
+
+    try:
+        retention = float((engine_cfg.get("delivery", {}) or {}).get("retention_hours", 72))
+    except Exception:
+        retention = 72.0
+    _sweep_old_delivery_files(retention)
+
+    # Document title from the paper's first heading (fallback to a prompt-derived title) — drives both
+    # the filename slug and the email subject so they reflect the actual topic, not a generic name.
+    import re as _re
+    doc_title = ""
+    _title_idx = -1
+    _body_lines = (doc_body or "").splitlines()
+    for _i, _line in enumerate(_body_lines):
+        _m = _re.match(r'^#{1,4}\s+(.+\S)', _line.strip())
+        if _m:
+            doc_title = _m.group(1).strip().strip("#").strip()[:120]
+            _title_idx = _i
+            break
+    _title_from_body = bool(doc_title)
+    if not doc_title:
+        doc_title = _generate_dynamic_title(user_prompt, "") or "Deep Research Report"
+    _slug = _re.sub(r'[^a-z0-9]+', '_', doc_title.lower()).strip('_')[:60] or "deep_research"
+    # PDF body: drop the paper's own leading title heading so the rendered title (passed as the
+    # `title` param) isn't duplicated. Only when the title actually came from the body. The chat
+    # answer + email still keep the full paper.
+    _pdf_body = doc_body
+    if _title_from_body and _title_idx >= 0:
+        _stripped = list(_body_lines)
+        del _stripped[_title_idx]
+        _pdf_body = "\n".join(_stripped).lstrip("\n")
+
+    created_filename = None
+    if file_action:
+        fmt = str((deliverable_spec or {}).get("format", "")).lower()
+        up_low = (user_prompt or "").lower()
+        ext = "pdf" if ("pdf" in fmt or "pdf" in up_low) else ("html" if ("html" in fmt or "html" in up_low) else "pdf")
+        timestamp = _dt.now().strftime('%Y-%m-%d_%H-%M')
+        created_filename = f"{_slug}_{timestamp}.{ext}"
+        sandboxed = next((t for t in tool_manager.user_tools if t.name == "sandboxed_executor"), None)
+        if not sandboxed:
+            yield "> ⚠️ File-creation tool unavailable; document not produced.\n"
+            created_filename = None
+        else:
+            yield f"> 📄 Rendering {ext.upper()} ({created_filename})…\n"
+            try:
+                kwargs = {"action": "create_file", "filename": created_filename, "content": _pdf_body,
+                          "title": doc_title}
+                if ext == "pdf":
+                    kwargs["convert_to_pdf"] = True
+                res = await sandboxed.execute(**kwargs)
+                if isinstance(res, dict) and res.get("success"):
+                    yield f"> ✅ Document saved: sandbox_workspace/{created_filename}\n"
+                else:
+                    err = res.get("error") if isinstance(res, dict) else res
+                    logger.error(f"📦 DR delivery: file creation failed: {err}")
+                    yield f"> ⚠️ Document creation failed: {err}\n"
+                    created_filename = None
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"📦 DR delivery: file creation error: {e}", exc_info=True)
+                yield f"> ⚠️ Document creation error: {e}\n"
+                created_filename = None
+
+    if email_action:
+        recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
+        if file_action and not created_filename:
+            # A document was requested to be emailed but its creation failed — do NOT send an
+            # attachment-less email (the "email without a document" failure mode). This is surfaced
+            # to the user in the response (never a silent failure); the full paper is already above.
+            yield ("> ❌ **Email not sent** — the document could not be created (see the error above), "
+                   "so there was nothing to attach. The full research paper is in this response; "
+                   "please try again to have it emailed.\n")
+        elif not recipients:
+            yield "> ⚠️ Email requested but no recipient address found — skipping email.\n"
+        else:
+            to_email = recipients[0]
+            subject = (deliverable_spec or {}).get("title") or doc_title
+            email_params = {
+                "to_email": to_email,
+                "subject": subject,
+                "body": "Please find attached the requested document, produced by RAICA Deep Research.",
+            }
+            if created_filename:
+                email_params["attachments"] = created_filename
+            yield f"> 📧 Emailing to {to_email}…\n"
+            try:
+                result = await asyncio.wait_for(
+                    tool_manager.safe_function_call("secure_email_sender", email_params), timeout=120)
+                logger.info(f"📦 DR delivery email result: {str(result)[:300]}")
+                failed = isinstance(result, str) and result.lstrip().startswith("❌")
+                if failed:
+                    yield f"> ⚠️ Email delivery failed: {result.lstrip()[:200]}\n"
+                    if created_filename:
+                        yield (f"> 📎 Your document was NOT deleted — saved at "
+                               f"sandbox_workspace/{created_filename}. You can download it or retry.\n")
+                else:
+                    yield (f"> ✅ Emailed to {to_email}"
+                           + (f" with attachment {created_filename}" if created_filename else "") + ".\n")
+                    if created_filename:
+                        yield "> 🧹 Working copy removed after sending (the document is in your email).\n"
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"📦 DR delivery email error: {e}", exc_info=True)
+                yield f"> ⚠️ Email delivery failed ({e}).\n"
+                if created_filename:
+                    yield (f"> 📎 Your document was NOT deleted — saved at "
+                           f"sandbox_workspace/{created_filename}. You can download it or retry.\n")
+
+    if unwired:
+        yield f"> ℹ️ Requested but not wired yet (coming in a later phase): {', '.join(map(str, unwired))}\n"
+    if unsupported:
+        yield f"> ℹ️ No tool available for: {', '.join(map(str, unsupported))}\n"
+
+
 async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager, tools_results: str, complete_llm_response: str, user_prompt: str, llm_manager) -> str:
     logger.info("--- ENTERING _execute_missing_tools_post_llm ---")
     """
@@ -8278,6 +8493,30 @@ async def llama_stream(request: Request):
                         if _dr_show:
                             yield _dr_chunk("\n---\n\n")
                         yield _dr_chunk(_dr_answer)
+
+                        # ── Phase 2: delivery fan-out ───────────────────────────────────────────
+                        # If the request decomposed into delivery actions AND the client is a trusted
+                        # delivery client (allow_delivery=true — NewX bots never send it), render the
+                        # paper to a document and email it by directly dispatching existing tools.
+                        # The research paper (footer-less answer_body) is the shared context.
+                        _dr_actions = (_dr_result or {}).get("actions") or []
+                        if _dr_actions and _dr_delivery_permitted(data):
+                            yield _dr_chunk("\n\n---\n**📦 Delivery**\n")
+                            try:
+                                async for _dr_status in _run_dr_delivery(
+                                        _dr_actions,
+                                        (_dr_result or {}).get("deliverable_spec") or {},
+                                        (_dr_result or {}).get("answer_body") or _dr_answer,
+                                        actual_user_prompt, tool_manager, _dr_engine_cfg):
+                                    yield _dr_chunk(_dr_status)
+                            except Exception as _deliv_err:
+                                logger.error(f"📦 Delivery fan-out failed: {_deliv_err}", exc_info=True)
+                                yield _dr_chunk(f"> ⚠️ Delivery could not be completed: {_deliv_err}\n")
+                        elif _dr_actions:
+                            logger.info(f"📦 Delivery actions decomposed but NOT permitted "
+                                        f"(allow_delivery={data.get('allow_delivery')}, "
+                                        f"allowed_tools={'present' if data.get('allowed_tools') is not None else 'none'}): "
+                                        f"{[a.get('type') for a in _dr_actions if isinstance(a, dict)]}")
                     except Exception as _dr_run_err:
                         logger.error(f"🔬 Deep research pipeline failed mid-run: {_dr_run_err}", exc_info=True)
                         yield _dr_chunk(f"\n\n⚠️ Deep research could not be completed: {_dr_run_err}")
@@ -11270,22 +11509,22 @@ async def openai_chat_completions(request: OpenAIChatRequest):
         enhanced_prompt = conversation_context + user_prompt if is_followup else user_prompt
         
         if is_streaming:
-            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research)
+            return await openai_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery)
         else:
-            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research)
+            return await openai_non_streaming_response(enhanced_prompt, request.model, conversation_id, images, allowed_tools=request.allowed_tools, deep_research=request.deep_research, allow_delivery=request.allow_delivery)
         
     except Exception as e:
         logger.error(f"🚨 OpenAI compatibility error: {str(e)}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None):
+async def openai_non_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None):
     """Handle non-streaming OpenAI response with proper format"""
     try:
         logger.info(f"🔒 OpenAI Non-streaming Response - falling back to streaming with collect")
 
         # For non-streaming, we'll use streaming mode and collect all chunks
-        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools, deep_research=deep_research)
+        streaming_response = await openai_streaming_response(user_prompt, model, conversation_id, images, allowed_tools=allowed_tools, deep_research=deep_research, allow_delivery=allow_delivery)
         
         # Collect all streaming content
         response_content = ""
@@ -11705,7 +11944,7 @@ def _format_conversation_for_markdown(messages: list) -> str:
 
 # ALL PDF FORMATTING FUNCTIONS REMOVED - PDF PROCESSING COMPLETELY DISABLED
 
-async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None):
+async def openai_streaming_response(user_prompt: str, model: str, conversation_id: str, images: list = None, allowed_tools: list = None, deep_research: bool = None, allow_delivery: bool = None):
     """Handle streaming OpenAI response with proper format - simplified implementation"""
     try:
         logger.info(f"🔒 OpenAI Streaming Response requested")
@@ -11761,6 +12000,10 @@ async def openai_streaming_response(user_prompt: str, model: str, conversation_i
             if deep_research is not None:
                 native_request_data["deep_research"] = deep_research
                 logger.info(f"🔬 Client deep_research flag forwarded to pipeline: {deep_research}")
+            # Forward the trusted-client delivery opt-in (Phase 2). Default None/false = content only.
+            if allow_delivery is not None:
+                native_request_data["allow_delivery"] = allow_delivery
+                logger.info(f"📦 Client allow_delivery flag forwarded to pipeline: {allow_delivery}")
 
             # Choose routing method based on feature flag
             if ServerConfig.USE_DIRECT_FUNCTION_CALLS:

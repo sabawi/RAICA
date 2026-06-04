@@ -406,7 +406,7 @@ class SandboxedExecutorTool(BaseUserTool):
                     if actual_filename.lower().endswith('.pdf'):
                         print(f"🧠 SMART DETECTION: Calling _create_real_pdf_file for {actual_filename}")
                         # 🛡️ SECURITY: MUST create proper PDF or FAIL - NEVER create fake PDF files
-                        create_result = await self._create_real_pdf_file(actual_filename, report_content)
+                        create_result = await self._create_real_pdf_file(actual_filename, report_content, title=kwargs.get("title"))
                     elif actual_filename.lower().endswith('.html'):
                         create_result = await self._create_real_html_file(actual_filename, report_content)
                     elif actual_filename.lower().endswith('.md'):
@@ -1024,7 +1024,7 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
         if filename_lower.endswith('.pdf'):
             print("💥💥💥 _CREATE_FILE: ✅ PDF CONDITION MET -> calling _create_real_pdf_file")
             # 🛡️ SECURITY: MUST create proper PDF or FAIL - NEVER create fake PDF files
-            return await self._create_real_pdf_file(filename, content)
+            return await self._create_real_pdf_file(filename, content, title=kwargs.get("title"))
         elif filename_lower.endswith('.html'):
             print("💥💥💥 _CREATE_FILE: Detected .html extension -> calling _create_real_html_file")
             return await self._create_real_html_file(filename, content)
@@ -1186,7 +1186,7 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
         except Exception as e:
             return {"success": False, "error": f"File append error: {str(e)}", "result": None}
     
-    async def _create_real_pdf_file(self, filename: str, content: str) -> Dict[str, Any]:
+    async def _create_real_pdf_file(self, filename: str, content: str, title: str = None) -> Dict[str, Any]:
         """Create a real PDF file using CENTRALIZED PDF SERVICE"""
         
         print("🎯 SandboxedExecutor: Routing PDF creation to CENTRALIZED PDF SERVICE")
@@ -1200,8 +1200,9 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
             if not is_valid:
                 return {"success": False, "error": file_path, "result": None}
             
-            # Extract title from filename
-            title = Path(filename).stem if filename else "Document"
+            # Use an explicit caller-supplied title if provided (e.g. deep-research delivery passes
+            # the paper's real title); otherwise fall back to the filename stem (legacy behavior).
+            title = title or (Path(filename).stem if filename else "Document")
             
             print(f"🎯 SandboxedExecutor: Creating PDF via central service")
             print(f"   📁 File: {file_path}")

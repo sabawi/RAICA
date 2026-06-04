@@ -251,10 +251,11 @@ async def _decompose_request(
         "Empty object {} if the user only wants a plain answer.\n"
         "  \"actions\": an array of downstream delivery/packaging actions the user requested, each "
         "{\"type\": <capability>, \"args\": {...}}. The \"type\" MUST be the name of an AVAILABLE "
-        "CAPABILITY from the list below — never invent capability names. If the user requests "
-        "something with no matching capability, include {\"type\":\"unsupported\","
-        "\"args\":{\"requested\":\"<what they asked>\"}} so it can be reported. Empty array [] if the "
-        "user requested no delivery/packaging.\n\n"
+        "CAPABILITY from the list below — never invent capability names. Put any parameters the "
+        "action needs into args — e.g. for an email action include the recipient(s): "
+        "\"args\": {\"to\": [\"name@example.com\"]}. If the user requests something with no matching "
+        "capability, include {\"type\":\"unsupported\",\"args\":{\"requested\":\"<what they asked>\"}} "
+        "so it can be reported. Empty array [] if the user requested no delivery/packaging.\n\n"
         "AVAILABLE CAPABILITIES (name: description):\n" + catalog_text + "\n\n"
         "Respond with STRICT JSON only, no prose."
     )
@@ -344,6 +345,9 @@ async def run_deep_research_pipeline(
     if not answer:
         answer = ("Deep research gathered evidence but the synthesis step produced no answer. "
                   "Please try again.")
+    # Footer-less body for downstream delivery (PDF/email document content) — the audit footer is a
+    # chat-UX affordance, not part of the deliverable. answer_body is captured BEFORE the footer.
+    answer_body = answer
     if config.get("output", {}).get("include_audit_footer", True):
         # The footer is cosmetic — never let a footer error discard a hard-won answer.
         # Pass the answer body so the footer can footnote low-cred sources it actually cited.
@@ -353,6 +357,6 @@ async def run_deep_research_pipeline(
             logger.warning("🔎 Research audit footer failed to render (%s) — answer kept", e)
     await emit("Done.")
     logger.info("🧪 Deep research pipeline complete in %ss: %s", total_seconds, stage2.get("metadata"))
-    return {"answer": answer, "engine_metadata": engine_meta,
+    return {"answer": answer, "answer_body": answer_body, "engine_metadata": engine_meta,
             "synth_metadata": stage2["metadata"], "total_seconds": total_seconds,
             "deliverable_spec": deliverable_spec, "actions": actions}

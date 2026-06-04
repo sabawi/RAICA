@@ -207,6 +207,12 @@ deep_research:
     # execution / the orchestrator. This prevents the synthesizer from refusing a whole task because
     # it "cannot send email / create PDFs". false = pass the raw request through (legacy behavior).
     normalize_request: true
+    # Phase 2 delivery fan-out (gated by the trusted-client allow_delivery flag). After research,
+    # decomposed actions (render PDF, email, …) are executed by directly dispatching existing tools.
+    delivery:
+      # Local deliverables in sandbox_workspace are KEPT after sending (and always kept on failure),
+      # then a best-effort TTL sweep purges files older than this many hours so disk stays bounded.
+      retention_hours: 72
     output:
       # Clients that want only the clean answer can suppress the framing.
       stream_progress: false        # live "> Planning… > Round k…" lines + the Deep Research header
