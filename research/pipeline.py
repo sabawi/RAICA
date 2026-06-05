@@ -20,7 +20,8 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-from research.engine import DeepResearchEngine, _collect_stream, extract_json_object, configure_retry
+from research.engine import (DeepResearchEngine, _collect_stream, extract_json_object,
+                             configure_retry, set_retry_notice_callback)
 from research.synthesis import ResearchSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -284,6 +285,7 @@ async def run_deep_research_pipeline(
     user_request: str,
     on_progress: Optional[Callable] = None,
     tool_catalog: Optional[List[Dict[str, Any]]] = None,
+    retry_notice: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """
     Execute the full deep-research flow. Returns:
@@ -304,6 +306,9 @@ async def run_deep_research_pipeline(
     # transient upstream provider blip doesn't fail a long, resource-heavy research run.
     _retry_cfg = config.get("retry", {}) or {}
     configure_retry(_retry_cfg.get("max_attempts", 1), _retry_cfg.get("delay_seconds", 0))
+    # Register the retry-notice callback in THIS task's context (concurrency-safe — each run has its
+    # own copied context), so _collect_stream can stream keepalive notices during retry waits.
+    set_retry_notice_callback(retry_notice)
 
     # Phase 1: LLM-decompose the (possibly compound) request into research_request + deliverable_spec
     # + actions[]. Research + synthesis run ONLY on research_request (Phase 0 behavior preserved — no

@@ -29,6 +29,7 @@ iterative gather loop build on top of it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -70,6 +71,20 @@ def _is_transient_5xx(err: Exception) -> bool:
         return True
     return any(k in s for k in (
         "internal server error", "bad gateway", "service unavailable", "gateway timeout"))
+
+
+# Per-run async callback (contextvar so concurrent runs don't cross-talk) used to STREAM keepalive
+# notices to the client during retry waits, so the stream doesn't go silent (and the client read
+# timeout doesn't trip) while we wait out a provider blip. Set by the server's DR branch BEFORE it
+# creates the pipeline task, so the task's copied context includes it. Separate from normal progress
+# (which clients can suppress) — retry notices are exceptional and always worth showing.
+_retry_notice_var: "contextvars.ContextVar" = contextvars.ContextVar("dr_retry_notice", default=None)
+
+
+def set_retry_notice_callback(cb) -> None:
+    """Register the per-run retry-notice callback (async callable(str)). Call before creating the
+    deep-research task. None disables notices."""
+    _retry_notice_var.set(cb)
 
 
 def extract_json_object(text: str) -> Dict[str, Any]:
@@ -123,7 +138,27 @@ async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs
                 logger.warning(
                     "🔁 Transient provider 5xx (attempt %d/%d): %s — retrying in %ss",
                     attempt, _RETRY_MAX_ATTEMPTS, str(e)[:160], _RETRY_DELAY_SECONDS)
-                await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                _notify = _retry_notice_var.get()
+
+                async def _emit(msg: str):
+                    if _notify:
+                        try:
+                            await _notify(msg)
+                        except Exception:  # noqa: BLE001 — a notice failure must never break the run
+                            pass
+
+                await _emit(f"⏳ The research model host returned a temporary error — retrying "
+                            f"(attempt {attempt + 1}/{_RETRY_MAX_ATTEMPTS}) in ~{int(_RETRY_DELAY_SECONDS)}s…")
+                # Sleep in small steps, sending a heartbeat so the stream stays warm and the user
+                # sees progress instead of a long silence.
+                waited = 0.0
+                while waited < _RETRY_DELAY_SECONDS:
+                    step = min(20.0, _RETRY_DELAY_SECONDS - waited)
+                    await asyncio.sleep(step)
+                    waited += step
+                    if waited < _RETRY_DELAY_SECONDS:
+                        await _emit(f"⏳ still waiting for the model host… retrying in "
+                                    f"~{int(_RETRY_DELAY_SECONDS - waited)}s")
                 continue
             raise
 

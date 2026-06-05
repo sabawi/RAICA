@@ -8492,9 +8492,13 @@ async def llama_stream(request: Request):
                             return f"[tool '{name}' error: {_tool_err}]"
 
                     _dr_q = asyncio.Queue()
+                    _dr_retry_q = asyncio.Queue()  # retry/keepalive notices — streamed even when framing is off
 
                     async def _dr_progress(msg):
                         await _dr_q.put(msg)
+
+                    async def _dr_retry_notice(msg):
+                        await _dr_retry_q.put(msg)
 
                     # Clients can suppress the framing (header/progress) via config — clean answer only.
                     if _dr_show:
@@ -8503,17 +8507,29 @@ async def llama_stream(request: Request):
                     _dr_task = asyncio.create_task(run_deep_research_pipeline(
                         _dr_generate_stream, _dr_dispatch, _dr_engine_cfg,
                         actual_user_prompt, on_progress=(_dr_progress if _dr_show else None),
-                        tool_catalog=_dr_tool_catalog))
-                    # Stream progress lines as they arrive (when enabled); stop once the pipeline finishes.
-                    if _dr_show:
-                        while True:
+                        tool_catalog=_dr_tool_catalog, retry_notice=_dr_retry_notice))
+                    # Drain notices while the pipeline runs: retry/keepalive notices ALWAYS (they keep
+                    # the stream warm during provider-retry waits even when normal progress is
+                    # suppressed); normal progress only when enabled. Stop once the task is done.
+                    while True:
+                        _emitted = False
+                        try:
+                            _rn = _dr_retry_q.get_nowait()
+                            yield _dr_chunk(f"> {_rn}\n")
+                            _emitted = True
+                        except asyncio.QueueEmpty:
+                            pass
+                        if _dr_show:
                             try:
-                                _m = await asyncio.wait_for(_dr_q.get(), timeout=0.5)
+                                _m = _dr_q.get_nowait()
                                 yield _dr_chunk(f"> {_m}\n")
-                            except asyncio.TimeoutError:
+                                _emitted = True
+                            except asyncio.QueueEmpty:
                                 pass
-                            if _dr_task.done() and _dr_q.empty():
-                                break
+                        if _dr_task.done() and _dr_retry_q.empty() and (not _dr_show or _dr_q.empty()):
+                            break
+                        if not _emitted:
+                            await asyncio.sleep(0.3)
                     try:
                         _dr_result = await _dr_task
                         _dr_answer = (_dr_result or {}).get("answer") or \
