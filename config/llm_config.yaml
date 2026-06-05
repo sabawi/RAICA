@@ -75,7 +75,7 @@ llm:
       timeout: 1200
       temperature: 0.7
       max_tokens: 32768
-      context_window_size: 131072
+      context_window_size: 200000   # raised from 131072 to fit the +45% deep-research evidence budget (model max is ~1M; cloud cost negligible)
       stream: true
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
@@ -213,6 +213,17 @@ deep_research:
       # Local deliverables in sandbox_workspace are KEPT after sending (and always kept on failure),
       # then a best-effort TTL sweep purges files older than this many hours so disk stays bounded.
       retention_hours: 72
+    retry:
+      # Resilience for transient upstream LLM-provider 5xx errors (e.g. Ollama-cloud "500 Internal
+      # Server Error"). Deep research is a long, resource-heavy operation; rather than fail a run on a
+      # transient blip, RETRY the failed LLM call up to max_attempts, waiting delay_seconds between
+      # tries (gives the provider time to recover). Applies ONLY to 5xx; other errors fail fast.
+      # If all attempts fail, the user is told the model is temporarily unavailable (try again later).
+      # Tuned to fit under client read-timeouts: each silent wait (delay_seconds) must stay below the
+      # client's read timeout (NewX @Ask = 900s; OpenWebUI default shorter). 3 attempts × 120s = 2
+      # recovery chances, each 120s gap well under those limits.
+      max_attempts: 3
+      delay_seconds: 120
     output:
       # Clients that want only the clean answer can suppress the framing.
       stream_progress: false        # live "> Planning… > Round k…" lines + the Deep Research header
@@ -243,9 +254,10 @@ deep_research:
       # A deep run can gather >1MB of evidence, overflowing the model context window.
       # The evidence fed to each LLM call is budgeted to this many TOKENS (measured with
       # tiktoken), shared fairly across sources (small sources kept whole, leftover given
-      # to large ones, which are truncated only if needed). Keep below the primary model
-      # window (131072 tokens) minus headroom for instructions + the generated answer.
-      evidence_token_budget: 110000
+      # to large ones, which are truncated only if needed). Keep below the model window
+      # (context_window_size, 200000 tokens) minus headroom for instructions + the generated answer.
+      # Raised 110000 -> 160000 (+45%) to retain more evidence on large research runs.
+      evidence_token_budget: 160000
       # Max tokens for the generated answer. Deep research has rich evidence to draw on;
       # give the model room to elaborate fully (kept well within the model window).
       max_answer_tokens: 16000   # 8000 - 16000 (8000 truncated drafts mid-output — see 2026-06-01 test)
@@ -267,8 +279,8 @@ deep_research:
       max_tokens: 16000
       # Token budget for the EVIDENCE document sent to the verifier. Kept well below the full
       # synthesis budget so the verify INPUT does not fill the context window and starve the
-      # output (a 110K-token evidence doc left only ~5K output room → truncated, 0 claims).
-      evidence_token_budget: 60000
+      # output. Raised 60000 -> 87000 (+45%) alongside the larger context window (200000).
+      evidence_token_budget: 87000
       # Model that EXTRACTS + VERIFIES claims against the evidence. null = primary.
       # More mechanical than arbitration, so a lower quality-risk place to use a faster model.
       # NOTE (2026-06-01 test): gemma4:31b here checked half as many claims (13 vs 26) and

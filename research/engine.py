@@ -44,6 +44,33 @@ _URL_RE = re.compile(r'https?://[a-zA-Z0-9./_%?=&:+~#-]+')
 GenerateStream = Callable[..., Any]          # async generator: (prompt, **kwargs) -> AsyncIterator[str]
 DispatchTool = Callable[[str, str], Awaitable[str]]
 
+# ── Transient-5xx retry policy (resilience for upstream LLM-provider blips) ───────────────────────
+# Deep research is long and resource-heavy; a single transient provider 500 shouldn't fail the run.
+# The pipeline sets this from config (deep_research.engine.retry). Default = no retry (1 attempt), so
+# non-deep-research callers are unaffected. Applies ONLY to 5xx; all other errors fail fast.
+_RETRY_MAX_ATTEMPTS = 1
+_RETRY_DELAY_SECONDS = 0.0
+
+
+def configure_retry(max_attempts: int, delay_seconds: float) -> None:
+    """Set the transient-5xx retry policy for pipeline LLM calls (called by the pipeline from config)."""
+    global _RETRY_MAX_ATTEMPTS, _RETRY_DELAY_SECONDS
+    try:
+        _RETRY_MAX_ATTEMPTS = max(1, int(max_attempts))
+        _RETRY_DELAY_SECONDS = max(0.0, float(delay_seconds))
+    except Exception:  # noqa: BLE001 — never let a bad config value break the call path
+        _RETRY_MAX_ATTEMPTS, _RETRY_DELAY_SECONDS = 1, 0.0
+
+
+def _is_transient_5xx(err: Exception) -> bool:
+    """True if the error looks like a transient upstream provider 5xx (retryable). Conservative:
+    only HTTP 5xx status codes / their standard phrases — never 4xx (client/request errors)."""
+    s = str(err).lower()
+    if re.search(r'\b(500|502|503|504)\b', s):
+        return True
+    return any(k in s for k in (
+        "internal server error", "bad gateway", "service unavailable", "gateway timeout"))
+
 
 def extract_json_object(text: str) -> Dict[str, Any]:
     """
@@ -80,10 +107,25 @@ async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs
     """
     if "max_tokens" in kwargs and "num_predict" not in kwargs:
         kwargs["num_predict"] = kwargs["max_tokens"]
-    chunks: List[str] = []
-    async for chunk in generate_stream(prompt, **kwargs):
-        chunks.append(chunk)
-    return "".join(chunks)
+    # Retry transient upstream 5xx (e.g. Ollama-cloud "500 Internal Server Error") per the configured
+    # policy, waiting between tries to let the provider recover. Partial chunks from a failed attempt
+    # are discarded — we restart the call. 4xx/other errors are NOT retried (re-raised immediately).
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            chunks: List[str] = []
+            async for chunk in generate_stream(prompt, **kwargs):
+                chunks.append(chunk)
+            return "".join(chunks)
+        except Exception as e:  # noqa: BLE001
+            if attempt < _RETRY_MAX_ATTEMPTS and _is_transient_5xx(e):
+                logger.warning(
+                    "🔁 Transient provider 5xx (attempt %d/%d): %s — retrying in %ss",
+                    attempt, _RETRY_MAX_ATTEMPTS, str(e)[:160], _RETRY_DELAY_SECONDS)
+                await asyncio.sleep(_RETRY_DELAY_SECONDS)
+                continue
+            raise
 
 
 class ResearchPlanner:

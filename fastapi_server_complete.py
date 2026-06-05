@@ -8556,7 +8556,21 @@ async def llama_stream(request: Request):
                                         f"{[a.get('type') for a in _dr_actions if isinstance(a, dict)]}")
                     except Exception as _dr_run_err:
                         logger.error(f"🔬 Deep research pipeline failed mid-run: {_dr_run_err}", exc_info=True)
-                        yield _dr_chunk(f"\n\n⚠️ Deep research could not be completed: {_dr_run_err}")
+                        # A repeated upstream 5xx (provider temporarily down) gets a calm, actionable
+                        # message — deep research is resource-heavy and the model host can be briefly
+                        # unavailable. Other errors keep the detailed message for debugging.
+                        _err_s = str(_dr_run_err).lower()
+                        _is_provider_5xx = bool(re.search(r'\b(500|502|503|504)\b', _err_s)) or any(
+                            k in _err_s for k in ("internal server error", "bad gateway",
+                                                  "service unavailable", "gateway timeout"))
+                        if _is_provider_5xx:
+                            yield _dr_chunk(
+                                "\n\n⚠️ The research model is temporarily unavailable — the upstream "
+                                "provider returned repeated errors even after automatic retries. Deep "
+                                "research is resource-heavy and the model host can be briefly "
+                                "overloaded. Please try again in an hour or so.")
+                        else:
+                            yield _dr_chunk(f"\n\n⚠️ Deep research could not be completed: {_dr_run_err}")
                 except Exception as _dr_outer_err:
                     # Last-resort guard: never leave the stream without a terminating chunk.
                     logger.error(f"🔬 Deep research fatal error: {_dr_outer_err}", exc_info=True)

@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
-from research.engine import DeepResearchEngine, _collect_stream, extract_json_object
+from research.engine import DeepResearchEngine, _collect_stream, extract_json_object, configure_retry
 from research.synthesis import ResearchSynthesizer
 
 logger = logging.getLogger(__name__)
@@ -299,6 +299,11 @@ async def run_deep_research_pipeline(
             await on_progress(msg)
 
     pipeline_start = time.monotonic()
+
+    # Resilience: set the transient-5xx retry policy for all pipeline LLM calls from config so a
+    # transient upstream provider blip doesn't fail a long, resource-heavy research run.
+    _retry_cfg = config.get("retry", {}) or {}
+    configure_retry(_retry_cfg.get("max_attempts", 1), _retry_cfg.get("delay_seconds", 0))
 
     # Phase 1: LLM-decompose the (possibly compound) request into research_request + deliverable_spec
     # + actions[]. Research + synthesis run ONLY on research_request (Phase 0 behavior preserved — no
