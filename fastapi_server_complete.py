@@ -7343,101 +7343,98 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
         del _stripped[_title_idx]
         _pdf_body = "\n".join(_stripped).lstrip("\n")
 
+    # ── Do the delivery work SILENTLY (no streamed step-by-step); we report a single housekeeping
+    # footnote at the end. The footnote is appended to the RESPONSE only — never to the document
+    # (the PDF/HTML is rendered from the paper body above), per the "confirmation is housekeeping,
+    # not content" rule. Failures are still surfaced clearly (no silent failures).
     created_filename = None
+    file_error = None
     if file_action:
         fmt = str((deliverable_spec or {}).get("format", "")).lower()
         up_low = (user_prompt or "").lower()
         ext = "pdf" if ("pdf" in fmt or "pdf" in up_low) else ("html" if ("html" in fmt or "html" in up_low) else "pdf")
         timestamp = _dt.now().strftime('%Y-%m-%d_%H-%M')
-        created_filename = f"{_slug}_{timestamp}.{ext}"
+        _fname = f"{_slug}_{timestamp}.{ext}"
         sandboxed = next((t for t in tool_manager.user_tools if t.name == "sandboxed_executor"), None)
         if not sandboxed:
-            yield "> ⚠️ File-creation tool unavailable; document not produced.\n"
-            created_filename = None
+            file_error = "file-creation tool unavailable"
         else:
-            yield f"> 📄 Rendering {ext.upper()} ({created_filename})…\n"
             try:
-                kwargs = {"action": "create_file", "filename": created_filename, "content": _pdf_body,
-                          "title": doc_title}
+                kwargs = {"action": "create_file", "filename": _fname, "content": _pdf_body, "title": doc_title}
                 if ext == "pdf":
                     kwargs["convert_to_pdf"] = True
                 res = await sandboxed.execute(**kwargs)
                 if isinstance(res, dict) and res.get("success"):
-                    yield f"> ✅ Document saved: sandbox_workspace/{created_filename}\n"
+                    created_filename = _fname
                 else:
-                    err = res.get("error") if isinstance(res, dict) else res
-                    logger.error(f"📦 DR delivery: file creation failed: {err}")
-                    yield f"> ⚠️ Document creation failed: {err}\n"
-                    created_filename = None
+                    file_error = (res.get("error") if isinstance(res, dict) else str(res)) or "unknown error"
+                    logger.error(f"📦 DR delivery: file creation failed: {file_error}")
             except Exception as e:  # noqa: BLE001
+                file_error = str(e)
                 logger.error(f"📦 DR delivery: file creation error: {e}", exc_info=True)
-                yield f"> ⚠️ Document creation error: {e}\n"
-                created_filename = None
 
+    email_outcome = None  # None | ("sent", to) | ("failed", reason) | ("doc_failed", None) | ("no_recipient", None)
     if email_action:
         # Recipient policy (security). For a restricted client the recipient is server-authoritative
-        # (the requesting user's own account email); prompt recipients are NEVER honored, so a bot
-        # can't be coerced into emailing arbitrary people. Fail-closed if no valid locked recipient.
-        recipient_note = ""
+        # (the requesting user's own account email); prompt recipients are NEVER honored.
         if recipient_locked:
             import re as _re3
             _valid_lr = bool(locked_recipient) and _re3.fullmatch(
                 r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', (locked_recipient or '').strip())
             recipients = [locked_recipient.strip()] if _valid_lr else []
-            recipient_note = " (your account email — for safety, bots can only email you, not addresses named in the request)"
         else:
             recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
         if file_action and not created_filename:
-            # A document was requested to be emailed but its creation failed — do NOT send an
-            # attachment-less email (the "email without a document" failure mode). This is surfaced
-            # to the user in the response (never a silent failure); the full paper is already above.
-            yield ("> ❌ **Email not sent** — the document could not be created (see the error above), "
-                   "so there was nothing to attach. The full research paper is in this response; "
-                   "please try again to have it emailed.\n")
+            email_outcome = ("doc_failed", None)  # never send an attachment-less email
         elif not recipients:
-            if recipient_locked:
-                yield ("> ❌ **Email not sent** — for safety, this bot can only email the requesting "
-                       "user's own account email, and none was available. (Recipients named in the "
-                       "request are never used.)\n")
-            else:
-                yield "> ⚠️ Email requested but no recipient address found — skipping email.\n"
+            email_outcome = ("no_recipient", None)
         else:
             to_email = recipients[0]
-            subject = (deliverable_spec or {}).get("title") or doc_title
             email_params = {
                 "to_email": to_email,
-                "subject": subject,
+                "subject": (deliverable_spec or {}).get("title") or doc_title,
                 "body": "Please find attached the requested document, produced by RAICA Deep Research.",
             }
             if created_filename:
                 email_params["attachments"] = created_filename
-            yield f"> 📧 Emailing to {to_email}…\n"
             try:
                 result = await asyncio.wait_for(
                     tool_manager.safe_function_call("secure_email_sender", email_params), timeout=120)
                 logger.info(f"📦 DR delivery email result: {str(result)[:300]}")
-                failed = isinstance(result, str) and result.lstrip().startswith("❌")
-                if failed:
-                    yield f"> ⚠️ Email delivery failed: {result.lstrip()[:200]}\n"
-                    if created_filename:
-                        yield (f"> 📎 Your document was NOT deleted — saved at "
-                               f"sandbox_workspace/{created_filename}. You can download it or retry.\n")
+                if isinstance(result, str) and result.lstrip().startswith("❌"):
+                    email_outcome = ("failed", result.lstrip()[:160])
                 else:
-                    yield (f"> ✅ Emailed to {to_email}{recipient_note}"
-                           + (f" with attachment {created_filename}" if created_filename else "") + ".\n")
-                    if created_filename:
-                        yield "> 🧹 Working copy removed after sending (the document is in your email).\n"
+                    email_outcome = ("sent", to_email)
             except Exception as e:  # noqa: BLE001
                 logger.error(f"📦 DR delivery email error: {e}", exc_info=True)
-                yield f"> ⚠️ Email delivery failed ({e}).\n"
-                if created_filename:
-                    yield (f"> 📎 Your document was NOT deleted — saved at "
-                           f"sandbox_workspace/{created_filename}. You can download it or retry.\n")
+                email_outcome = ("failed", str(e)[:160])
 
+    # ── Build the housekeeping footnote (success = quiet; failures = clear, never silent) ──────────
+    notes = []
+    if email_outcome:
+        _kind, _info = email_outcome
+        if _kind == "sent":
+            notes.append(f"*📎 Delivery: the document was emailed to {_info}.*")
+        elif _kind == "doc_failed":
+            notes.append(f"⚠️ **Delivery:** the document could not be created ({file_error}); nothing was "
+                         f"emailed. The full paper is in this response — please try again.")
+        elif _kind == "no_recipient":
+            notes.append("⚠️ **Delivery:** this bot can only email your own account email, which wasn't "
+                         "available — nothing was sent." if recipient_locked
+                         else "⚠️ **Delivery:** no recipient address was found — email skipped.")
+        elif _kind == "failed":
+            _kept = (f" Your document is saved at sandbox_workspace/{created_filename} — download it or retry."
+                     if created_filename else "")
+            notes.append(f"⚠️ **Delivery:** email failed ({_info}).{_kept}")
+    elif file_action:  # file requested, no email
+        notes.append(f"*📎 Delivery: document saved as {created_filename}.*" if created_filename
+                     else f"⚠️ **Delivery:** the document could not be created ({file_error}).")
     if unwired:
-        yield f"> ℹ️ Requested but not wired yet (coming in a later phase): {', '.join(map(str, unwired))}\n"
+        notes.append(f"_Delivery: not wired yet — {', '.join(map(str, unwired))}._")
     if unsupported:
-        yield f"> ℹ️ No tool available for: {', '.join(map(str, unsupported))}\n"
+        notes.append(f"_Delivery: no tool available for — {', '.join(map(str, unsupported))}._")
+    if notes:
+        yield "\n\n---\n" + "\n".join(notes) + "\n"
 
 
 async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager, tools_results: str, complete_llm_response: str, user_prompt: str, llm_manager) -> str:
@@ -8552,7 +8549,8 @@ async def llama_stream(request: Request):
                             # single-user client (no allowed_tools, e.g. OpenWebUI) keeps prompt recipients.
                             _locked_recipient = data.get("delivery_recipient")
                             _recipient_locked = data.get("allowed_tools") is not None
-                            yield _dr_chunk("\n\n---\n**📦 Delivery**\n")
+                            # _run_dr_delivery does the work silently and yields a single housekeeping
+                            # footnote (its own "---" separator) — no verbose step-by-step header.
                             try:
                                 async for _dr_status in _run_dr_delivery(
                                         _dr_actions,
@@ -11614,7 +11612,22 @@ async def openai_non_streaming_response(user_prompt: str, model: str, conversati
                                     response_content += chunk_json['choices'][0]['delta']['content']
                     except json.JSONDecodeError:
                         continue
-        
+
+        # Non-streaming clients (e.g. NewX) COLLECT the whole stream and PUBLISH it as a permanent
+        # (often PUBLIC) artifact. Strip from the assembled content:
+        #   • transient "⏳ retrying…" keepalives — meaningless once collected (the chunks still
+        #     flowed over the wire, keeping the connection warm during retry waits);
+        #   • the "📎 Delivery: …" SUCCESS footnote — it names the recipient's email, which must NOT
+        #     be echoed into a public post (the delivery email is itself the confirmation).
+        # Failure alerts ("⚠️ Delivery: …") are KEPT — they carry no email and must not be silent.
+        if "⏳" in response_content or "📎" in response_content:
+            _lines = [_ln for _ln in response_content.split("\n")
+                      if "⏳" not in _ln and "📎" not in _ln]
+            # Drop any now-dangling trailing separator/blank lines left by a stripped footnote.
+            while _lines and _lines[-1].strip() in ("", "---", "***", "___"):
+                _lines.pop()
+            response_content = "\n".join(_lines)
+
         # Return in standard OpenAI non-streaming format
         return {
             "id": f"chatcmpl-{int(time.time())}",
