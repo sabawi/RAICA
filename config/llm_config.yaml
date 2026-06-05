@@ -193,13 +193,21 @@ deep_research:
   # ---- Stage 1: Deep Research Engine ----
   engine:
     enabled: true
-    # Model for ALL deep-research pipeline LLM calls (gate, planner, roster, grade, synthesize,
-    # verify). Split from the global `primary`: deep research is factual/structured work where
-    # deepseek-v4-flash:cloud tested equal-or-better AND 2-3x faster, and it offloads the high-
-    # frequency planner/roster/verify calls from the heavily-loaded pro endpoint (the throttling
-    # source). The NORMAL chat path (e.g. Ask answering a hard reasoning puzzle) still uses the
-    # global `primary` (pro), which flash cannot match on multi-step reasoning. null = use primary.
-    model: deepseek-v4-flash:cloud
+    # LOAD-BASED MODEL SPLIT for deep-research LLM calls. Deep research is NOT one-size-fits-all:
+    # the high-frequency, SMALL calls (gate, planner, roster, grade, verify — all <~140K chars) run
+    # great on the fast/cheap LIGHT model, while the single LARGE call (synthesis, which assembles
+    # the whole evidence pile — observed ~596K chars) overwhelms the light cloud endpoint and gets
+    # an intermittent HTTP 500. So we route by PAYLOAD SIZE (len(prompt)), not by node name:
+    #   * prompt_len  <  heavy_threshold_chars  -> `model`       (light: fast, cheap)
+    #   * prompt_len >= heavy_threshold_chars  -> `heavy_model` (heavy: tolerates big prompts)
+    # This keeps pro's cost/latency ONLY on the rare heavy call; everything else stays on flash. A
+    # SMALL synthesis (little evidence) still rides the light model — it's load-driven, not per-node.
+    # The NORMAL chat path (e.g. Ask answering a hard reasoning puzzle) still uses the global
+    # `primary` (pro) directly. null `model` = use primary; null `heavy_model` = no heavy routing.
+    model: deepseek-v4-flash:cloud           # LIGHT — default for all small DR calls
+    heavy_model: deepseek-v4-pro:cloud       # HEAVY — large-payload calls (e.g. synthesis)
+    heavy_threshold_chars: 250000            # prompt chars at/above which -> heavy_model
+                                             # (synthesis ~596K >> 250K; next-biggest call ~139K < 250K)
     # Phase 0 (orchestration retrofit): before researching, LLM-extract the RESEARCH-and-writing
     # intent from a possibly-compound request, stripping delivery/packaging directives (generate
     # PDF/HTML, save file, email, post to social/publishing) and recipient addresses. The research

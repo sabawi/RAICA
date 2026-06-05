@@ -8428,14 +8428,28 @@ async def llama_stream(request: Request):
                 logger.warning(f"🔬 Deep research config unavailable: {_dr_cfg_err}")
                 _dr_on = False
 
-            # Model split: deep-research LLM calls use deep_research.engine.model (flash) instead
-            # of the global primary (pro). This wrapper injects that model into every deep-research
-            # generate_stream call; the normal chat path keeps calling llm_manager.generate_stream
-            # directly (pro). null/unset → falls back to primary (no override).
+            # LOAD-BASED model split for deep-research LLM calls (config: deep_research.engine).
+            # Small calls (gate/planner/roster/grade/verify, <~140K chars) → `model` (LIGHT/flash,
+            # fast & cheap). The single large synthesis call (~596K chars) overwhelms the light cloud
+            # endpoint (intermittent HTTP 500), so any prompt at/above `heavy_threshold_chars` is
+            # routed to `heavy_model` (HEAVY/pro, tolerates big prompts). Routing is purely by
+            # payload size — NOT node name — so a small synthesis still rides the light model. The
+            # normal chat path keeps calling llm_manager.generate_stream directly (pro). null model /
+            # null heavy_model / threshold≤0 → that tier is disabled (falls back to primary).
             _dr_model = (_dr_engine_cfg.get("model") if _dr_on else None)
+            _dr_heavy_model = (_dr_engine_cfg.get("heavy_model") if _dr_on else None)
+            try:
+                _dr_heavy_threshold = int(_dr_engine_cfg.get("heavy_threshold_chars") or 0) if _dr_on else 0
+            except (TypeError, ValueError):
+                _dr_heavy_threshold = 0
             def _dr_generate_stream(prompt, **kwargs):
-                if _dr_model and "model" not in kwargs:
-                    kwargs["model"] = _dr_model
+                if "model" not in kwargs:
+                    _plen = len(prompt) if prompt else 0
+                    if _dr_heavy_model and _dr_heavy_threshold > 0 and _plen >= _dr_heavy_threshold:
+                        kwargs["model"] = _dr_heavy_model
+                        logger.info(f"🔀 DR heavy route: prompt_len={_plen} >= {_dr_heavy_threshold} → {_dr_heavy_model}")
+                    elif _dr_model:
+                        kwargs["model"] = _dr_model
                 return llm_manager.generate_stream(prompt, **kwargs)
 
             # Gate + setup are guarded so ANY failure here (import error, gate exception,

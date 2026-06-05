@@ -55,6 +55,16 @@ if [ ! -z "$DEBUG_MODE" ]; then
     ENV_VARS="$ENV_VARS DEBUG_MODE=$DEBUG_MODE"
 fi
 
+# 🗂️ PRESERVE LOG HISTORY ACROSS RESTARTS — do NOT lose the previous run's logs (e.g. intermittent
+# upstream 5xx evidence) when restarting. Rotate the existing log to a timestamped archive before
+# starting fresh; keep only the most recent 20 archives so it doesn't grow unbounded. The current
+# log (logs/server_complete.log) is still the single live log to monitor.
+mkdir -p logs/archive
+if [ -s logs/server_complete.log ]; then
+    mv logs/server_complete.log "logs/archive/server_complete_$(date +%Y%m%d_%H%M%S).log"
+    ls -1t logs/archive/server_complete_*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
+fi
+
 # Start server with optimized environment variables
 echo "🔧 Starting server with optimizations: Performance ✅ Streamlined Logging ✅ API Control ✅"
 nohup env "PYTHONPATH=$(pwd)/venv/lib/$PYTHON_VERSION/site-packages" $ENV_VARS venv/bin/python3 fastapi_server_complete.py > logs/server_complete.log 2>&1 &
