@@ -149,11 +149,12 @@ async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs
 
                 await _emit(f"⏳ The research model host returned a temporary error — retrying "
                             f"(attempt {attempt + 1}/{_RETRY_MAX_ATTEMPTS}) in ~{int(_RETRY_DELAY_SECONDS)}s…")
-                # Sleep in small steps, sending a heartbeat so the stream stays warm and the user
-                # sees progress instead of a long silence.
+                # Sleep in steps, sending a periodic heartbeat so the stream stays warm and the user
+                # sees it's still working — but not so often it spams the live view. 40s keeps each
+                # gap well under client read-timeouts while emitting only a couple of lines per wait.
                 waited = 0.0
                 while waited < _RETRY_DELAY_SECONDS:
-                    step = min(20.0, _RETRY_DELAY_SECONDS - waited)
+                    step = min(40.0, _RETRY_DELAY_SECONDS - waited)
                     await asyncio.sleep(step)
                     waited += step
                     if waited < _RETRY_DELAY_SECONDS:
