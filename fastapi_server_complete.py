@@ -654,7 +654,7 @@ class AsyncToolManager:
                 "type": "function",
                 "function": {
                     "name": "search_web",
-                    "description": "Search the web for comprehensive information from multiple sources including academic, news, and reference sites.",  # 🚨 PROTECTED: Enhanced but clean description
+                    "description": "Search the live web for SPECIFIC, CURRENT, or less-common information from across the internet — including live scores and results, a specific event, match, game, person, team, company, product, price, or statistic, and any precise or just-happened fact that a broad news-category feed would not surface. Returns multiple specific source pages with their URLs. Use it to look up a particular topic by name or to verify current details.",  # 🚨 PROTECTED: clean, additive, non-redirecting
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -3014,9 +3014,14 @@ def _validate_article_url(url: str) -> bool:
     if not url.startswith(('http://', 'https://')):
         return False
 
-    # Reject feed/RSS URLs (these are not article URLs)
-    feed_indicators = ['/feed', '/rss', '.xml', '.rss', '/atom', 'feedburner']
+    # Reject feed/RSS endpoints (these are not article URLs). EXCEPTION: a Google-News article link lives
+    # under '/rss/articles/…' — that is a SPECIFIC per-article URL (it resolves, in a browser, to the
+    # publisher's article via Google's redirect), so the '/rss' indicator must NOT reject it. This is a
+    # URL-structure distinction (article path vs feed endpoint), not content/intent classification.
     url_lower = url.lower()
+    feed_indicators = ['/feed', '.xml', '.rss', '/atom', 'feedburner']
+    if '/rss/articles/' not in url_lower:
+        feed_indicators.append('/rss')
     for indicator in feed_indicators:
         if indicator in url_lower:
             return False
