@@ -183,6 +183,16 @@ deep_research:
     web_max_results: 8          # web results per search (legacy hardcoded value was 3)
     per_page_char_budget: 6000  # max chars extracted per page (legacy value was 2000)
     per_page_max_blocks: 12     # max text blocks/paragraphs per page (legacy value was 5)
+  citation_verify:
+    # Layer 3 of citation accuracy: a LENIENT live check that drops a candidate citation URL ONLY when
+    # it is verified dead (hard HTTP 404/410, or a redirect that lands on the site homepage) before it
+    # can become a citation. Everything else (200/403/paywall/JS shell/429/5xx/timeout) is KEPT, so a
+    # valid article that merely bot-blocks us is never dropped. search_web piggybacks on its existing
+    # content fetch (no extra request); news verifies article URLs in parallel. Set enabled:false to turn
+    # the whole layer off (e.g. if it adds unacceptable latency to news).
+    enabled: true
+    timeout_seconds: 6          # per-URL liveness timeout (lenient: a timeout KEEPS the URL)
+    max_workers: 8              # parallelism when verifying a batch of news article URLs
   research_classifier:
     # LLM-driven replacement for the old keyword-based _is_research_query().
     # When enabled, an LLM decides (semantically) whether a request is

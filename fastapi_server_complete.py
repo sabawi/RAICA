@@ -1885,15 +1885,27 @@ class AsyncToolManager:
                                 title = result.get('title', 'No Title')
                                 href = result.get('href', 'No URL')
                                 body = result.get('body', 'No Description')
-                                
-                                # Extract content from each URL
+
+                                # Citation accuracy: only cite a result whose URL is a SPECIFIC article
+                                # (not a feed, homepage, or invalid URL); skip the rest so the model never
+                                # cites a general/landing page that 404s. Mirrors the news RSS path's
+                                # _validate_article_url gate. Checked BEFORE fetching to also save work.
+                                if href == 'No URL' or not _validate_article_url(href):
+                                    print(f"🔗 search_web: skipping non-article result URL: {str(href)[:80]}", flush=True)
+                                    continue
+
+                                # Extract content from each URL. This fetch also serves as the Layer 3
+                                # live-link check: None == verified dead (hard 404/410 or homepage-redirect)
+                                # → skip the citation entirely so the model never cites a dead/moved page.
                                 extracted_content = ""
-                                if href != 'No URL':
-                                    try:
-                                        extracted_content = get_text_from_url_simplified(href)
-                                    except Exception as e:
-                                        extracted_content = f"Error extracting content: {str(e)}"
-                                
+                                try:
+                                    extracted_content = get_text_from_url_simplified(href)
+                                except Exception as e:
+                                    extracted_content = f"Error extracting content: {str(e)}"
+                                if extracted_content is None:
+                                    print(f"🔎 search_web: skipping dead/redirected result URL: {str(href)[:80]}", flush=True)
+                                    continue
+
                                 # Use enhanced source block formatting
                                 formatted_result = _format_source_block(
                                     source_url=href,
@@ -1910,11 +1922,19 @@ class AsyncToolManager:
                 # Simplified URL content extraction (to avoid Selenium dependency issues)
                 def get_text_from_url_simplified(url):
                     try:
-                        response = requests_compatible_get(url, timeout=10, headers={
+                        response = requests_compatible_get(url, timeout=10, allow_redirects=True, headers={
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                         })
+                        # Layer 3 (citation accuracy), piggybacked on THIS fetch (no extra request): a hard
+                        # 404/410 or a redirect to the site homepage means the article is gone → signal the
+                        # caller to SKIP the citation (return None). Lenient: any other status (403/JS/5xx)
+                        # falls through and is kept. Config-gated (deep_research.citation_verify).
+                        if _citation_verify_cfg()["enabled"]:
+                            _st = getattr(response, 'status_code', 0)
+                            if _st in (404, 410) or _is_homepage_redirect(url, getattr(response, 'url', '') or url):
+                                return None
                         response.raise_for_status()
-                        
+
                         soup = BeautifulSoup(response.text, 'html.parser')
                         
                         # Remove unwanted tags
@@ -3011,6 +3031,84 @@ def _validate_article_url(url: str) -> bool:
 
     return True
 
+
+def _citation_verify_cfg() -> dict:
+    """Layer 3 (citation accuracy) config — fail-safe defaults. A LENIENT live check that drops only
+    clearly-dead article URLs (hard 404/410, or a redirect that lands on the site homepage) before they
+    become citations; everything else (403/paywall/JS shell/timeout/5xx) is KEPT, so a valid article
+    that merely bot-blocks us is never dropped. config: deep_research.citation_verify."""
+    try:
+        cfg = config_loader.load_config().get('deep_research', {}).get('citation_verify', {})
+    except Exception:
+        cfg = {}
+    return {
+        "enabled": bool(cfg.get("enabled", True)),
+        "timeout": float(cfg.get("timeout_seconds", 6)),
+        "max_workers": max(1, int(cfg.get("max_workers", 8))),
+    }
+
+
+def _is_homepage_redirect(orig_url: str, final_url: str) -> bool:
+    """True if a URL that HAD a real article path redirected to the site HOMEPAGE (empty/'/' path) —
+    a strong, generic signal the article was removed/moved ('page not found → sent to home'). Same-host
+    only is not required: a cross-host redirect to a bare homepage is still a dropped article."""
+    try:
+        from urllib.parse import urlparse
+        o = urlparse(orig_url or "")
+        f = urlparse(final_url or "")
+        return bool((o.path or "").strip("/")) and (f.path or "").strip("/") == ""
+    except Exception:
+        return False
+
+
+def _verify_url_live(url: str, timeout: float = 6.0) -> bool:
+    """LENIENT liveness check for a candidate citation URL. Returns False (DROP) ONLY for a hard 404/410
+    or a redirect to the site homepage; returns True (KEEP) for everything else — 200, 403, 401, 405,
+    429, 5xx, paywalls, JS shells, timeouts, connection errors — so a valid article that merely blocks
+    bots/crawlers is never dropped. This is empirical verification (Layer 3), not URL pattern-matching."""
+    if not url or not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        resp = requests_compatible_get(url, timeout=timeout, allow_redirects=True, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        status = getattr(resp, "status_code", 0)
+        final_url = getattr(resp, "url", "") or url
+        if status in (404, 410):
+            return False
+        if _is_homepage_redirect(url, final_url):
+            return False
+        return True
+    except Exception:
+        # Transient/blocked → lenient KEEP (never drop a possibly-valid article on a network hiccup).
+        return True
+
+
+def _filter_live_article_urls(urls, timeout: float = 6.0, max_workers: int = 8):
+    """Verify a batch of candidate article URLs in PARALLEL and return the set that are KEPT (live).
+    Lenient: a URL is dropped ONLY when _verify_url_live explicitly returns False (verified dead); a URL
+    that errors or doesn't complete in time is KEPT. Bounded latency: ~one `timeout` window per batch."""
+    urls = [u for u in (urls or []) if u]
+    if not urls:
+        return set()
+    dropped = set()
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(urls))) as ex:
+            futs = {ex.submit(_verify_url_live, u, timeout): u for u in urls}
+            for fut in as_completed(futs, timeout=timeout + 5):
+                u = futs[fut]
+                try:
+                    if fut.result(timeout=1) is False:
+                        dropped.add(u)   # verified DEAD (hard 404/410 or homepage-redirect) → drop
+                except Exception:
+                    pass                 # didn't verify in time / error → lenient KEEP
+    except Exception:
+        # Batch verifier itself failed → KEEP everything (fail-open — never silently drop all sources).
+        return set(urls)
+    return set(u for u in urls if u not in dropped)
+
+
 def _parse_rss_articles(rss_content: str, feed_url: str, max_articles: int = 5) -> List[dict]:
     """
     Parse RSS feed content and extract individual article information including URLs.
@@ -3166,6 +3264,22 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
             articles = _parse_rss_articles(response.text, news_url, max_articles=4)
             
             if articles:
+                # Layer 3 (citation accuracy): drop any article whose URL is verified DEAD (hard
+                # 404/410 or a redirect to the site homepage) before it can become a citation. Lenient
+                # (keeps 403/paywall/JS/timeout), parallel, and config-gated (deep_research.citation_verify).
+                _cv = _citation_verify_cfg()
+                if _cv["enabled"]:
+                    _live = _filter_live_article_urls(
+                        [a.get('url') for a in articles if a.get('url')],
+                        timeout=_cv["timeout"], max_workers=_cv["max_workers"])
+                    _before = len(articles)
+                    articles = [a for a in articles if a.get('url') in _live]
+                    if len(articles) != _before:
+                        print(f"🔎 news: link-verify dropped {_before - len(articles)} dead article URL(s) "
+                              f"from {_extract_domain(news_url)}", flush=True)
+                    if not articles:
+                        return ("", 0)
+
                 content_blocks = []
                 for i, article in enumerate(articles):
                     article_url = article.get('url', news_url)
@@ -3174,7 +3288,7 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
 
                     # Use description as content (date will be extracted by _format_source_block)
                     enhanced_content = description
-                    
+
                     # Create source block for each article
                     formatted_source = _format_source_block(
                         source_url=article_url,
@@ -3183,33 +3297,22 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
                         source_num=source_num_start + i
                     )
                     content_blocks.append(formatted_source)
-                
+
                 return ('\n'.join(content_blocks), len(articles))
             else:
-                # Fallback - create a simple source block if RSS parsing fails
-                formatted_source = _format_source_block(
-                    source_url=news_url,
-                    title=f"News from {_extract_domain(news_url)}",
-                    content="RSS feed processed but article URLs could not be extracted",
-                    source_num=source_num_start
-                )
-                return (formatted_source, 1)
-        else:
-            # Regular webpage - use existing logic but create fallback if get_text_from_url fails
-            try:
-                content = get_text_from_url(news_url)
-                if content and not content.startswith("Error"):
-                    formatted_source = _format_source_block(
-                        source_url=news_url,
-                        title=f"News from {_extract_domain(news_url)}",
-                        content=content,
-                        source_num=source_num_start
-                    )
-                    return (formatted_source, 1)
-                else:
-                    return ("", 0)
-            except Exception:
+                # RSS parsed but yielded no article with a valid specific URL. Do NOT fall back to
+                # citing the FEED url (a feed/landing URL lands on "page not found" when cited as an
+                # article). Skip this source so the model never receives a non-article citation.
+                print(f"🔗 news: no citable article extracted from feed, skipping: {str(news_url)[:80]}", flush=True)
                 return ("", 0)
+        else:
+            # Non-RSS URL = a section / landing page (configured news sources are sections, not
+            # specific articles). We have NO specific article URL for the content shown on it, so we
+            # must NOT cite the section URL as if it were an article (that lands on a general page /
+            # "page not found" — the exact regression). Skip it; the RSS feeds + search_web supply the
+            # citable, specific-article sources.
+            print(f"🔗 news: non-RSS section/landing page, not citable as a specific article, skipping: {str(news_url)[:80]}", flush=True)
+            return ("", 0)
             
     except Exception as e:
         print(f"Error processing news from {news_url}: {e}", flush=True)
