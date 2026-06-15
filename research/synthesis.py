@@ -280,8 +280,11 @@ class ResearchSynthesizer:
             # citations and is (rightly) rejected downstream. Cite ONLY URLs that appear in the evidence.
             _url_line = ""
             if _block_urls:
-                _url_line = ("SOURCE URL(S) for this block — cite claims taken from it as clickable "
-                             "[Title](URL) using ONLY these: " + " , ".join(_block_urls) + "\n")
+                _url_line = ("SOURCE URL(S) for this block — cite claims taken from it as a clickable "
+                             "[SPECIFIC ARTICLE HEADLINE](URL): use the article's own headline (shown on "
+                             "this block's '📄 SOURCE:' line) as the link TEXT — NEVER the bare outlet name "
+                             "(NPR/BBC/…) or an outlet+date. Use ONLY these URL(s): "
+                             + " , ".join(_block_urls) + "\n")
             blocks.append(
                 f"───── EVIDENCE [{e.get('sub_question_id')} | source={e.get('source')} | "
                 f"credibility={tier_tag}] ─────\n{_url_line}{content}"
@@ -456,6 +459,14 @@ class ResearchSynthesizer:
             "cite it inline as a clickable [Title](URL), using ONLY the SOURCE URL(S) provided with each "
             "evidence block. A substantive report with NO citations is a FAILURE and will be rejected. "
             "Never invent URLs, facts, dates, or names.\n"
+            "- CITATION LINK TEXT = THE SPECIFIC ARTICLE HEADLINE (critical): the clickable text of every "
+            "citation MUST be that article's specific headline/title (as shown on its evidence "
+            "'📄 SOURCE:' line), NEVER the bare outlet/publisher name and NEVER an outlet+date. Write "
+            "[Specific Article Headline](URL) — e.g. "
+            "[NPR: US and Iran reach preliminary deal to end the war](https://www.npr.org/2026/06/15/...) — "
+            "NEVER [NPR], [BBC], [New York Times], or [NPR, June 15, 2026]. Put the outlet name and date in "
+            "the surrounding prose, not in the link text. The URL must be that block's specific article URL "
+            "(never a homepage / section / feed).\n"
             "- Calibrate CONFIDENCE to source credibility, but never use credibility to EXCLUDE a "
             "substantive point. Present well-established findings as established (citing peer_reviewed/"
             "reputable sources). Present contested or low-credibility-sourced claims as ATTRIBUTED "
@@ -470,8 +481,9 @@ class ResearchSynthesizer:
             "- STRUCTURE: open with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for "
             "skim readers), then the detailed sections (as many as the material warrants), then a "
             "**## Conclusion** that recaps the key findings and directly answers the request, and "
-            "FINALLY a **## References** section listing the sources you cited as clickable [Title](URL) "
-            "— every URL in References MUST be one provided in the evidence (never invented)."
+            "FINALLY a **## References** section listing the sources you cited as clickable "
+            "[Specific Article Headline](URL) (the headline as link text, never a bare outlet name) — "
+            "every URL in References MUST be one provided in the evidence (never invented)."
         )
         # For enumeration requests, the pre-extracted roster (from the FULL evidence set) is
         # injected so every qualifying item gets a row even if its detail evidence was truncated.
