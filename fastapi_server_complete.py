@@ -21,6 +21,16 @@ _delivery_lock_ctx: "contextvars.ContextVar" = contextvars.ContextVar(
 _artifact_baseline_ctx: "contextvars.ContextVar" = contextvars.ContextVar(
     "raica_artifact_baseline", default=None)
 
+# ✅/❌ Structured success of the most recent USER-TOOL call, set by the user-tool wrapper at its single
+# success/failure fork — the ONE place that still holds the tool's {"success": bool} before it is
+# stringified for the LLM. Delivery paths read this to know whether a send ACTUALLY succeeded, instead of
+# sniffing the wrapper's prose result (which let a failed send — stringified as `Tool '…' error: …` — be
+# misread as "sent", because the guard only matched a `❌` prefix that the wrapper never produces). This
+# is NOT keyword/pattern matching on meaning (LLM-Policy Gate): it propagates the tool's own boolean.
+# Per-task (contextvar) → concurrency-safe. None = no/unknown user-tool outcome in this task.
+_last_user_tool_ok: "contextvars.ContextVar" = contextvars.ContextVar(
+    "raica_last_user_tool_ok", default=None)
+
 # The delivery/action tool surface exposed to the LLM ONLY when the per-request delivery gate permits it
 # (authorize_delivery(data).permitted). This is a CAPABILITY REGISTRY (which tools provide outbound
 # delivery), not intent routing — the LLM still decides whether/how to use them. Safety for restricted
@@ -809,6 +819,7 @@ class AsyncToolManager:
                 result = await tool.execute(**params)
                 
                 if result.get("success", False):
+                    _last_user_tool_ok.set(True)   # structured success (read by delivery paths)
                     # Format the successful result - handle different result key patterns
                     tool_result = None
                     
@@ -833,13 +844,16 @@ class AsyncToolManager:
                     else:
                         return str(tool_result)
                 else:
+                    _last_user_tool_ok.set(False)   # structured failure (read by delivery paths)
                     # Return error message
                     error_msg = result.get("error", "Unknown error")
                     return f"Tool '{tool.name}' error: {error_msg}"
-                    
+
             except json.JSONDecodeError:
+                _last_user_tool_ok.set(False)
                 return f"Tool '{tool.name}' error: Invalid JSON arguments"
             except Exception as e:
+                _last_user_tool_ok.set(False)
                 logger.error(f"Error executing user tool '{tool.name}': {e}")
                 return f"Tool '{tool.name}' error: {str(e)}"
         
@@ -7530,14 +7544,28 @@ async def _deliver_document(*, content: str, title: str, slug: str, formats: lis
                 email_outcome = ("failed", "duplicate suppressed — an identical email was just sent")
             else:
                 try:
-                    result = await asyncio.wait_for(
-                        _send_email_locked(tool_manager, email_params, recipient_locked, locked_recipient),
-                        timeout=120)
+                    _last_user_tool_ok.set(None)   # clear any prior outcome before this send
+                    # asyncio.timeout (NOT wait_for) so the send runs in THIS task's context — the email
+                    # tool's structured success (set by the user-tool wrapper) propagates back; a wait_for
+                    # Task would run in a COPIED context and the flag would not be visible here.
+                    async with asyncio.timeout(120):
+                        result = await _send_email_locked(
+                            tool_manager, email_params, recipient_locked, locked_recipient)
                     logger.info(f"📦 delivery email result: {str(result)[:300]}")
-                    if isinstance(result, str) and result.lstrip().startswith("❌"):
-                        email_outcome = ("failed", result.lstrip()[:160])
+                    # Decide sent/failed from the tool's ACTUAL success flag — NOT the prose result string.
+                    # A failed send is stringified as "Tool '…' error: …" (no ❌), which the old prefix
+                    # check missed → false "sent". Fall back to the explicit dict/refusal-string check only
+                    # when the structured flag is unavailable (defensive).
+                    _ok = _last_user_tool_ok.get()
+                    if _ok is True:
+                        email_outcome = ("sent", to_email)
+                        _postllm_email_mark_sent(email_params)
+                    elif _ok is False:
+                        email_outcome = ("failed", str(result)[:160])
                     elif isinstance(result, dict) and not result.get("success", True):
                         email_outcome = ("failed", str(result.get("error"))[:160])
+                    elif isinstance(result, str) and result.lstrip().startswith("❌"):
+                        email_outcome = ("failed", result.lstrip()[:160])
                     else:
                         email_outcome = ("sent", to_email)
                         _postllm_email_mark_sent(email_params)
@@ -7859,8 +7887,13 @@ async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager
                         f"sent {_ago:.1f}s ago (≤{int(_POSTLLM_EMAIL_DEDUP_WINDOW_S)}s) — suppressing duplicate")
             return {"success": False, "result": None,
                     "error": "duplicate suppressed — an identical email was just sent moments ago"}
+        _last_user_tool_ok.set(None)
         result = await _send_email_locked(tool_manager, email_params, recipient_locked, locked_recipient)
-        if isinstance(result, str) or (isinstance(result, dict) and result.get("success")):
+        # Mark sent only on the tool's ACTUAL success (structured flag), not "a string came back" — a
+        # failed send returns a "Tool '…' error: …" STRING too, which previously counted as sent.
+        _ok = _last_user_tool_ok.get()
+        _sent = (_ok is True) if _ok is not None else (isinstance(result, dict) and result.get("success"))
+        if _sent:
             _postllm_email_mark_sent(email_params)
         return result
 
@@ -11519,13 +11552,16 @@ END OF CONTEXT
                                     locked_recipient=_post_locked_recipient,
                                     recipient_locked=_post_recipient_locked
                                 )
-                                logger.info(f"✅ POST-LLM AUTO-EXECUTION COMPLETED: {additional_results}")
+                                # Neutral framing: the executor FINISHED running — per-action status
+                                # (✅ sent / ⚠️ delivery failed) is carried inside additional_results, so we
+                                # do NOT stamp a blanket "✅ COMPLETED" that would mislabel a failed send.
+                                logger.info(f"📦 POST-LLM AUTO-EXECUTION FINISHED:\n{additional_results}")
 
                                 # 🔧 FIX v1.0.3.19: Stream POST-LLM results in Ollama's JSON format
                                 # This ensures Discord client displays the results correctly
                                 if additional_results:
                                     # Format as readable text
-                                    result_text = f"\n\n---\n✅ POST-PROCESSING COMPLETED:\n{additional_results}\n---\n"
+                                    result_text = f"\n\n---\nPOST-PROCESSING RESULT:\n{additional_results}\n---\n"
 
                                     # Stream in Ollama's format so Discord client displays it
                                     import time
