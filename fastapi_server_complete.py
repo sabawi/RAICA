@@ -2,6 +2,40 @@
 
 # Import centralized version information
 from version import __version__, __release__, get_release_string
+from orchestration import policy as delivery_policy  # shared delivery policy (auth/recipient-lock/format)
+
+import contextvars
+# 🔒 Per-request delivery recipient-lock context (Phase 0 convergence). Carries
+# (recipient_locked: bool, locked_recipient: Optional[str]) so the SINGLE email chokepoint
+# (AsyncToolManager.secure_email_sender) enforces the server-authoritative recipient lock for EVERY
+# send — the POST-LLM delivery paths AND direct LLM tool calls alike — keeping the lock policy in
+# exactly one place. Default = unlocked, which is correct for auto-trusted clients (no allowed_tools
+# whitelist, e.g. OpenWebUI on the firewalled /v1).
+_delivery_lock_ctx: "contextvars.ContextVar" = contextvars.ContextVar(
+    "raica_delivery_lock", default=(False, None))
+
+# 🔗 Per-request auto-bind baseline (Phase 2). Holds the set of sandbox_workspace filenames captured at
+# request start when delivery is permitted; the email chokepoint diffs against it to auto-attach any
+# file the LLM created DURING the request — so the user receives the artifact without depending on the
+# model to thread the attachment path. None = not a delivery request (auto-bind inactive).
+_artifact_baseline_ctx: "contextvars.ContextVar" = contextvars.ContextVar(
+    "raica_artifact_baseline", default=None)
+
+# The delivery/action tool surface exposed to the LLM ONLY when the per-request delivery gate permits it
+# (authorize_delivery(data).permitted). This is a CAPABILITY REGISTRY (which tools provide outbound
+# delivery), not intent routing — the LLM still decides whether/how to use them. Safety for restricted
+# (untrusted-input) clients is enforced separately: the recipient-lock chokepoint (email) and the
+# create_file-only scoping (sandboxed_executor).
+_DELIVERY_TOOL_SURFACE = ("sandboxed_executor", "secure_email_sender")
+
+# Master switch for the LLM-DRIVEN delivery path (Phase 1 tool exposure + create_file-only scoping +
+# Phase 2 auto-bind). Default OFF: delivery continues to flow through the proven 3-stage
+# gather→synthesize→deliver pipeline (delivery tools deferred to POST-LLM with the synthesized answer
+# as content), which is unchanged for every existing client. When ON, the delivery tools are exposed to
+# the tool-calling LLM so it can drive delivery itself — to be enabled together with the multi-round
+# agentic tool loop. Phase 0 (the universal recipient-lock chokepoint) is ALWAYS on regardless, since
+# it is pure safety and behavior-preserving.
+_LLM_DRIVEN_DELIVERY = False
 
 # Set PYTHONTZPATH to use the venv's tzdata
 from utils.platform import EnvironmentManager
@@ -2379,7 +2413,24 @@ class AsyncToolManager:
                     
                 except Exception as inject_error:
                     logger.warning(f"🖼️ Failed to inject image data: {inject_error}")
-            
+
+            # 🔒 Scope restriction (Phase 1): for a RESTRICTED client (untrusted input — a recipient lock
+            # is present in context) sandboxed_executor is limited to the document-creation action; shell
+            # / code execution is refused (fail-closed) no matter what the LLM requests. This is a SAFETY
+            # LIMIT (which capability is available to an untrusted client), not interpretation of intent.
+            if func_name == "sandboxed_executor" and _LLM_DRIVEN_DELIVERY:
+                _rl, _ = _delivery_lock_ctx.get()
+                if _rl:
+                    try:
+                        _a = json.loads(args) if isinstance(args, str) else (args or {})
+                    except Exception:
+                        _a = {}
+                    _act = (_a.get("action") if isinstance(_a, dict) else None)
+                    if _act and _act != "create_file":
+                        logger.warning(f"🔒 sandboxed_executor action '{_act}' blocked for restricted "
+                                       f"client (create_file only)")
+                        return "❌ Only document/file creation is permitted for this client; other sandbox actions are blocked."
+
             func = self.available_functions[func_name]
             result = await func(args)
             return str(result)
@@ -2401,7 +2452,55 @@ class AsyncToolManager:
                     return "❌ Error: Invalid JSON format for email arguments"
             else:
                 parsed_args = args
-            
+
+            # 🔒 UNIVERSAL RECIPIENT LOCK (single chokepoint). For a RESTRICTED client (one that sent an
+            # allowed_tools whitelist, e.g. a NewX bot acting for a delivery-privileged user) EVERY email
+            # — whether triggered by a POST-LLM delivery path OR a direct LLM tool call — goes ONLY to the
+            # server-authoritative locked recipient; any prompt/LLM-supplied address is ignored, CC is
+            # dropped, and an absent/invalid lock REFUSES the send (fail-closed). Auto-trusted clients
+            # (no lock in context) pass through unchanged. The lock context is carried per-request via
+            # _delivery_lock_ctx so this is the ONE place the recipient-lock policy is enforced.
+            _rl, _lr = _delivery_lock_ctx.get()
+            if _rl:
+                _locked_val, _refused = delivery_policy.resolve_locked_recipient(_rl, _lr)
+                if _refused:
+                    logger.warning("🔒 delivery: recipient locked but no valid delivery_recipient — "
+                                   "refusing to send (fail-closed)")
+                    return "❌ Email refused: this client may only email the requesting user's own account, which was unavailable."
+                if isinstance(parsed_args, dict):
+                    _orig_to = parsed_args.get("to_email")
+                    if _orig_to and str(_orig_to).strip() != _locked_val:
+                        logger.info(f"🔒 delivery: overriding recipient '{_orig_to}' → locked '{_locked_val}'")
+                    parsed_args["to_email"] = _locked_val
+                    if parsed_args.get("cc_emails"):
+                        logger.info(f"🔒 delivery: dropping CC '{parsed_args.get('cc_emails')}' for locked client")
+                    parsed_args["cc_emails"] = None
+                else:
+                    logger.warning("🔒 delivery: recipient locked but email args are not a dict — "
+                                   "refusing (fail-closed)")
+                    return "❌ Email refused: locked-recipient enforcement requires structured email arguments."
+
+            # 🔗 Phase 2 (auto-bind): attach files created in the sandbox DURING this delivery request so
+            # the user receives the artifact even if the LLM did not thread the attachment path. Merges
+            # with any attachments the LLM did pass (dedup by basename). Active only when a baseline was
+            # captured (i.e. a delivery-permitted request); inert otherwise.
+            _baseline = _artifact_baseline_ctx.get()
+            if _baseline is not None and isinstance(parsed_args, dict):
+                try:
+                    _new = sorted(_list_sandbox_files() - _baseline)
+                    if _new:
+                        _sbx = os.path.join(os.path.expanduser("~"), "sandbox_workspace")
+                        _existing = [p.strip() for p in str(parsed_args.get("attachments") or "").split(",") if p.strip()]
+                        _have = set(os.path.basename(p) for p in _existing)
+                        for _fn in _new:
+                            if _fn not in _have:
+                                _existing.append(os.path.join(_sbx, _fn))
+                        if _existing:
+                            parsed_args["attachments"] = ",".join(_existing)
+                            logger.info(f"🔗 auto-bind: attaching request-created artifact(s) {_new} to email")
+                except Exception as _e_ab:
+                    logger.warning(f"🔗 auto-bind skipped (non-fatal): {_e_ab}")
+
             def sync_email_send():
                 try:
                     # Import the email tool
@@ -3126,7 +3225,44 @@ END OF CONTEXT DATA"""
     return context_block
 
 
-def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=False, tools_results_summary="", tools_called: List[str] = None):
+# Delivery/action awareness for the primary LLM, injected based on whether outbound delivery is
+# actually PERMITTED for this request (allow_delivery). The POSITIVE form was previously hardcoded in
+# primary_model_system_prompt.txt and caused NON-delivery bots to falsely claim "email sent"; it now
+# appears only when delivery is permitted. The NEGATIVE form forbids false success claims.
+_POS_DELIVERY_AWARENESS = (
+    "📧 POST-LLM EXECUTION AWARENESS:\n"
+    "- Delivery/packaging (emailing, saving a file, publishing) is performed by the SYSTEM after you "
+    "finish — your job is ONLY to generate the requested content, fully.\n"
+    "- You will NOT find an email, file-creation, or delivery tool among your available tools, and you "
+    "do NOT need one — this is BY DESIGN. A separate delivery layer outside your toolset packages and "
+    "sends your content automatically AFTER you respond. The absence of such a tool does NOT mean "
+    "delivery won't happen — it WILL. Do NOT reason from your visible tools (or 'this session') that you "
+    "cannot deliver.\n"
+    "- Therefore do NOT say you lack the ability, do NOT mention any missing or unavailable tool, and do "
+    "NOT offer the user a manual workaround (e.g. 'copy this HTML and save it yourself', 'paste it into a "
+    "file', or dumping a raw HTML/PDF block inline). Simply write the requested content as your normal "
+    "answer — if a file was requested, that content IS what the system will package into the file.\n"
+    "- Equally, do NOT claim or imply that delivery happened — never write \"email sent\", \"file "
+    "attached\", \"delivered\", \"posted\", or similar. You neither perform nor confirm the delivery; the "
+    "system reports the ACTUAL outcome separately. A premature success claim would be a lie if the "
+    "delivery later fails.\n"
+    "- Just produce the complete requested content; add no commentary about sending/attaching/posting.\n"
+    "- OUTPUT THE FINISHED CONTENT ITSELF, directly and in full. When the user asks you to format/email "
+    "'the above' or provided material, transform THAT material into the requested document NOW. NEVER "
+    "respond with a plan, an outline of what you intend to do, a statement that you 'need to research' or "
+    "'will gather' more, a question back to the user, or meta-commentary about the task — any such reply "
+    "would be packaged and delivered AS the document, which is wrong. If the provided material is thin, "
+    "format and present what you have; do not stall or describe what you would do."
+)
+_NEG_DELIVERY_AWARENESS = (
+    "📧 OUTBOUND ACTIONS (THIS REQUEST):\n"
+    "- Outbound delivery/actions (sending email, creating/saving files, scheduling, posting outside this platform) are NOT available for this request.\n"
+    "- If the user asked for such an action — even \"email me an HTML/PDF file of X\" — answer their underlying question in your NORMAL format, WITH any required source citations, then add ONE brief note that the action isn't available. Do NOT produce the file itself or output raw file content (raw HTML/PDF).\n"
+    "- NEVER claim or imply that an email was sent, a file was created or attached, or anything was posted — you did NOT perform any action."
+)
+
+
+def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=False, tools_results_summary="", tools_called: List[str] = None, allow_delivery: bool = True):
     """
     Build enhanced system prompt for primary LLM when tools have been executed.
     This prevents the primary LLM from redoing work already completed by tool calling model.
@@ -3137,6 +3273,10 @@ def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=F
     """
     # Load base system prompt from external file
     base_system = load_primary_model_system_prompt()
+    # Inject delivery/action awareness that reflects the ACTUAL permission for this request, so a
+    # non-delivery bot can never be told "email is handled automatically / don't disclaim" (which made
+    # it falsely claim success). Applied to the base for ALL return paths below.
+    base_system = base_system + "\n\n" + (_POS_DELIVERY_AWARENESS if allow_delivery else _NEG_DELIVERY_AWARENESS)
 
     if not tools_were_executed:
         # If no tools were executed, combine base system + user system if provided
@@ -3151,21 +3291,43 @@ def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=F
     # This prevents massive system prompts when tool results are large (e.g., email retrieval)
     tools_list = ", ".join(tools_called) if tools_called else "various tools"
 
+    # NO-INCONSISTENCY: the workflow instructions must AGREE with the delivery awareness above. When
+    # delivery is NOT permitted, they must not promise/claim file creation or sending (that conflict made
+    # a non-delivery bot falsely say "I've generated your HTML briefing"). One voice, gated on allow_delivery.
+    if allow_delivery:
+        _deliv_workflow_line = (
+            "- The system AUTOMATICALLY formats your markdown answer into the requested file (HTML/PDF/etc.), "
+            "names it from its content, attaches it, and delivers/emails it after you finish. Any note about "
+            "the delivery is added by the system to the message/email — never put it inside the content.")
+        _deliv_remember = "the system formats, names, and delivers the file"
+        _action_report_line = (
+            "- For ACTION tools (email sending, chart creation, file operations, social media posting): "
+            "the system performs these after you finish — produce the content and do NOT claim you sent/"
+            "attached/posted anything; the system reports the actual outcome.")
+    else:
+        _deliv_workflow_line = (
+            "- Outbound delivery (emailing, creating/attaching a file, posting) is NOT available for this "
+            "request — do NOT claim or imply that any file was created, attached, sent, posted, or delivered. "
+            "Just produce the answer content (the OUTBOUND ACTIONS note above governs).")
+        _deliv_remember = "outbound delivery is NOT available — do not claim any file/email/post happened"
+        _action_report_line = (
+            "- Outbound action tools (email, file creation, social posting) are NOT available for this "
+            "request — do NOT claim or imply you sent, attached, created a file, or posted anything.")
+
     if tools_are_deferred:
         # Tools are waiting for Primary LLM to generate content
         enhanced_instructions = f"""
 
 CRITICAL WORKFLOW INSTRUCTIONS:
-- Tools are ready to execute but are waiting for YOU to generate the content first
-- You must generate the COMPLETE, FULL content that the user requested
-- DO NOT just acknowledge or confirm - you must ACTUALLY GENERATE the full content now
-- File creation and email sending will happen automatically AFTER you generate the content
-- Your response will be used as the file content and email attachment
+- Tools are ready to execute but are waiting for YOU to generate the content first.
+- Generate the user's requested answer NOW, IN FULL, as a normal well-structured response in your usual MARKDOWN format — INCLUDING all required source citations as [Title](URL) links.
+- Output ONLY the answer content itself: do NOT produce raw file markup (no raw HTML or PDF, no ```html / ``` code fences) and do NOT add any conversational preface such as "I'll create..." or "Here is the file".
+{_deliv_workflow_line}
 
 TOOLS WAITING: {tools_list}
 
 Note: Tool results and context data are provided in the CONTEXT block below. Use them to fulfill the request.
-Remember: Generate the FULL, COMPLETE content now. Do not just say "I'll create..." - ACTUALLY CREATE IT in your response.
+Remember: produce the FULL answer content now, in normal markdown WITH citations — {_deliv_remember}.
 """
     else:
         # Tools already completed their work
@@ -3173,11 +3335,8 @@ Remember: Generate the FULL, COMPLETE content now. Do not just say "I'll create.
 
 CRITICAL WORKFLOW INSTRUCTIONS:
 - Tools have already been executed and their work is complete
-- **YOU executed these tools and MUST report their results as YOUR actions**
-- When social_media tools return 'tweet_url', 'tweet_id', or 'post_url': Report as "✅ Posted successfully! Tweet URL: [url], Tweet ID: [id]"
-- Always and in every agentic operation processed in the context, acknowledge its results and report the returned parameters
-- For DATA-GATHERING tools (search, news, research, wikipedia, etc.): USE the tool results from the CONTEXT block to comprehensively fulfill the user's original request with all details they asked for
-- For ACTION tools (email sending, chart creation, file operations, social media posting): Report completion with all returned parameters
+- For DATA-GATHERING tools (search, news, research, wikipedia, etc.): USE the tool results from the CONTEXT block to comprehensively fulfill the user's original request with all details they asked for, with citations
+{_action_report_line}
 - Be thorough and detailed when presenting information from data-gathering tools
 - Organize and analyze the data to directly address what the user requested
 
@@ -5749,308 +5908,167 @@ Please validate each task result and respond with JSON analysis."""
         return None
 
 async def _verify_task_completion(user_prompt: str, tools_called: List[str], tools_results: str, tool_manager) -> Dict[str, Any]:
-    """
-    🔍 BULLETPROOF TASK COMPLETION VERIFIER
-    Analyzes user prompt and tool execution to ensure all required steps are completed
-    Enhanced with comprehensive email detection and strict validation
-    """
-    user_prompt_lower = user_prompt.lower()
+    """RETIRED keyword classifier (convergence Phase 5/6). The LLM intent classifier
+    (_maybe_llm_authoritative, mode:llm) is the AUTHORITATIVE delivery-intent decider — INCLUDING whether a
+    request is an OpenWebUI background meta-task (title/tag generation), which the classifier prompt
+    (orchestration/intent.py) is instructed to classify as needing no delivery tools. This function is only
+    the FALL-BACK used when the LLM classifier is unavailable (timeout/error/over-length): it FAILS SAFE —
+    reports the task complete so the model's text answer still streams, and never GUESSES delivery from
+    keywords/patterns to auto-run post-LLM actions on a classifier failure. No keyword/pattern
+    classification remains here (LLM-Policy Gate)."""
+    return {"complete": True, "missing_tools": [], "pattern": "classifier_unavailable",
+            "reason": "legacy keyword classifier retired -- LLM intent classifier (mode:llm) is authoritative"}
 
-    # 🔧 FIX: Strip embedded chat history before checking for publishing keywords
-    # Meta-tasks from Open-WebUI contain <chat_history>...</chat_history> with original user messages
-    # We must NOT detect publishing keywords from embedded chat history content
-    prompt_for_keyword_check = user_prompt_lower
-    if "<chat_history>" in user_prompt_lower:
-        # Extract only the part BEFORE chat_history for keyword detection
-        prompt_for_keyword_check = user_prompt_lower.split("<chat_history>")[0]
-        logger.debug(f"🔧 Stripped chat_history for keyword check: {len(user_prompt_lower)} -> {len(prompt_for_keyword_check)} chars")
 
-    # 🎯 DEFINE POST-GENERATION KEYWORDS FIRST - Used by multiple patterns below
-    # This is extensible - add new categories when new post-LLM tools are added
-    explicit_post_generation_requests = {
-        # Email/messaging tools
-        "email": ["email me", "send me", "email the", "send the", "email it to", "send it to",
-                 "email with", "send with", "mail", "attachment", "send an email"],
+# ── Phase 2: SHADOW-MODE LLM intent classifier (convergence) ─────────────────────────────────────
+# Runs an LLM intent classifier ALONGSIDE the legacy keyword verifier above, compares them, and logs/
+# records divergences — WITHOUT changing behavior (legacy stays authoritative). It runs as a
+# fire-and-forget background task so it never adds latency to the user's response. Config:
+# convergence.shadow_classifier (default disabled). See docs/RAICA_CONTEXT_SUBSTRATE_CONVERGENCE.md.
+_SHADOW_TASKS = set()  # hold references so background tasks aren't garbage-collected mid-flight
 
-        # File creation/storage tools
-        "file_creation": ["create file", "save to file", "save output to", "create a pdf",
-                         "create pdf", "pdf version", "html file", "save and send", "craft",
-                         "pdf report", "html report", "generate pdf", "make pdf",
-                         "pdf formatted", "pdf attachment", "with attachments", "include a pdf"],
 
-        # Publishing/distribution tools (WordPress, social media, etc.)
-        "publishing": ["publish", "post", "wordpress", "blog", "article", "share", "upload",
-                      "publish to", "post to", "publish the", "post the", "publish it", "post it",
-                      "publish results", "post results", "wordpress account", "blog post",
-                      "twitter", "tweet", "medium", "substack", "social media"],
+def _schedule_shadow_classification(user_prompt, tools_called, legacy_result, data):
+    """Schedule a non-blocking shadow classification if enabled. No-op (and never raises) otherwise."""
+    try:
+        cfg = (config_loader.load_config().get('convergence', {}) or {}).get('shadow_classifier', {}) or {}
+        if not cfg.get('enabled') or not legacy_result:
+            return
+        import random
+        if random.random() > float(cfg.get('sample_rate', 1.0)):
+            return
+        if len(user_prompt or "") > int(cfg.get('max_prompt_chars', 8000)):
+            logger.info("🕵️ SHADOW CLASSIFIER skipped: prompt exceeds max_prompt_chars")
+            return
+        task = asyncio.create_task(
+            _run_shadow_classifier(user_prompt, list(tools_called or []), dict(legacy_result), cfg))
+        _SHADOW_TASKS.add(task)
+        task.add_done_callback(_SHADOW_TASKS.discard)
+    except Exception as e:  # noqa: BLE001 — shadow must NEVER break the request path
+        logger.warning(f"🕵️ SHADOW CLASSIFIER scheduling failed: {e}")
 
-        # Document generation tools
-        "document_creation": ["cover letter", "create report", "report and email",
-                             "save and send the files", "send the files as pdf"]
-    }
 
-    # Flatten all post-generation keywords for quick checking
-    all_post_generation_keywords = [keyword for category_keywords in explicit_post_generation_requests.values()
-                                   for keyword in category_keywords]
+async def _run_shadow_classifier(user_prompt, tools_called, legacy_result, cfg):
+    """Background: run the LLM intent classifier, compare to the legacy result, log + record divergence."""
+    from orchestration import intent as _intent
+    from research.engine import _collect_stream
+    try:
+        try:
+            _defs = await tool_manager.get_tools_definitions()
+            catalog = [{"name": d.get("function", {}).get("name", ""),
+                        "description": d.get("function", {}).get("description", "")}
+                       for d in _defs if d.get("function", {}).get("name")]
+        except Exception:  # noqa: BLE001
+            catalog = []
+        shadow_model = cfg.get('model')
 
-    # 🚨 CRITICAL META-TASK DETECTION - BUT WITH PUBLISHING OVERRIDE 🚨
-    # If user has publishing keywords, this is NOT a meta-task even if it matches patterns
-    meta_task_indicators = [
-        "generate 1-3 broad tags categorizing the main themes",
-        "generate a concise title with emoji",
-        "generate a concise, 3-5 word title with an emoji",
-        "generate tags",
-        "categorizing the main themes of the chat history",
-        "title with emoji",
-        "broad tags categorizing",
-        "3-5 word title with an emoji",
-        "concise title with an emoji"
-    ]
+        async def _collect(prompt, system_prompt, max_tokens):
+            kwargs = {"system_prompt": system_prompt, "temperature": 0.0,
+                      "max_tokens": max_tokens, "stream": False}
+            if shadow_model:
+                kwargs["model"] = shadow_model
+            return await _collect_stream(llm_manager.generate_stream, prompt, **kwargs)
 
-    # Check if user has publishing/email/file creation keywords - these override meta-task detection
-    # IMPORTANT: Use prompt_for_keyword_check to avoid false positives from embedded chat history
-    has_post_generation_request = any(keyword in prompt_for_keyword_check for keyword in all_post_generation_keywords)
+        intent_res = await asyncio.wait_for(
+            _intent.classify_intent_actions(_collect, catalog, user_prompt,
+                                            max_tokens=int(cfg.get('max_tokens', 800))),
+            timeout=float(cfg.get('timeout_seconds', 60)))
+        shadow_shape = _intent.to_verifier_shape(intent_res, tools_called)
+        cmp = _intent.compare(legacy_result, shadow_shape)
+        logger.info(
+            f"🕵️ SHADOW CLASSIFIER | agree_complete={cmp['agree_complete']} agree_tools={cmp['agree_tools']} "
+            f"| legacy(complete={legacy_result.get('complete')},missing={cmp['legacy_missing']},"
+            f"pattern={legacy_result.get('pattern')}) "
+            f"| llm(complete={shadow_shape['complete']},missing={cmp['shadow_missing']},ok={intent_res.get('ok')}) "
+            f"| prompt={(user_prompt or '')[:160]!r}")
+        if not (cmp['agree_complete'] and cmp['agree_tools']):
+            _append_shadow_divergence(cfg, user_prompt, legacy_result, shadow_shape, cmp, intent_res)
+    except asyncio.TimeoutError:
+        logger.warning("🕵️ SHADOW CLASSIFIER timed out")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🕵️ SHADOW CLASSIFIER error: {e}")
 
-    if any(meta_indicator in user_prompt_lower for meta_indicator in meta_task_indicators):
-        # If publishing keywords present IN THE TASK ITSELF (not chat history), this is a REAL user request
-        if has_post_generation_request:
-            logger.info(f"🎯 META-TASK PATTERN DETECTED but PUBLISHING KEYWORDS PRESENT in task - treating as real user request")
-        else:
-            logger.info(f"🎯 META-TASK DETECTED: Returning complete (title/tag generation from Open-WebUI)")
-            return {"complete": True, "pattern": "meta_task"}
-    
-    
-    # 🚨 BULLETPROOF EMAIL DETECTION
-    # Any mention of email/send requires secure_email_sender tool
-    email_keywords = [
-        "email", "send", "mail", "attach", "attachment", "send to", "email to",
-        "send an email", "send email", "email it", "mail it", "send it",
-        "email me", "send me", "mail me", "email with", "send with",
-        "email them", "send them", "mail them", "email all", "send all",
-        "in one email", "all in one email", "send them all", "email the files"
-    ]
 
-    # IMPORTANT: Use prompt_for_keyword_check to avoid false positives from embedded chat history
-    has_email_request = any(keyword in prompt_for_keyword_check for keyword in email_keywords)
-    
-    # Define task patterns and their required tool sequences
-    task_patterns = {
-        "research_save_and_email": {
-            "triggers": ["save the output to", "save to pdf and html", "describe and save", "list and save", 
-                        "save output to a pdf", "save the results", "create file with", "save as attachment"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Research information, save to file(s), and email as attachments"
-        },
-        "multi_file_creation_and_email": {
-            "triggers": ["create a pdf file, a html file, a md file, and a txt file", "create multiple files", 
-                        "create files and email", "create all files and send", "send them all in one email"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Create multiple files and email all as attachments"
-        },
-        "stock_report_and_email": {
-            "triggers": ["stock report and email", "create stock analysis file", "email stock report", "save and send stock analysis"],
-            "required_tools": ["comprehensive_stock_analyzer", "sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Generate stock analysis report, save as file, email with attachment"
-        },
-        "news_report_and_email": {
-            "triggers": ["news report and email", "create news file", "email news report", "save and send news", "email me the news",
-                        "save and send the files", "pdf attachment", "send the files as pdf", "stock market news", "save and send",
-                        "generate and save the analysis", "save the analysis into"],
-            "required_tools": ["get_news_summaries", "sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Generate news analysis report, save as PDF file, email with attachment"
-        },
-        "file_creation_and_email": {
-            "triggers": ["create file and email", "save and email", "email me a file", "send me an attachment", "create and send"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Create file and email as attachment"
-        },
-        "document_creation_email": {
-            "triggers": ["write document and email", "create document file", "email me the document", "save document and send",
-                        "craft", "write a", "include a pdf", "send the email", "with attachments", "cover letter",
-                        "pdf version", "email with attachments", "pdf formatted"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Write document, save file, email as attachment"
-        },
-        "research_html_report_email": {
-            "triggers": ["search for", "research", "create html report", "create a professional html", "html report",
-                        "create report", "generate report", "create a report"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Research data, create HTML report with primary LLM content, email as attachment"
-        },
-        "pure_email_request": {
-            "triggers": ["send an email", "send email", "email to", "mail to", "send to", "email with subject",
-                        "send with attachments", "email the files", "send the files", "email with attachments"],
-            "required_tools": ["secure_email_sender"],
-            "required_sequence": False,
-            "description": "Send email with or without attachments"
-        },
-        # 🔧 FIX v1.0.3.120: Pattern for "format as HTML and email as attachment" requests
-        # This catches follow-up prompts like "Email the above response in HTML attachment"
-        "html_attachment_email": {
-            "triggers": ["html attachment", "html format attachment", "formatted html", "neatly formatted html",
-                        "as html attachment", "in html attachment", "html email attachment", "html file attachment",
-                        "email the above", "email this response", "email the response", "email the full",
-                        "email verbatim", "attachment to"],
-            "required_tools": ["sandboxed_executor", "secure_email_sender"],
-            "required_sequence": True,
-            "description": "Create HTML file from content, then email as attachment"
-        },
-        # 🎯 GENERALIZED CONTENT PUBLISHING - Detects ALL publishing/distribution requests
-        # This pattern is EXTENSIBLE - automatically works with any social_media_* tool
-        "content_publishing": {
-            "triggers": explicit_post_generation_requests["publishing"],  # Reuse publishing keywords
-            "required_tools": [],  # Dynamically determined based on keywords
-            "required_sequence": False,
-            "description": "Publish/post content to social media or blogging platforms",
-            "dynamic_tool_mapping": {
-                # Map keywords to their corresponding tool names
-                "wordpress": "social_media_wordpress",
-                "blog": "social_media_wordpress",
-                "twitter": "social_media_twitter",
-                "tweet": "social_media_twitter",
-                "medium": "social_media_medium",
-                "substack": "social_media_substack"
-                # 🔧 EXTENSIBLE: Add new platforms here as tools are developed
-            }
+async def _maybe_llm_authoritative(user_prompt, tools_called, legacy_result):
+    """Phase 3c cutover. If convergence.intent_classifier.mode == 'llm', run the LLM intent classifier
+    INLINE and use its result (FULL tool set) as the authoritative verification_result; otherwise return
+    the legacy result unchanged. The legacy result is ALWAYS the fallback — on wrong mode, over-length
+    prompt, classifier error, or timeout we return it untouched, so the default (mode=legacy) is a
+    guaranteed no-op (zero behavior change). Returns a legacy-shaped dict {complete, missing_tools,
+    pattern, reason}."""
+    try:
+        cfg = (config_loader.load_config().get('convergence', {}) or {}).get('intent_classifier', {}) or {}
+        if cfg.get('mode') != 'llm' or not legacy_result:
+            return legacy_result
+        if len(user_prompt or "") > int(cfg.get('max_prompt_chars', 12000)):
+            logger.info("🧭 INTENT(llm): prompt exceeds max_prompt_chars → legacy fallback")
+            return legacy_result
+        from orchestration import intent as _intent
+        from research.engine import _collect_stream
+        try:
+            _defs = await tool_manager.get_tools_definitions()
+            catalog = [{"name": d.get("function", {}).get("name", ""),
+                        "description": d.get("function", {}).get("description", "")}
+                       for d in _defs if d.get("function", {}).get("name")]
+        except Exception:  # noqa: BLE001
+            catalog = []
+        model = cfg.get('model')
+
+        async def _collect(prompt, system_prompt, max_tokens):
+            kwargs = {"system_prompt": system_prompt, "temperature": 0.0,
+                      "max_tokens": max_tokens, "stream": False}
+            if model:
+                kwargs["model"] = model
+            return await _collect_stream(llm_manager.generate_stream, prompt, **kwargs)
+
+        res = await asyncio.wait_for(
+            _intent.classify_intent_actions(_collect, catalog, user_prompt,
+                                            max_tokens=int(cfg.get('max_tokens', 800))),
+            timeout=float(cfg.get('timeout_seconds', 30)))
+        if not res.get('ok'):
+            logger.warning("🧭 INTENT(llm): classifier returned not-ok → legacy fallback")
+            return legacy_result
+        shape = _intent.to_verifier_shape(res, tools_called)
+        result = {"complete": shape["complete"], "missing_tools": shape["missing_tools"],
+                  "pattern": "llm_intent", "reason": "LLM intent classification (Phase 3c)"}
+        logger.info(f"🧭 INTENT(llm) AUTHORITATIVE: complete={result['complete']} "
+                    f"missing_tools={result['missing_tools']} "
+                    f"(legacy: complete={legacy_result.get('complete')} "
+                    f"missing={legacy_result.get('missing_tools')} pattern={legacy_result.get('pattern')})")
+        return result
+    except asyncio.TimeoutError:
+        logger.warning("🧭 INTENT(llm): timed out → legacy fallback")
+        return legacy_result
+    except Exception as e:  # noqa: BLE001 — never break the request; fall back to legacy
+        logger.warning(f"🧭 INTENT(llm): error ({e}) → legacy fallback")
+        return legacy_result
+
+
+def _append_shadow_divergence(cfg, user_prompt, legacy_result, shadow_shape, cmp, intent_res):
+    """Best-effort JSONL record of a disagreement for offline analysis. Never raises into the caller."""
+    path = cfg.get('divergence_log')
+    if not path:
+        return
+    try:
+        import json as _json
+        import os as _os
+        from datetime import datetime as _dt
+        rec = {
+            "ts": _dt.now().isoformat(timespec="seconds"),
+            "prompt": (user_prompt or "")[:500],
+            "legacy": {"complete": legacy_result.get("complete"),
+                       "missing_tools": legacy_result.get("missing_tools"),
+                       "pattern": legacy_result.get("pattern")},
+            "shadow": {"complete": shadow_shape.get("complete"),
+                       "missing_tools": shadow_shape.get("missing_tools"),
+                       "ok": intent_res.get("ok")},
+            "diff": {"only_legacy": cmp["only_legacy"], "only_shadow": cmp["only_shadow"]},
         }
-    }
-    
-    # 🚨 CRITICAL: Check for explicit exclusion patterns first
-    # If user is just asking for information/research, do NOT auto-execute
-    exclusion_patterns = [
-        "just tell me", "what are", "give me", "show me", "list", "find out",
-        "look up", "research", "analyze", "explain", "describe", "summarize",
-        "use the available tools to", "check", "investigate", "get information"
-    ]
-    
-    if any(exclusion in user_prompt_lower for exclusion in exclusion_patterns):
-        # 🎯 GENERALIZED POST-LLM TOOL DETECTION
-        # Check if user has post-generation keywords (already defined at top of function)
-        if not any(explicit_request in user_prompt_lower for explicit_request in all_post_generation_keywords):
-            logger.info(f"🚫 EXCLUSION: User is asking for information only, not file creation/email/publishing")
-            return {
-                "complete": True,  # Task is complete - they just want information
-                "reason": "Information request only - no post-generation actions needed",
-                "missing_tools": [],
-                "pattern": "information_request"
-            }
-    
-    # 🎯 CHECK ALL PATTERNS - Collect missing tools from ALL matching patterns
-    # This ensures we catch ALL requirements, not just the first match
-    all_missing_tools = []
-    all_matched_patterns = []
-    pattern_descriptions = []
-
-    for pattern_name, pattern in task_patterns.items():
-        if any(trigger in user_prompt_lower for trigger in pattern["triggers"]):
-            logger.info(f"🎯 PATTERN MATCH: '{pattern_name}' matched user prompt")
-            all_matched_patterns.append(pattern_name)
-
-            # 🎯 DYNAMIC TOOL DETECTION - For extensible publishing patterns
-            # CRITICAL: Make a COPY of the list to avoid modifying the original pattern dictionary
-            required_tools_to_check = pattern["required_tools"].copy()
-
-            # Check if this pattern uses dynamic tool mapping (e.g., content_publishing)
-            if "dynamic_tool_mapping" in pattern and not required_tools_to_check:
-                # Scan user prompt for platform-specific keywords and map to tools
-                dynamic_mapping = pattern["dynamic_tool_mapping"]
-                for keyword, tool_name in dynamic_mapping.items():
-                    if keyword in user_prompt_lower:
-                        required_tools_to_check.append(tool_name)
-                        logger.info(f"🎯 DYNAMIC DETECTION: Found '{keyword}' → requires {tool_name}")
-
-            # Check if all required tools were called
-            pattern_missing_tools = []
-            for required_tool in required_tools_to_check:
-                if required_tool not in tools_called:
-                    pattern_missing_tools.append(required_tool)
-                # 🔧 CRITICAL: Check if THIS SPECIFIC tool was deferred
-                elif f"Tool: {required_tool}" in tools_results:
-                    # Extract this tool's result section
-                    tool_section_start = tools_results.find(f"Tool: {required_tool}")
-                    next_tool_start = tools_results.find("Tool: ", tool_section_start + 1)
-                    if next_tool_start == -1:
-                        tool_result = tools_results[tool_section_start:]
-                    else:
-                        tool_result = tools_results[tool_section_start:next_tool_start]
-
-                    # Check if THIS tool's result contains "deferred"
-                    if "deferred" in tool_result.lower():
-                        logger.info(f"🔧 VERIFIER: {required_tool} was deferred - adding to missing_tools")
-                        pattern_missing_tools.append(required_tool)
-
-            # Add this pattern's missing tools to the aggregate list (with deduplication)
-            if pattern_missing_tools:
-                pattern_descriptions.append(pattern['description'])
-                for tool in pattern_missing_tools:
-                    if tool not in all_missing_tools:
-                        all_missing_tools.append(tool)
-                        logger.info(f"📋 COLLECTED MISSING TOOL: {tool} (from pattern '{pattern_name}')")
-
-            # For email tasks, verify file was created if attachment expected
-            if "secure_email_sender" in tools_called and "sandboxed_executor" in tools_called:
-                if "attachments" in tools_results and "file not found" in tools_results.lower():
-                    if "sandboxed_executor" not in all_missing_tools:
-                        all_missing_tools.append("sandboxed_executor")
-                        pattern_descriptions.append("File attachment creation")
-                        logger.info(f"📋 COLLECTED MISSING TOOL: sandboxed_executor (file attachment issue)")
-
-    # If we collected missing tools from any patterns, return them ALL
-    if all_missing_tools:
-        combined_reason = f"Missing required tools for: {', '.join(pattern_descriptions)}"
-        combined_patterns = " + ".join(all_matched_patterns)
-        logger.warning(f"🚨 VERIFIER FOUND MISSING TOOLS: {all_missing_tools}")
-        logger.warning(f"🚨 MATCHED PATTERNS: {combined_patterns}")
-        return {
-            "complete": False,
-            "reason": combined_reason,
-            "missing_tools": all_missing_tools,
-            "pattern": combined_patterns
-        }
-    
-    # HTML email processing removed - using original tool-calling approach
-    
-    # 🚨 BULLETPROOF EMAIL VALIDATION
-    # If user requested email but no email tool was called, task is INCOMPLETE
-    if has_email_request and "secure_email_sender" not in tools_called:
-        return {
-            "complete": False,
-            "reason": "Email requested but secure_email_sender tool was not called",
-            "missing_tools": ["secure_email_sender"],
-            "pattern": "email_required"
-        }
-    
-
-    # 🚨 ZERO TOOLS CALLED VALIDATION
-    # If no tools were called at all, check if any were actually needed
-    if not tools_called:
-        # If user requested email or file creation, tools were required
-        # Use stripped prompt to avoid false positives from embedded chat history
-        file_creation_keywords = ["create", "generate", "write", "make", "build", "save"]
-        needs_tools = has_email_request or any(keyword in prompt_for_keyword_check for keyword in file_creation_keywords)
-        
-        if needs_tools:
-            return {
-                "complete": False,  
-                "reason": "No tool calls generated but tools were required for this request",
-                "missing_tools": ["secure_email_sender"] if has_email_request else ["sandboxed_executor"],
-                "pattern": "no_tools_called"
-            }
-    
-    # If no patterns match or all requirements met
-    return {
-        "complete": True,
-        "reason": "All required tools executed successfully",
-        "missing_tools": [],
-        "pattern": None
-    }
+        _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write(_json.dumps(rec) + "\n")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🕵️ SHADOW CLASSIFIER divergence-log write failed: {e}")
 
 def _extract_report_content_from_results(tools_results: str) -> str:
     """Extract the comprehensive stock analysis content from tools_results"""
@@ -6174,77 +6192,144 @@ def _extract_subject_from_prompt(user_prompt: str) -> str:
     return None
 
 
+async def _llm_document_title(content: str, user_prompt: str, llm_manager) -> str:
+    """Title for a delivery document — content-FIRST (the content's own first markdown heading, no model
+    call); if the content has NO heading, ASK THE LLM (the model that wrote the content) for a concise
+    title. No keyword/topic lookup and no prompt regex (LLM-Policy Gate). Returns 'Document' only if the
+    model call fails. Used by the POST-LLM executor so filename + email subject reflect the real topic."""
+    import re as _re
+    for _line in (content or "").splitlines():
+        _m = _re.match(r'^#{1,4}\s+(.+\S)', _line.strip())
+        if _m:
+            return _m.group(1).strip().strip("#").strip()[:120]
+    try:
+        from research.engine import _collect_stream
+        _sys = ("Produce a SHORT document title (3-8 words, Title Case, no surrounding quotes, no trailing "
+                "punctuation) that names the document below. Output ONLY the title text, nothing else.")
+        _usr = (f"DOCUMENT CONTENT (excerpt):\n{(content or '')[:2000]}\n\n"
+                f"(the user asked: {(user_prompt or '')[:300]})\n\nTitle:")
+        _raw = await _collect_stream(llm_manager.generate_stream, _usr, system_prompt=_sys,
+                                     temperature=0.0, max_tokens=24, stream=False)
+        _lines = (_raw or "").strip().splitlines()
+        _t = _lines[0].strip().strip('"').strip("#").strip()[:120] if _lines else ""
+        if _t:
+            return _t
+    except Exception as _e:  # noqa: BLE001 — a title is cosmetic; never break delivery over it
+        logger.warning(f"📄 LLM title generation failed ({_e}); using generic title")
+    return "Document"
+
+
+async def _llm_requested_formats(user_prompt: str, llm_manager, default: str = "html") -> list:
+    """Which document format(s) the user asked to RECEIVE (subset of pdf/html/md/txt) — decided by the
+    LLM, NOT brittle substring matching. (The old `resolve_delivery_formats` matched 'text' inside
+    'context' and 'md' inside unrelated words of the embedded 'above' content, producing spurious .md/.txt
+    files.) Considers ONLY the user's delivery directive, not quoted/forwarded content. Defaults to
+    [default]. LLM-Policy-Gate compliant."""
+    _valid = ("pdf", "html", "md", "txt")
+    try:
+        from research.engine import _collect_stream
+        import json as _json, re as _re
+        _sys = ("From the user's request, return ONLY the document file format(s) they explicitly ask to "
+                "RECEIVE, as a STRICT JSON array drawn from [\"pdf\",\"html\",\"md\",\"txt\"] — include EVERY "
+                "one they name (e.g. both for 'a PDF and an HTML file'). Consider ONLY their delivery "
+                "request; IGNORE any quoted or 'above' content they are forwarding. If they name no format, "
+                f"return [\"{default}\"]. Output ONLY the JSON array, nothing else.")
+        _up = user_prompt or ""
+        # The user's directive (e.g. "in PDF and HTML") is typically at the END of a NewX/OpenWebUI
+        # envelope — after the system preamble and the embedded 'above' content — so feed head+tail to
+        # GUARANTEE the ask is in the window (truncating to the head alone misses it → false single format).
+        _win = _up if len(_up) <= 4000 else (_up[:600] + "\n…\n" + _up[-3400:])
+        _raw = await _collect_stream(llm_manager.generate_stream, _win,
+                                     system_prompt=_sys, temperature=0.0, max_tokens=24, stream=False)
+        _m = _re.search(r'\[[^\]]*\]', _raw or "")
+        if _m:
+            _arr = _json.loads(_m.group(0))
+            _fmts = [f for f in _arr if isinstance(f, str) and f.lower() in _valid]
+            if _fmts:
+                _out = list(dict.fromkeys(f.lower() for f in _fmts))
+                logger.info(f"📄 requested delivery formats (LLM): {_out}")
+                return _out
+    except Exception as _e:  # noqa: BLE001 — never break delivery over format detection
+        logger.warning(f"📄 LLM format detection failed ({_e}); defaulting to [{default}]")
+    return [default]
+
+
+def _unwrap_delivery_content(text: str) -> str:
+    """If the model wrapped the deliverable in a markdown code fence (```html / ``` … ```) — usually with a
+    conversational preamble like 'Here is the HTML document:' — return the FENCED content ALONE, so the
+    saved file is the real document and not its source rendered as a code block. No-op when there is no
+    dominant fence (the fence must be the bulk of the response)."""
+    import re as _re
+    if not text:
+        return text
+    _m = _re.search(r'```[a-zA-Z0-9]*[ \t]*\r?\n(.*?)\r?\n```', text, _re.DOTALL)
+    if _m:
+        _inner = _m.group(1).strip()
+        if _inner and len(_inner) >= 0.5 * len(text.strip()):
+            return _inner
+    return text
+
+
+def _normalize_delivery_markdown(text: str) -> str:
+    """Tidy a delivery document's markdown so the renderer doesn't print non-headings AS headings:
+      (1) drop a trailing social-hashtags line ("#Tag #Tag …" — a NewX artifact the renderer promotes to
+          an <h1>);
+      (2) demote a '#'-prefixed line that is really a BODY SENTENCE (ends with sentence punctuation, or is
+          very long) back to a normal paragraph — this is the model mis-formatting a lead/body as a heading,
+          which made body text render in the large heading font.
+    Real, short headings (no trailing period) are left untouched."""
+    import re as _re
+    if not text:
+        return text
+    out = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        # (1) a line of two-or-more social hashtags → drop entirely
+        if _re.match(r'^#[A-Za-z0-9_]+(\s+#[A-Za-z0-9_]+)+$', s):
+            continue
+        # (2) heading line whose text is really a BODY SENTENCE → demote to a plain paragraph. Strip a
+        # trailing markdown citation/link first (it hides the sentence-ending period, e.g.
+        # "… since 2021. [Source](url)"), then treat as a sentence if it ends with sentence punctuation,
+        # contains a mid-text ". Capital" (multiple sentences), or is long.
+        _m = _re.match(r'^(#{1,6})\s+(.*\S)$', s)
+        if _m:
+            _htext = _m.group(2).strip()
+            _core = _re.sub(r'\s*\[[^\]]+\]\([^)]+\)\s*$', '', _htext).strip()
+            if (_core.endswith(('.', '!', '?')) or len(_core) > 80
+                    or _re.search(r'\.\s+["\'A-Z0-9]', _core)):
+                out.append(_htext)   # keep the original text (with any citation) as a paragraph
+                continue
+        out.append(ln)
+    return "\n".join(out)
+
+
+def _derive_document_title(content: str, user_prompt: str) -> str:
+    """Document title for a delivery file — the SAME logic Deep Research uses (`_run_dr_delivery`): the
+    content's first markdown heading, else a subject extracted from the prompt, else 'Document'. Drives
+    the filename slug so the file name reflects the actual topic instead of a generic 'document'. No
+    keyword/topic classification (LLM-Policy Gate): the title comes from the content the LLM produced."""
+    import re as _re
+    for _line in (content or "").splitlines():
+        _m = _re.match(r'^#{1,4}\s+(.+\S)', _line.strip())
+        if _m:
+            return _m.group(1).strip().strip("#").strip()[:120]
+    return (_extract_subject_from_prompt(user_prompt) or "Document").strip()[:120]
+
+
 def _generate_dynamic_filename(user_prompt: str, tools_results: str, timestamp: str, file_extension: str = "html") -> str:
     """Generate dynamic filename based on content type and topic"""
     try:
-        user_prompt_lower = user_prompt.lower()
-        tools_results_lower = tools_results.lower()
-
-        # 🔧 FIX: Check for explicit subject in user prompt first
-        # If user specifies a subject for email, use it for filename too
-        subject = _extract_subject_from_prompt(user_prompt)
-        if subject:
-            # Convert subject to safe filename format
-            import re
-            safe_filename = re.sub(r'[^a-zA-Z0-9_\s-]', '', subject)  # Remove special chars
-            safe_filename = re.sub(r'\s+', '_', safe_filename)  # Replace spaces with underscores
-            safe_filename = safe_filename.lower()[:50]  # Limit length and lowercase
-            logger.info(f"📄 FILENAME FROM SUBJECT: {safe_filename}_{timestamp}.{file_extension}")
-            return f"{safe_filename}_{timestamp}.{file_extension}"
-
-        # Check for news content
-        if "Tool: get_news_summaries" in tools_results:
-            # Extract topic from user prompt
-            news_keywords = {
-                "middle east": "middle_east_news",
-                "technology": "technology_news",
-                "tech": "technology_news",
-                "sports": "sports_news",
-                "politics": "political_news",
-                "political": "political_news",
-                "business": "business_news",
-                "health": "health_news",
-                "science": "science_news",
-                "entertainment": "entertainment_news",
-                "world": "world_news",
-                "international": "international_news",
-                "economy": "economic_news",
-                "economic": "economic_news",
-                "climate": "climate_news",
-                "environment": "environmental_news",
-                "african": "african_news",
-                "africa": "african_news",
-                "asian": "asian_news",
-                "asia": "asia_news",
-                "european": "european_news",
-                "europe": "europe_news"
-            }
-
-            # Find the most specific topic match
-            for topic, filename_prefix in news_keywords.items():
-                if topic in user_prompt_lower or topic in tools_results_lower:
-                    return f"{filename_prefix}_analysis_{timestamp}.{file_extension}"
-
-            # Default news filename if no specific topic found
-            return f"news_analysis_{timestamp}.{file_extension}"
-
-        # Check for financial/stock content
-        elif ("Tool: stock_analyzer" in tools_results or
-              any(keyword in user_prompt_lower for keyword in ["stock", "financial", "market", "trading", "investment"])):
-            return f"financial_analysis_{timestamp}.{file_extension}"
-
-        # Check for other specific content types
-        elif any(keyword in user_prompt_lower for keyword in ["calendar", "appointment", "schedule"]):
-            return f"calendar_report_{timestamp}.{file_extension}"
-        # 🔧 FIX: Don't use generic "email_report" - this was causing the issue!
-        # Removed the "email" keyword check since it's too broad
-        else:
-            # General analysis report
-            return f"analysis_report_{timestamp}.{file_extension}"
-
+        # Name from the CONTENT — never hardcoded topic keywords (LLM-Policy Gate: no keyword
+        # classification). Prefer an explicit subject in the request; else derive a title from the
+        # content. Slugify; generic fallback if neither yields anything.
+        import re
+        title = _extract_subject_from_prompt(user_prompt) or "document"
+        slug = re.sub(r'[^a-z0-9]+', '_', title.lower()).strip('_')[:60] or "document"
+        logger.info(f"📄 content-derived filename: {slug}_{timestamp}.{file_extension} (from '{title}')")
+        return f"{slug}_{timestamp}.{file_extension}"
     except Exception as e:
         logger.error(f"❌ Error generating dynamic filename: {e}")
-        return f"analysis_report_{timestamp}.{file_extension}"
+        return f"document_{timestamp}.{file_extension}"
 
 def _extract_news_content_from_results(tools_results: str) -> str:
     """Extract news content from get_news_summaries tool results"""
@@ -6408,7 +6493,7 @@ Comprehensive stock analysis completed successfully.
                         break
                 
                 if email_tool_instance:
-                    attachment_path = os.path.join(os.getcwd(), "sandbox_workspace", filename)
+                    attachment_path = os.path.join(_delivery_sandbox_dir(), filename)
                     logger.info(f"📧 Auto-sending email with attachment: {attachment_path}")
                     
                     if "get_news_summaries" in tools_results:
@@ -6468,14 +6553,14 @@ Comprehensive stock analysis completed successfully.
                             "to_email": recipient_email,
                             "subject": email_subject,
                             "body": f"Please find attached the latest {email_subject.lower()} with critical updates and detailed analysis.",
-                            "attachments": os.path.join(os.getcwd(), "sandbox_workspace", filename)
+                            "attachments": os.path.join(_delivery_sandbox_dir(), filename)
                         })
                     else:
                         result = await email_tool({
                             "to_email": recipient_email, 
                             "subject": "Stock Analysis Report",
                             "body": "Please find attached the comprehensive stock analysis report with detailed financial insights.",
-                            "attachments": os.path.join(os.getcwd(), "sandbox_workspace", filename)
+                            "attachments": os.path.join(_delivery_sandbox_dir(), filename)
                         })
                 
                 additional_results += f"Tool: {tool_name} (auto-executed)\nResult: {result}\n\n"
@@ -7017,17 +7102,19 @@ async def _generate_complete_html_email(complete_llm_response: str, html_email_r
             header_subtitle=f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             include_disclaimer=False,  # Skip disclaimer for email reports
             custom_timestamp=None,
-            custom_css=custom_css_content  # Pass CSS separately
+            custom_css=custom_css_content,  # Pass CSS separately
+            force_template=True  # standardize layout: same shared template as Deep Research / route-1
         )
         
         # Save HTML file to sandbox workspace
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
         # Generate filename from subject
         import re
-        safe_subject = re.sub(r'[^a-zA-Z0-9_]', '_', subject).lower()
+        safe_subject = _safe_slug(subject, fallback="report")
         html_filename = f"{safe_subject}_{timestamp}.html"
-        base_dir = os.path.join(os.getcwd(), "sandbox_workspace")
+        base_dir = _delivery_sandbox_dir()
         full_path = os.path.join(base_dir, html_filename)
+        os.makedirs(base_dir, exist_ok=True)  # ensure the real sandbox dir exists before writing
         
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -7230,7 +7317,7 @@ def _sweep_old_delivery_files(retention_hours: float) -> int:
     import time as _time
     removed = 0
     try:
-        base = os.path.join(os.getcwd(), "sandbox_workspace")
+        base = _delivery_sandbox_dir()
         if not os.path.isdir(base):
             return 0
         cutoff = _time.time() - max(0.0, float(retention_hours)) * 3600.0
@@ -7280,16 +7367,190 @@ def _dr_delivery_permitted(data: dict) -> bool:
          (e.g. OpenWebUI). Safe because /v1 is internal-only, firewalled at the deployment boundary.
       3. Otherwise (an allowed_tools whitelist is present, even empty, and no explicit flag) → deny.
     NewX bots always send an allowed_tools whitelist, so they are NEVER auto-trusted — they require
-    the explicit flag, keeping them locked unless the acting user is privileged."""
-    explicit = data.get("allow_delivery", None)
-    if explicit is not None:
-        return bool(explicit)
-    return data.get("allowed_tools", None) is None
+    the explicit flag, keeping them locked unless the acting user is privileged.
+
+    Phase 1 convergence: delegates to the single shared policy (orchestration/policy.py) so the
+    deep-research and legacy POST-LLM paths cannot drift apart."""
+    return delivery_policy.authorize_delivery(data).permitted
+
+
+# Phase 3 (dynamic dispatch) — the arg-binder may mark any tool field that should carry the FULL
+# research paper with this exact placeholder, so the LLM never has to retype the (large) paper into a
+# JSON argument; RAICA substitutes it with the real text before dispatch.
+_DR_RESEARCH_PLACEHOLDER = "{{RESEARCH_OUTPUT}}"
+
+
+def _dr_inject_research_output(value, research_output):
+    """Recursively replace the {{RESEARCH_OUTPUT}} placeholder with the full paper text anywhere it
+    appears in the arg-binder's arguments. Generalized: no field-name special-casing — the LLM marks
+    WHICH field carries the content; RAICA just substitutes the marker."""
+    if isinstance(value, str):
+        return value.replace(_DR_RESEARCH_PLACEHOLDER, research_output) if _DR_RESEARCH_PLACEHOLDER in value else value
+    if isinstance(value, list):
+        return [_dr_inject_research_output(v, research_output) for v in value]
+    if isinstance(value, dict):
+        return {k: _dr_inject_research_output(v, research_output) for k, v in value.items()}
+    return value
+
+
+def _dr_dispatch_failed(result_str: str) -> bool:
+    """Detect a tool failure from RAICA's OWN structured result markers (NOT NLP on tool content):
+    the user-tool wrapper returns leading '❌' or \"Tool '<n>' error:\"; safe_function_call returns
+    'Error calling <n>:' / 'Function <n> not available'. Matching our own protocol, not interpreting
+    tool semantics, so this is not the forbidden keyword-routing anti-pattern."""
+    s = (result_str or "").lstrip()
+    return (s.startswith("❌") or s.startswith("Error calling ") or
+            (s.startswith("Function ") and " not available" in s[:80]) or
+            (s.startswith("Tool '") and "' error:" in s[:120]))
+
+
+async def _dr_bind_and_dispatch_action(action, tool_name, schema, tool_manager, generate_stream,
+                                       research_output, deliverable_spec, prior_results, engine_cfg):
+    """Phase 3 generic action dispatch: LLM arg-binder → blind dispatch. Returns (ok: bool, summary: str).
+
+    The binder is shown the tool's FULL parameter schema, the research output (shared context), the
+    user's requested action + args, and the results of prior actions (sequential, dependency-aware).
+    It returns {"arguments": {...}}; RAICA substitutes the {{RESEARCH_OUTPUT}} placeholder and runs
+    the tool via safe_function_call. NO hardcoded per-tool logic (Generalization Test): a newly
+    registered tool is dispatchable here with zero code changes."""
+    from research.engine import _collect_stream, extract_json_object
+    deliv_cfg = (engine_cfg.get("delivery", {}) or {})
+
+    def _cfg_int(key, default):
+        try:
+            return int(deliv_cfg.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    budget = _cfg_int("context_char_budget", 12000)
+    binder_max_tokens = _cfg_int("binder_max_tokens", 1500)
+    try:
+        action_timeout = float(deliv_cfg.get("action_timeout_seconds", 180))
+    except (TypeError, ValueError):
+        action_timeout = 180.0
+
+    ctx = (research_output or "")[:budget]
+    prior_text = "\n".join(f"- {p}" for p in prior_results) if prior_results else "(none)"
+    requested_args = action.get("args", {}) if isinstance(action, dict) else {}
+    system_prompt = (
+        f"You bind arguments for the tool \"{tool_name}\" and nothing else. You are given the tool's "
+        "JSON parameter SCHEMA, the RESEARCH OUTPUT to act on, the user's requested action with any "
+        "args, and the RESULTS of prior actions in this run. Produce STRICT JSON of the form "
+        "{\"arguments\": { ... }} containing ONLY parameters defined in the schema, with values that "
+        "make the tool accomplish the user's intent using the research output. Respect required "
+        "parameters. For any field that should contain the FULL research output verbatim, use the "
+        f"exact string \"{_DR_RESEARCH_PLACEHOLDER}\" as its value — do NOT retype the research text. "
+        "Respond with STRICT JSON only, no prose."
+    )
+    prompt = (
+        f"TOOL PARAMETER SCHEMA:\n{json.dumps(schema or {}, ensure_ascii=False)[:6000]}\n\n"
+        f"USER'S REQUESTED ACTION:\ntype={tool_name}, "
+        f"args={json.dumps(requested_args, ensure_ascii=False)[:2000]}\n\n"
+        f"DELIVERABLE SPEC:\n{json.dumps(deliverable_spec or {}, ensure_ascii=False)[:1000]}\n\n"
+        f"RESULTS OF PRIOR ACTIONS:\n{prior_text}\n\n"
+        f"RESEARCH OUTPUT (context — use the placeholder for any full-text field):\n{ctx}"
+    )
+    try:
+        raw = await _collect_stream(generate_stream, prompt, system_prompt=system_prompt,
+                                    temperature=0.0, max_tokens=binder_max_tokens, stream=False)
+        bound = extract_json_object(raw)
+        arguments = bound.get("arguments", {}) if isinstance(bound, dict) else {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        arguments = _dr_inject_research_output(arguments, research_output or "")
+    except Exception as e:  # noqa: BLE001 — binding failure must not abort the whole delivery
+        logger.error(f"📦 DR dynamic dispatch: arg-binding failed for '{tool_name}': {e}", exc_info=True)
+        return (False, f"{tool_name} — could not prepare arguments ({str(e)[:120]})")
+    try:
+        result = await asyncio.wait_for(
+            tool_manager.safe_function_call(tool_name, json.dumps(arguments)), timeout=action_timeout)
+        result_str = str(result)
+        logger.info(f"📦 DR dynamic dispatch ran '{tool_name}': {result_str[:300]}")
+        if _dr_dispatch_failed(result_str):
+            return (False, f"{tool_name} — {result_str.strip()[:160]}")
+        return (True, f"{tool_name} — {result_str.strip()[:200]}")
+    except asyncio.TimeoutError:
+        logger.error(f"📦 DR dynamic dispatch '{tool_name}' timed out after {action_timeout}s")
+        return (False, f"{tool_name} — timed out after {int(action_timeout)}s")
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"📦 DR dynamic dispatch '{tool_name}' error: {e}", exc_info=True)
+        return (False, f"{tool_name} — {str(e)[:160]}")
+
+
+async def _deliver_document(*, content: str, title: str, slug: str, formats: list, tool_manager,
+                            send_email: bool, recipients: list, recipient_locked: bool,
+                            locked_recipient, subject: str = "", body: str = "") -> dict:
+    """THE ONE robust delivery core, shared by Deep Research (_run_dr_delivery) AND the NewX/@Ask
+    POST-LLM path. Renders `content` into EVERY requested format (one file per format via the single
+    sandboxed_executor create_file renderer → html_generator standard template / convert_to_pdf), then —
+    when send_email — emails ALL files in ONE message to recipients[0] through the recipient-lock
+    chokepoint (_send_email_locked), with content-keyed idempotency. No keyword intent logic; multi-format;
+    valid PDFs; content-derived title. Returns {created_files, email_outcome, file_error}; email_outcome is
+    ("sent", to) | ("failed", reason) | ("doc_failed", None) | ("no_recipient", None) | None."""
+    from datetime import datetime as _dt
+    created_files, file_error = [], None
+    timestamp = _dt.now().strftime('%Y-%m-%d_%H-%M')
+    sandboxed = next((t for t in (getattr(tool_manager, "user_tools", []) or [])
+                      if getattr(t, "name", "") == "sandboxed_executor"), None)
+    if not sandboxed:
+        return {"created_files": [], "file_error": "file-creation tool unavailable",
+                "email_outcome": ("doc_failed", None) if send_email else None}
+    for ext in (formats or []):
+        _fname = f"{slug}_{timestamp}.{ext}"
+        try:
+            kwargs = {"action": "create_file", "filename": _fname, "content": content, "title": title}
+            if ext == "pdf":
+                kwargs["convert_to_pdf"] = True
+            res = await sandboxed.execute(**kwargs)
+            if isinstance(res, dict) and res.get("success"):
+                created_files.append(_fname)
+            else:
+                file_error = (res.get("error") if isinstance(res, dict) else str(res)) or "unknown error"
+                logger.error(f"📦 delivery: file creation failed ({ext}): {file_error}")
+        except Exception as e:  # noqa: BLE001
+            file_error = str(e)
+            logger.error(f"📦 delivery: file creation error ({ext}): {e}", exc_info=True)
+    if created_files:
+        logger.info(f"📦 delivery: created {len(created_files)} document(s): {created_files}")
+
+    email_outcome = None
+    if send_email:
+        if not created_files:
+            email_outcome = ("doc_failed", None)
+        elif not recipients:
+            email_outcome = ("no_recipient", None)
+        else:
+            to_email = recipients[0]
+            email_params = {"to_email": to_email, "subject": subject or title,
+                            "body": body or "Please find attached the requested document(s).",
+                            "attachments": ",".join(created_files)}
+            _ago = _postllm_email_recent_dup(email_params)
+            if _ago is not None:
+                logger.info(f"🚫 delivery: identical email to {to_email} sent {_ago:.1f}s ago — suppressing duplicate")
+                email_outcome = ("failed", "duplicate suppressed — an identical email was just sent")
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        _send_email_locked(tool_manager, email_params, recipient_locked, locked_recipient),
+                        timeout=120)
+                    logger.info(f"📦 delivery email result: {str(result)[:300]}")
+                    if isinstance(result, str) and result.lstrip().startswith("❌"):
+                        email_outcome = ("failed", result.lstrip()[:160])
+                    elif isinstance(result, dict) and not result.get("success", True):
+                        email_outcome = ("failed", str(result.get("error"))[:160])
+                    else:
+                        email_outcome = ("sent", to_email)
+                        _postllm_email_mark_sent(email_params)
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"📦 delivery email error: {e}", exc_info=True)
+                    email_outcome = ("failed", str(e)[:160])
+    return {"created_files": created_files, "email_outcome": email_outcome, "file_error": file_error}
 
 
 async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
                            user_prompt: str, tool_manager, engine_cfg: dict,
-                           locked_recipient: str = None, recipient_locked: bool = False):
+                           locked_recipient: str = None, recipient_locked: bool = False,
+                           tool_defs: list = None, audit_text: str = "", generate_stream=None):
     """Phase 2 delivery fan-out. Yields human-readable status lines (the caller wraps them as chunks).
     A-hybrid: create a document (PDF/file) from the research paper via sandboxed_executor, then email
     it via secure_email_sender. File lifecycle: KEEP on success (TTL-swept) and KEEP on failure
@@ -7306,11 +7567,14 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
     actions = actions or []
     file_action = next((a for a in actions if isinstance(a, dict) and a.get("type") in _DR_FILE_CAPS), None)
     email_action = next((a for a in actions if isinstance(a, dict) and a.get("type") in _DR_EMAIL_CAPS), None)
-    unwired = [a.get("type") for a in actions if isinstance(a, dict)
-               and a.get("type") not in _DR_FILE_CAPS and a.get("type") not in _DR_EMAIL_CAPS
-               and a.get("type") != "unsupported"]
     unsupported = [(a.get("args", {}) or {}).get("requested", a.get("type"))
                    for a in actions if isinstance(a, dict) and a.get("type") == "unsupported"]
+    # Phase 3 — open-vocabulary actions: everything the decomposer named that is NOT the file/email
+    # secure pipeline and not "unsupported". Each is dispatched generically below (LLM arg-binder →
+    # blind dispatch) if it resolves to a live tool; otherwise it's reported as not-yet-wired.
+    generic_actions = [a for a in actions if isinstance(a, dict)
+                       and a.get("type") not in _DR_FILE_CAPS and a.get("type") not in _DR_EMAIL_CAPS
+                       and a.get("type") != "unsupported"]
 
     try:
         retention = float((engine_cfg.get("delivery", {}) or {}).get("retention_hours", 72))
@@ -7343,71 +7607,79 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
         del _stripped[_title_idx]
         _pdf_body = "\n".join(_stripped).lstrip("\n")
 
+    # ── Phase 3: DYNAMIC DISPATCH of the open-vocabulary (non file/email) actions ─────────────────
+    # Sequential + dependency-aware: each action's arguments are bound by an LLM that sees the tool's
+    # schema + the research paper + the results of prior actions, then the tool is dispatched; its
+    # result feeds the next action's binder. The proven file+email secure pipeline below is UNCHANGED
+    # and runs after this pass. Disabled / no binder / no matching tool → reported as not-yet-wired
+    # (no regression vs. legacy). Cross-category artifact handoff (a generic tool's output file → the
+    # delivery email attachment / PDF embed) is intentionally out of scope here (see multimodal plan).
+    dispatch_notes = []          # footnote lines: successes (quiet) + failures (explicit, never silent)
+    prior_results = []           # running context fed to each subsequent binder (dependency-aware)
+    deliv_cfg = (engine_cfg.get("delivery", {}) or {})
+    dynamic_on = bool(deliv_cfg.get("dynamic_dispatch", True))
+    schema_map = {}
+    for _d in (tool_defs or []):
+        _fn = _d.get("function", {}) if isinstance(_d, dict) else {}
+        _n = _fn.get("name")
+        if _n:
+            schema_map[_n] = _fn.get("parameters", {}) or {}
+    unwired = []
+    for _act in generic_actions:
+        _t = _act.get("type")
+        _resolvable = bool(tool_manager and _t in getattr(tool_manager, "available_functions", {}))
+        if dynamic_on and generate_stream and _resolvable:
+            _ok, _summary = await _dr_bind_and_dispatch_action(
+                _act, _t, schema_map.get(_t, {}), tool_manager, generate_stream,
+                doc_body, deliverable_spec, prior_results, engine_cfg)
+            prior_results.append(_summary)
+            dispatch_notes.append(f"*📎 Delivery: ran {_summary}*" if _ok
+                                  else f"⚠️ **Delivery:** {_summary}")
+        else:
+            unwired.append(_t)   # dispatch off, no binder available, or no matching live tool
+
     # ── Do the delivery work SILENTLY (no streamed step-by-step); we report a single housekeeping
     # footnote at the end. The footnote is appended to the RESPONSE only — never to the document
     # (the PDF/HTML is rendered from the paper body above), per the "confirmation is housekeeping,
     # not content" rule. Failures are still surfaced clearly (no silent failures).
-    created_filename = None
+    created_files = []
     file_error = None
-    if file_action:
-        fmt = str((deliverable_spec or {}).get("format", "")).lower()
-        up_low = (user_prompt or "").lower()
-        ext = "pdf" if ("pdf" in fmt or "pdf" in up_low) else ("html" if ("html" in fmt or "html" in up_low) else "pdf")
-        timestamp = _dt.now().strftime('%Y-%m-%d_%H-%M')
-        _fname = f"{_slug}_{timestamp}.{ext}"
-        sandboxed = next((t for t in tool_manager.user_tools if t.name == "sandboxed_executor"), None)
-        if not sandboxed:
-            file_error = "file-creation tool unavailable"
-        else:
-            try:
-                kwargs = {"action": "create_file", "filename": _fname, "content": _pdf_body, "title": doc_title}
-                if ext == "pdf":
-                    kwargs["convert_to_pdf"] = True
-                res = await sandboxed.execute(**kwargs)
-                if isinstance(res, dict) and res.get("success"):
-                    created_filename = _fname
-                else:
-                    file_error = (res.get("error") if isinstance(res, dict) else str(res)) or "unknown error"
-                    logger.error(f"📦 DR delivery: file creation failed: {file_error}")
-            except Exception as e:  # noqa: BLE001
-                file_error = str(e)
-                logger.error(f"📦 DR delivery: file creation error: {e}", exc_info=True)
-
+    # A Deep Research deliverable is a long PAPER — when it is being EMAILED it must go as document
+    # attachment(s), never dumped into the email body. The decomposer is not always consistent about
+    # listing a separate file action (it sometimes returns only `secure_email_sender` even when the user
+    # asked for "an HTML file and a PDF file"), so we create the document(s) whenever there is a file
+    # action OR an email to send. The user may request MORE THAN ONE format; create one document per
+    # requested format and attach them ALL to the single email, each rendered by the SAME standard
+    # renderer (sandboxed_executor.create_file → html_generator template / convert_to_pdf).
     email_outcome = None  # None | ("sent", to) | ("failed", reason) | ("doc_failed", None) | ("no_recipient", None)
-    if email_action:
-        # Recipient policy (security). For a restricted client the recipient is server-authoritative
-        # (the requesting user's own account email); prompt recipients are NEVER honored.
-        if recipient_locked:
-            import re as _re3
-            _valid_lr = bool(locked_recipient) and _re3.fullmatch(
-                r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', (locked_recipient or '').strip())
-            recipients = [locked_recipient.strip()] if _valid_lr else []
+    if file_action or email_action:
+        # Unified delivery core (the SAME shared with the NewX/@Ask path): render EVERY requested format
+        # and email them as ONE message via _deliver_document (multi-format, valid PDFs, recipient-locked).
+        _dr_formats = delivery_policy.resolve_delivery_formats(
+            user_prompt, deliverable_format=str((deliverable_spec or {}).get("format", "")),
+            candidates=delivery_policy.DR_FORMAT_CANDIDATES, default=delivery_policy.DR_FORMAT_DEFAULT)
+        if email_action:
+            # Recipient policy (security): restricted client -> server-authoritative locked recipient
+            # (prompt recipients NEVER honored); auto-trusted -> resolve from the request.
+            if recipient_locked:
+                _lv, _ = delivery_policy.resolve_locked_recipient(recipient_locked, locked_recipient)
+                _dr_recipients = [_lv] if _lv else []
+            else:
+                _dr_recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
         else:
-            recipients = _resolve_email_recipients(email_action.get("args", {}) or {}, user_prompt)
-        if file_action and not created_filename:
-            email_outcome = ("doc_failed", None)  # never send an attachment-less email
-        elif not recipients:
-            email_outcome = ("no_recipient", None)
-        else:
-            to_email = recipients[0]
-            email_params = {
-                "to_email": to_email,
-                "subject": (deliverable_spec or {}).get("title") or doc_title,
-                "body": "Please find attached the requested document, produced by RAICA Deep Research.",
-            }
-            if created_filename:
-                email_params["attachments"] = created_filename
-            try:
-                result = await asyncio.wait_for(
-                    tool_manager.safe_function_call("secure_email_sender", email_params), timeout=120)
-                logger.info(f"📦 DR delivery email result: {str(result)[:300]}")
-                if isinstance(result, str) and result.lstrip().startswith("❌"):
-                    email_outcome = ("failed", result.lstrip()[:160])
-                else:
-                    email_outcome = ("sent", to_email)
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"📦 DR delivery email error: {e}", exc_info=True)
-                email_outcome = ("failed", str(e)[:160])
+            _dr_recipients = []
+        _dr_body = "Please find attached the requested document(s), produced by RAICA Deep Research."
+        if audit_text:
+            # Keep the Research Audit alongside the papers (it lives in the chat answer, not the document).
+            _dr_body += "\n\n" + audit_text.strip()
+        _dr_res = await _deliver_document(
+            content=_pdf_body, title=doc_title, slug=_slug, formats=_dr_formats, tool_manager=tool_manager,
+            send_email=bool(email_action), recipients=_dr_recipients,
+            recipient_locked=recipient_locked, locked_recipient=locked_recipient,
+            subject=(deliverable_spec or {}).get("title") or doc_title, body=_dr_body)
+        created_files = _dr_res.get("created_files") or []
+        email_outcome = _dr_res.get("email_outcome")
+        file_error = _dr_res.get("file_error")
 
     # ── Build the housekeeping footnote (success = quiet; failures = clear, never silent) ──────────
     notes = []
@@ -7423,12 +7695,14 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
                          "available — nothing was sent." if recipient_locked
                          else "⚠️ **Delivery:** no recipient address was found — email skipped.")
         elif _kind == "failed":
-            _kept = (f" Your document is saved at sandbox_workspace/{created_filename} — download it or retry."
-                     if created_filename else "")
+            _kept = (f" Your document(s) are saved at sandbox_workspace/ ({', '.join(created_files)}) — "
+                     f"download or retry." if created_files else "")
             notes.append(f"⚠️ **Delivery:** email failed ({_info}).{_kept}")
     elif file_action:  # file requested, no email
-        notes.append(f"*📎 Delivery: document saved as {created_filename}.*" if created_filename
+        notes.append(f"*📎 Delivery: saved {', '.join(created_files)}.*" if created_files
                      else f"⚠️ **Delivery:** the document could not be created ({file_error}).")
+    if dispatch_notes:
+        notes.extend(dispatch_notes)
     if unwired:
         notes.append(f"_Delivery: not wired yet — {', '.join(map(str, unwired))}._")
     if unsupported:
@@ -7437,7 +7711,120 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
         yield "\n\n---\n" + "\n".join(notes) + "\n"
 
 
-async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager, tools_results: str, complete_llm_response: str, user_prompt: str, llm_manager) -> str:
+def _delivery_sandbox_dir() -> str:
+    """THE single sandbox-workspace directory where delivery artifacts are written, attached, and
+    TTL-swept — resolved the SAME way SandboxedExecutorTool computes self.sandbox_path (config
+    user_tools.sandboxed_executor.base_directory or the user's home dir, joined with the configured
+    sandbox_workspace_name). Centralizing it here keeps the file-creation, attachment-lookup, and
+    sweep paths from drifting apart. Replaces the ad-hoc os.getcwd()/sandbox_workspace, which
+    resolved to a directory that does NOT exist (silently dropping email attachments / failing
+    writes). Config-driven (no hardcoded path); safe home-dir fallback matches the email tool and
+    _list_sandbox_files conventions."""
+    import os as _os
+    try:
+        _ut = (config_loader.load_config().get('user_tools', {}) or {}).get('sandboxed_executor', {}) or {}
+        _base = _ut.get('base_directory') or _os.path.expanduser("~")
+        _name = _ut.get('sandbox_workspace_name') or "sandbox_workspace"
+    except Exception:
+        _base, _name = _os.path.expanduser("~"), "sandbox_workspace"
+    return _os.path.join(_base, _name)
+
+
+# In-memory, content-keyed idempotency for POST-LLM email sends (single-process server). Replaces the
+# old global, content-blind /tmp/last_email_sent.txt 60s guard that silently dropped ANY 2nd email
+# within a minute (cross-request state bleed). Keyed on recipient+subject+attachments so DISTINCT
+# legitimate emails are never blocked; only an accidental IDENTICAL re-send within the window is
+# suppressed — and surfaced to the caller, not silently skipped.
+_postllm_recent_emails: dict = {}
+_POSTLLM_EMAIL_DEDUP_WINDOW_S = 45.0
+
+
+def _email_signature(email_params: dict) -> str:
+    import hashlib as _hl
+    _p = email_params or {}
+    to = str(_p.get("to_email", "")).strip().lower()
+    subj = str(_p.get("subject", "")).strip()
+    att = ",".join(sorted(str(_p.get("attachments", "") or "").split(",")))
+    return _hl.sha256(f"{to}|{subj}|{att}".encode("utf-8", "replace")).hexdigest()
+
+
+def _postllm_email_recent_dup(email_params: dict):
+    """Seconds since an IDENTICAL email was last sent if within the window, else None. Prunes expired."""
+    import time as _t
+    now = _t.monotonic()
+    for _k in [k for k, v in _postllm_recent_emails.items() if now - v > _POSTLLM_EMAIL_DEDUP_WINDOW_S]:
+        _postllm_recent_emails.pop(_k, None)
+    _last = _postllm_recent_emails.get(_email_signature(email_params))
+    return (now - _last) if (_last is not None) else None
+
+
+def _postllm_email_mark_sent(email_params: dict):
+    import time as _t
+    _postllm_recent_emails[_email_signature(email_params)] = _t.monotonic()
+
+
+def _safe_slug(text: str, fallback: str = "document", max_len: int = 60) -> str:
+    """Filename-safe slug from a title; falls back to a short content hash when the title is empty or
+    entirely non-ASCII (Arabic/Chinese/emoji) so distinct non-Latin titles don't all collapse to the
+    same filename and silently overwrite each other."""
+    import re as _re, hashlib as _hl
+    s = _re.sub(r'[^a-z0-9]+', '_', (text or "").lower()).strip('_')[:max_len]
+    if not s:
+        s = f"{fallback}_{_hl.sha1((text or '').encode('utf-8', 'replace')).hexdigest()[:10]}"
+    return s
+
+
+def _list_sandbox_files() -> set:
+    """Filenames currently in the user's sandbox_workspace — where sandboxed_executor.create_file writes
+    AND where the email tool resolves attachments. Used for Phase-2 auto-bind: files that appear DURING a
+    delivery request are the artifacts to attach. Best-effort; returns an empty set on any error."""
+    try:
+        d = os.path.join(os.path.expanduser("~"), "sandbox_workspace")
+        return set(os.listdir(d)) if os.path.isdir(d) else set()
+    except Exception:
+        return set()
+
+
+def _restrict_sandboxed_executor_def(tool_def: dict) -> dict:
+    """For a RESTRICTED client (untrusted input, e.g. a NewX bot) narrow the sandboxed_executor tool
+    schema shown to the LLM to the document-creation action ONLY — no shell/code execution — so an
+    injection-exposed bot is never offered a shell. Defense in depth alongside the execution-time
+    backstop in safe_function_call. Any non-sandboxed tool passes through unchanged."""
+    try:
+        if (tool_def.get("function", {}) or {}).get("name") != "sandboxed_executor":
+            return tool_def
+        import copy as _copy
+        d = _copy.deepcopy(tool_def)
+        props = d["function"]["parameters"]["properties"]
+        if "action" in props:
+            props["action"]["enum"] = ["create_file"]
+            props["action"]["description"] = (
+                "Action to perform: create_file (write a document file). Only file creation is "
+                "available for this client.")
+        return d
+    except Exception:
+        return tool_def
+
+
+async def _send_email_locked(tool_manager, email_params, recipient_locked: bool, locked_recipient):
+    """Send an email through the SINGLE chokepoint (AsyncToolManager.secure_email_sender), which now
+    enforces the recipient lock for EVERY send — the POST-LLM delivery paths AND direct LLM tool calls
+    alike — so the recipient-lock policy lives in exactly one place. This wrapper just publishes the
+    caller's explicit lock context (used by POST-LLM / email-interceptor / DR paths that compute the
+    delivery auth themselves) for the duration of the send, then restores the prior context.
+
+    Behavior is unchanged from the previous inline implementation: for a restricted client the recipient
+    is forced to the server-authoritative locked_recipient, prompt/LLM addresses are ignored, CC is
+    dropped, and an invalid/absent lock REFUSES the send (fail-closed); auto-trusted clients pass
+    through unchanged."""
+    token = _delivery_lock_ctx.set((bool(recipient_locked), locked_recipient))
+    try:
+        return await tool_manager.safe_function_call("secure_email_sender", email_params)
+    finally:
+        _delivery_lock_ctx.reset(token)
+
+
+async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager, tools_results: str, complete_llm_response: str, user_prompt: str, llm_manager, locked_recipient: str = None, recipient_locked: bool = False) -> str:
     logger.info("--- ENTERING _execute_missing_tools_post_llm ---")
     """
     🎯 POST-LLM AUTO-EXECUTOR for missing tools
@@ -7447,86 +7834,182 @@ async def _execute_missing_tools_post_llm(missing_tools: List[str], tool_manager
     1. Files contain the complete, refined LLM-generated content
     2. Emails are sent with properly formatted attachments
     3. No race conditions between content generation and file operations
+
+    Recipient policy (security): when recipient_locked is True (a RESTRICTED client that presents an
+    allowed_tools whitelist, e.g. a NewX bot acting for a delivery-privileged user), EVERY email is
+    sent ONLY to locked_recipient (the user's server-authoritative account email) — any prompt- or
+    LLM-derived address is ignored, and if no valid locked_recipient is available the send is REFUSED
+    (fail-closed). When recipient_locked is False (auto-trusted single-user client), recipients are
+    resolved as before. All four email send sites below route through _send_secure_email to enforce
+    this in ONE place (mirrors the deep-research delivery path).
     """
     # Import required modules for this function
     from datetime import datetime
     import traceback
 
+    async def _send_secure_email(email_params):
+        """Chokepoint for the POST-LLM executor send sites — delegates to the shared _send_email_locked
+        so the recipient-lock policy lives in exactly one place, and applies a content-keyed idempotency
+        guard (recipient+subject+attachments within a short window) so an accidental IDENTICAL re-send is
+        suppressed WITHOUT blocking distinct legitimate emails (replaces the old global, content-blind
+        /tmp/last_email_sent.txt guard that silently dropped any 2nd email within 60s)."""
+        _ago = _postllm_email_recent_dup(email_params)
+        if _ago is not None:
+            logger.info(f"🚫 POST-LLM EMAIL: identical email to {(email_params or {}).get('to_email')} "
+                        f"sent {_ago:.1f}s ago (≤{int(_POSTLLM_EMAIL_DEDUP_WINDOW_S)}s) — suppressing duplicate")
+            return {"success": False, "result": None,
+                    "error": "duplicate suppressed — an identical email was just sent moments ago"}
+        result = await _send_email_locked(tool_manager, email_params, recipient_locked, locked_recipient)
+        if isinstance(result, str) or (isinstance(result, dict) and result.get("success")):
+            _postllm_email_mark_sent(email_params)
+        return result
+
     additional_results = ""
     created_filename = None
+    _doc_title_for_subject = None   # LLM/heading-derived doc title, shared file branch → email subject
     
-    # Extract file format from user prompt or tool calling model (if enhanced)
-    user_prompt_lower = user_prompt.lower()
-    if "pdf" in user_prompt_lower:
-        file_extension = "pdf"
-    elif "html" in user_prompt_lower:
-        file_extension = "html"
-    elif "markdown" in user_prompt_lower or "md" in user_prompt_lower:
-        file_extension = "md"
-    elif "text" in user_prompt_lower or "txt" in user_prompt_lower:
-        file_extension = "txt"
-    else:
-        file_extension = "html"  # Default to HTML for reports (changed from PDF)
-    
+    # Extract file format from user prompt (shared resolver — orchestration/policy; behavior-identical
+    # to the previous inline pdf/html/md/txt/else-html chain).
+    file_extension = delivery_policy.resolve_delivery_format(
+        user_prompt, candidates=delivery_policy.POST_LLM_FORMAT_CANDIDATES,
+        default=delivery_policy.POST_LLM_FORMAT_DEFAULT)
+
+    # ── Route 1: execute the classifier's chosen actions GENERICALLY (CARDINAL RULE / LLM-Policy Gate) ─
+    # The intent classifier (LLM) decided WHICH tools this delivery needs; RAICA executes them. A tool
+    # with no special branch below (e.g. pdf_generator, or any future file/document tool) is dispatched
+    # generically in the loop's `else`, and any file it writes to the workspace is captured and attached.
+    # secure_email_sender keeps special handling ONLY for recipient-locking (a safety limit) and runs
+    # LAST, so artifacts exist before it attaches them.
+    missing_tools = [t for t in missing_tools if t != "secure_email_sender"] + \
+                    (["secure_email_sender"] if "secure_email_sender" in missing_tools else [])
+    _post_llm_extra_files = []   # files produced by generically-dispatched tools → attached to the email
+    _sandbox_dir = None
+    for _t in (getattr(tool_manager, "user_tools", []) or []):
+        if getattr(_t, "name", "") == "sandboxed_executor":
+            _sandbox_dir = str(getattr(_t, "sandbox_path", "") or "") or None
+            break
+
+    def _artifact_snapshot():
+        """Set of files (abs paths) where delivery tools may write — the sandbox workspace and the CWD
+        (different tools write to different places). Diffing this before/after a dispatch yields the
+        file a tool just produced, with no tool-specific result parsing."""
+        import os as _os_g
+        seen = set()
+        for _d in filter(None, [_sandbox_dir, _os_g.getcwd()]):
+            try:
+                for _f in _os_g.listdir(_d):
+                    _p = _os_g.path.join(_d, _f)
+                    if _os_g.path.isfile(_p):
+                        seen.add(_p)
+            except OSError:
+                pass
+        return seen
+
+    # ── UNIFIED DELIVERY (convergence Phase 4): if the classifier selected file-creation and/or email,
+    # render the answer into EVERY requested format and email them as ONE message through the SAME robust
+    # core Deep Research uses (_deliver_document) — multi-format, valid PDFs, content-derived title,
+    # recipient-locked. This REPLACES the fragile single-format / keyword POST-LLM branches below (which
+    # delivered only ONE format, mis-titled the file, and intermittently corrupted the PDF). Non-delivery
+    # tools the classifier picked are still dispatched generically in the per-tool loop that follows.
+    _FILE_TOOLS = {"sandboxed_executor", "pdf_generator"}
+    _needs_file = any(t in _FILE_TOOLS for t in missing_tools)
+    # Email is intended if the classifier flagged it missing OR it already appears in RAICA's executed-
+    # tools record: an earlier (pre-LLM) email attempt NECESSARILY had no attachments (the document is
+    # created here, post-LLM), so the unified delivery sends the REAL files now. (Matches RAICA's own
+    # tool-execution record — a tool NAME — not user-text keywords; LLM-Policy-Gate compliant.)
+    _needs_email = ("secure_email_sender" in missing_tools) or ("secure_email_sender" in (tools_results or ""))
+    if _needs_file or _needs_email:
+        # Unwrap a model-fenced/preambled deliverable (e.g. "Here is the HTML document: ```html …```")
+        # so the file is the real document, not its source shown as a code block.
+        _raw = _unwrap_delivery_content(_fill_template_placeholders(
+            _clean_llm_response_content((complete_llm_response or "").strip()), user_prompt, tools_results))
+        # Take the TITLE from the content's first markdown heading and REMOVE that heading + anything before
+        # it (the model's conversational preamble, e.g. "Here is your briefing:"). The renderer adds the
+        # title as the document header, so leaving the heading/preamble in the body printed the title 2-3×
+        # with the intro. (Mirrors the Deep Research path's _pdf_body title-strip.)
+        import re as _re_title
+        _lines = _raw.splitlines()
+        _hidx = next((i for i, l in enumerate(_lines[:10]) if _re_title.match(r'^#{1,4}\s+\S', l.strip())), -1)
+        if _hidx >= 0:
+            _title = _re_title.match(r'^#{1,4}\s+(.+\S)', _lines[_hidx].strip()).group(1).strip().strip("#").strip()[:120]
+            _content = "\n".join(_lines[_hidx + 1:]).lstrip("\n")
+        else:
+            _title = await _llm_document_title(_raw, user_prompt, llm_manager)
+            _content = _raw
+        # Tidy the body: drop trailing social hashtags + demote sentence-like 'headings' (so body text
+        # isn't rendered in the large heading font, and #hashtags aren't promoted to an <h1>).
+        _content = _normalize_delivery_markdown(_content)
+        # Requested format(s) decided by the LLM (NOT substring matching, which falsely produced .md/.txt
+        # from 'context'/embedded 'above' content).
+        _formats = await _llm_requested_formats(user_prompt, llm_manager,
+                                                default=delivery_policy.POST_LLM_FORMAT_DEFAULT)
+        if _needs_email and recipient_locked:
+            _lv, _ = delivery_policy.resolve_locked_recipient(recipient_locked, locked_recipient)
+            _recips = [_lv] if _lv else []
+        elif _needs_email:
+            import re as _re_em
+            _recips = _re_em.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', user_prompt or "")
+        else:
+            _recips = []
+        _res = await _deliver_document(
+            content=_content, title=_title, slug=_safe_slug(_title, fallback="document"),
+            formats=_formats, tool_manager=tool_manager, send_email=_needs_email, recipients=_recips,
+            recipient_locked=recipient_locked, locked_recipient=locked_recipient, subject=_title,
+            body="Please find attached the requested document(s).")
+        _cf = _res.get("created_files") or []
+        _eo = _res.get("email_outcome")
+        if _cf:
+            additional_results += (f"Tool: document delivery (post-LLM)\nResult: created {len(_cf)} "
+                                   f"file(s): {', '.join(_cf)}\n\n")
+        if _eo:
+            _k, _i = _eo
+            additional_results += ("Tool: secure_email_sender (post-LLM)\nResult: "
+                                   + (f"✅ emailed to {_i} with {len(_cf)} attachment(s)\n\n" if _k == "sent"
+                                      else f"⚠️ delivery {_k}: {_i}\n\n"))
+        # handled by the unified delivery above → do NOT re-run them in the per-tool loop below
+        missing_tools = [t for t in missing_tools if t not in _FILE_TOOLS and t != "secure_email_sender"]
+
     for tool_name in missing_tools:
         function_args_dict = {} # Initialize function_args_dict for each tool
         try:
             logger.info(f"🔄 POST-LLM Auto-executing: {tool_name}")
-            
-            if tool_name == "sandboxed_executor":
-                # 🔧 CRITICAL FIX: Check if files already exist from tool calling stage
+
+            # STANDARDIZED file creation: whether the classifier named `sandboxed_executor` or
+            # `pdf_generator` (it does either, for the same "save/email a document" intent), the document
+            # is produced HERE through the one shared renderer (sandboxed_executor.create_file →
+            # html_generator standard template; convert_to_pdf when the resolved format is PDF). This is
+            # what makes HTML and PDF look identical (the Deep Research template) and fixes the
+            # "classifier picked pdf_generator → no executor branch → body email" failure.
+            if tool_name in ("sandboxed_executor", "pdf_generator"):
                 timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
-                
-                # Generate dynamic filename based on content type and topic
-                created_filename = _generate_dynamic_filename(user_prompt, tools_results, timestamp, file_extension)
-                logger.info(f"🎯 POST-LLM: Creating DYNAMIC REPORT -> {created_filename}")
-                
-                # 🔧 POST-LLM: Always overwrite file with fresh primary LLM response
-                # The primary LLM just generated new, formatted content - we should use it!
-                import os
-                base_dir = os.path.join(os.getcwd(), "sandbox_workspace")
-                full_file_path = os.path.join(base_dir, created_filename)
 
-                if os.path.exists(full_file_path):
-                    logger.info(f"🔄 POST-LLM: File {created_filename} exists - will overwrite with fresh primary LLM response")
-                else:
-                    logger.info(f"📝 POST-LLM: Creating new file {created_filename} with primary LLM response")
-                
-                # Use complete LLM response as content (this is the key fix!)
+                # Use the synthesized answer as the document content (the fix that makes the file contain
+                # the actual answer, not a placeholder).
                 raw_content = complete_llm_response.strip()
-
-                # 🧹 CLEAN CONTENT: Remove raw LLM tokens and parameters
                 report_content = _clean_llm_response_content(raw_content)
-
-                # 🔧 FIX: Replace template placeholders with actual data from user prompt and tools results
                 report_content = _fill_template_placeholders(report_content, user_prompt, tools_results)
 
-                # ✅ NOTE: HTML handling is now delegated to html_generator.py
-                # html_generator.generate_html_report() will detect if content is already HTML
-                # and return it as-is, or convert markdown/plain text to HTML as needed
-                
-                # Add proper headers if content doesn't have them
-                if not report_content.startswith("#") and not report_content.startswith("<"):
-                    if "get_news_summaries" in tools_results:
-                        report_title = _generate_dynamic_title(user_prompt, tools_results)
-                        report_content = f"""# {report_title}
-Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                # 🎯 STANDARDIZED ON THE DEEP RESEARCH APPROACH: derive the document title from the
+                # content's own first heading (fallback to a prompt subject), name the file from it so it
+                # reflects the topic (not a generic 'document'), and pass the title to the renderer. No
+                # generic '# Analysis Report / generated by the AI ... System' boilerplate.
+                doc_title = await _llm_document_title(report_content, user_prompt, llm_manager)
+                _doc_title_for_subject = doc_title  # reuse the SAME title for the email subject
+                if not report_content.lstrip().startswith("#") and not report_content.lstrip().startswith("<"):
+                    # Guarantee a visible title heading (clean — no boilerplate footer) when the content
+                    # has none, so the rendered document isn't untitled.
+                    report_content = f"# {doc_title}\n\n{report_content}"
 
-{report_content}
+                import os, re as _re_fname
+                _slug = _safe_slug(doc_title, fallback="document")
+                created_filename = f"{_slug}_{timestamp}.{file_extension}"
+                logger.info(f"🎯 POST-LLM: Creating DYNAMIC REPORT -> {created_filename} (title='{doc_title}')")
 
----
-*This report was generated by the AI News Analysis System using the latest available information.*
-"""
-                    else:
-                        report_content = f"""# Analysis Report
-Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                base_dir = _delivery_sandbox_dir()
+                full_file_path = os.path.join(base_dir, created_filename)
+                if os.path.exists(full_file_path):
+                    logger.info(f"🔄 POST-LLM: File {created_filename} exists - will overwrite with fresh primary LLM response")
 
-{report_content}
-
----
-*This report was generated by the AI Analysis System.*
-"""
-                
                 logger.info(f"🎯 POST-LLM: Using COMPLETE LLM response ({len(report_content)} chars)")
                 
                 # Find and execute sandboxed tool with complete content
@@ -7543,6 +8026,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                             action="create_file",
                             filename=created_filename,
                             content=report_content,
+                            title=doc_title,  # standardized: title drives the rendered document (like DR)
                             convert_to_pdf=True  # Explicitly force PDF conversion
                         )
                         logger.info(f"🎯 POST-LLM: FORCED PDF conversion for {created_filename}")
@@ -7550,7 +8034,8 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         result = await sandboxed_tool_instance.execute(
                             action="create_file",
                             filename=created_filename,
-                            content=report_content
+                            content=report_content,
+                            title=doc_title  # standardized: title drives the rendered document (like DR)
                         )
                     logger.info(f"🎯 POST-LLM: File creation RESULT: {result}")
                     
@@ -7564,7 +8049,12 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
             elif tool_name == "secure_email_sender":
                 # Detect HTML email request and execute email sending
-                html_email_request = await _detect_html_email_request(tools_results, user_prompt)
+                # Legacy HTML-email keyword-detour DISABLED (deep-review fix): it built a wrong-titled
+                # DUPLICATE file and passed to_email=None (→ crash + false "success"). The unified regular
+                # processing below already creates the correctly-titled file (route-1 / sandboxed_executor)
+                # AND resolves the locked recipient at the app layer, so secure_email_sender always takes
+                # that ONE consistent, recipient-lock-aware path.
+                html_email_request = None  # was: await _detect_html_email_request(tools_results, user_prompt)
 
                 if html_email_request:
                     logger.info(f"🎯 POST-LLM HTML EMAIL: Using fallback detection")
@@ -7596,7 +8086,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                                 "body": f"Please find attached HTML document.",
                                 "attachments": html_filename
                             }
-                            result = await tool_manager.safe_function_call("secure_email_sender", email_params)
+                            result = await _send_secure_email(email_params)
                             
                             logger.info(f"✅ POST-LLM HTML EMAIL: Completed successfully")
                             
@@ -7611,7 +8101,10 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         continue  # Skip regular email processing
                 
                 # 📄 CONVERSATION PDF EMAIL PROCESSING
-                conversation_pdf_request = _detect_conversation_pdf_request(function_args_dict, user_prompt)
+                # Legacy conversation-PDF keyword-detour DISABLED (Phase 4 convergence): the unified
+                # regular processing below already attaches the created artifact and resolves the locked
+                # recipient — no keyword routing. [was: _detect_conversation_pdf_request(...)]
+                conversation_pdf_request = {}
                 if conversation_pdf_request.get('detected'):
                     logger.info(f"📄 POST-LLM CONVERSATION PDF: Processing conversation export request")
                     
@@ -7665,7 +8158,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                                     "body": f"Please find attached the conversation export in PDF format.\n\nThis document contains {pdf_result.get('message_count', 0)} messages from our conversation.",
                                     "attachments": pdf_filename
                                 }
-                                email_result = await tool_manager.safe_function_call("secure_email_sender", email_params)
+                                email_result = await _send_secure_email(email_params)
                                 
                                 logger.info(f"✅ POST-LLM CONVERSATION PDF: Email completed successfully")
                                 
@@ -7693,7 +8186,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 import os
                 filename_pattern = r'"filename":\s*"([^"]+)"'
                 found_files = re.findall(filename_pattern, tools_results)
-                base_dir = os.path.join(os.getcwd(), "sandbox_workspace")
+                base_dir = _delivery_sandbox_dir()
                 
                 # Remove duplicates from found files
                 found_files = list(set(found_files))  # Remove duplicates
@@ -7754,7 +8247,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 last_email_check_file = "/tmp/last_email_sent.txt"
                 
                 try:
-                    if os.path.exists(last_email_check_file):
+                    if False:  # legacy global /tmp/last_email_sent.txt dedup RETIRED — idempotency now lives in _send_secure_email (content-keyed). Inert block kept minimal; excise at checkpoint.
                         with open(last_email_check_file, 'r') as f:
                             last_email_time_str = f.read().strip()
                             last_email_time = datetime.fromisoformat(last_email_time_str)
@@ -7770,7 +8263,14 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                 if created_filename:
                     files_to_attach.append(created_filename)
                     logger.info(f"✅ POST-LLM EMAIL: Added post-LLM created file: {created_filename}")
-                
+
+                # Step 3b: Add files produced by generically-dispatched tools (route 1 — e.g. pdf_generator
+                # writing a PDF to the workspace). These are this request's own freshly-produced artifacts.
+                for _ef in _post_llm_extra_files:
+                    if _ef not in files_to_attach:
+                        files_to_attach.append(_ef)
+                        logger.info(f"✅ POST-LLM EMAIL: Added generically-produced file: {_ef}")
+
                 # Step 4: 🚨 SECURITY FIX - DO NOT attach unrelated files!
                 if not files_to_attach:
                     logger.warning(f"⚠️ POST-LLM EMAIL: No files found for attachment - this indicates missing file creation tools!")
@@ -7780,6 +8280,7 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     # This was causing privacy violations by sending Joe's files to Mary!
                     # Instead, we should have created the requested files with sandboxed_executor
                 
+                files_to_attach = list(dict.fromkeys(files_to_attach))  # dedup: found_files + created_filename may name the same artifact
                 logger.info(f"🎯 POST-LLM EMAIL: Total files to attach: {len(files_to_attach)} -> {files_to_attach}")
                 
                 if files_to_attach:
@@ -7814,6 +8315,11 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         
                         # Determine primary recipient and CC with smart detection
                         recipient_email = email_matches[0] if email_matches else None
+                        # Server-authoritative delivery recipient WINS (e.g. NewX "email me" with no typed
+                        # address — the locked account email is used). Never skip for a missing prompt
+                        # address when recipient locking applies.
+                        if recipient_locked and delivery_policy.valid_email(locked_recipient):
+                            recipient_email = locked_recipient
                         if not recipient_email:
                             logger.warning(f"⚠️ POST-LLM EMAIL: No email address found in user request - skipping email")
                             additional_results += f"Tool: {tool_name} (post-LLM execution skipped)\nResult: No email address found in request\n\n"
@@ -7849,8 +8355,9 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                         
                         # 🚀 SMART EMAIL COMPOSITION based on user request and file types
 
-                        # 🔧 FIX: Extract subject from user prompt instead of using generic subject
-                        subject = _extract_subject_from_prompt(user_prompt)
+                        # Subject = the SAME title used for the document (content heading, else LLM-named),
+                        # NOT a keyword/regex read of the prompt (LLM-Policy Gate).
+                        subject = _doc_title_for_subject or await _llm_document_title(complete_llm_response, user_prompt, llm_manager)
 
                         if not subject:
                             # Fallback: Determine email subject based on content if no explicit subject
@@ -7901,7 +8408,7 @@ AI Document Generation System"""
                                 "body": email_body,
                                 "attachments": attachments_str
                             }
-                            email_result = await tool_manager.safe_function_call("secure_email_sender", email_params)
+                            email_result = await _send_secure_email(email_params)
 
                             logger.info(f"✅ POST-LLM EMAIL: Completed successfully")
                             logger.info(f"🎯 POST-LLM: Email RESULT: {email_result}")
@@ -7947,26 +8454,22 @@ AI Document Generation System"""
                     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
                     email_matches = re.findall(email_pattern, user_prompt)
 
-                    if not email_matches:
+                    # Server-authoritative delivery recipient WINS (NewX "email me" with no typed address).
+                    recipient_email = email_matches[0] if email_matches else None
+                    if recipient_locked and delivery_policy.valid_email(locked_recipient):
+                        recipient_email = locked_recipient
+                    if not recipient_email:
                         logger.warning(f"⚠️ POST-LLM EMAIL: No email address found in prompt - skipping")
                         additional_results += f"Tool: {tool_name} (skipped)\nResult: No email address found in request\n\n"
                     else:
-                        recipient_email = email_matches[0]
-                        cc_emails = email_matches[1:] if len(email_matches) > 1 else []
+                        cc_emails = email_matches[1:] if (len(email_matches) > 1 and not recipient_locked) else []
                         cc_emails_str = ",".join(cc_emails) if cc_emails else ""
 
                         logger.info(f"📧 POST-LLM: Sending email to {recipient_email} with LLM response as body")
 
-                        # Generate subject from user prompt
-                        subject = _extract_subject_from_prompt(user_prompt)
-                        if not subject:
-                            # Generate subject from content summary
-                            if "news" in user_prompt.lower():
-                                subject = f"News Summary - {datetime.now().strftime('%B %d, %Y')}"
-                            elif "summary" in user_prompt.lower():
-                                subject = f"Summary - {datetime.now().strftime('%B %d, %Y')}"
-                            else:
-                                subject = f"Requested Information - {datetime.now().strftime('%B %d, %Y')}"
+                        # Subject = the content's own title (first heading, else LLM-named) — no keyword/
+                        # regex read of the prompt (LLM-Policy Gate).
+                        subject = await _llm_document_title(complete_llm_response, user_prompt, llm_manager)
 
                         # Create email body from complete LLM response
                         email_body = f"""{complete_llm_response}
@@ -7990,7 +8493,7 @@ Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}"""
                                 "body": email_body,
                                 "attachments": None  # No attachments
                             }
-                            email_result = await tool_manager.safe_function_call("secure_email_sender", email_params)
+                            email_result = await _send_secure_email(email_params)
 
                             logger.info(f"✅ POST-LLM EMAIL: Sent successfully without attachments")
                             logger.info(f"🎯 POST-LLM: Email RESULT: {email_result}")
@@ -8127,7 +8630,39 @@ Generated: {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}"""
             elif tool_name == "get_the_secret_tool":
                 result = await tool_manager.get_the_secret_tool()
                 additional_results += f"Tool: {tool_name} (post-LLM execution)\nResult: {result}\n\n"
-                
+
+            else:
+                # GENERIC DISPATCH — RAICA executes whatever action the LLM intent classifier chose, with
+                # NO hardcoded per-tool branch (CARDINAL RULE / LLM-Policy Gate). Reuse the existing
+                # Arbitrator arg-binder to derive parameters from the answer, run the tool, and capture any
+                # file it writes to the workspace so the email step attaches it (e.g. pdf_generator → PDF).
+                logger.info(f"🧩 POST-LLM GENERIC DISPATCH: {tool_name} (classifier-selected, no native branch)")
+                _before_files = _artifact_snapshot()
+                try:
+                    _gparams = await _generate_intelligent_tool_parameters(
+                        tool_name=tool_name, user_prompt=user_prompt,
+                        complete_llm_response=complete_llm_response, tools_results=tools_results,
+                        tool_manager=tool_manager, llm_manager=llm_manager)
+                    _gresult = await tool_manager.safe_function_call(tool_name, _gparams)
+                    additional_results += f"Tool: {tool_name} (post-LLM generic dispatch)\nResult: {str(_gresult)[:300]}\n\n"
+                    logger.info(f"🧩 POST-LLM GENERIC DISPATCH {tool_name}: {str(_gresult)[:200]}")
+                except Exception as _gerr:
+                    logger.error(f"❌ POST-LLM GENERIC DISPATCH failed for {tool_name}: {_gerr}")
+                    additional_results += f"Tool: {tool_name} (post-LLM generic dispatch failed)\nResult: Error: {str(_gerr)}\n\n"
+                # Capture the file(s) the tool just produced (in the workspace OR cwd) and normalize them
+                # INTO the attachable workspace dir so the email step can attach them — no per-tool parsing.
+                import os as _os_e, shutil as _sh_e
+                for _p in sorted(_artifact_snapshot() - _before_files):
+                    try:
+                        _name = _os_e.path.basename(_p)
+                        if _sandbox_dir and _os_e.path.dirname(_p) != _sandbox_dir:
+                            _sh_e.copyfile(_p, _os_e.path.join(_sandbox_dir, _name))
+                        if _name not in _post_llm_extra_files:
+                            _post_llm_extra_files.append(_name)
+                            logger.info(f"🧩 POST-LLM GENERIC DISPATCH {tool_name} produced file: {_name}")
+                    except Exception as _cperr:
+                        logger.warning(f"🧩 could not normalize artifact {_p}: {_cperr}")
+
         except Exception as e:
             logger.error(f"❌ POST-LLM Auto-execution failed for {tool_name}: {e}")
             logger.error(f"❌ POST-LLM Auto-execution traceback: {traceback.format_exc()}")
@@ -8150,7 +8685,19 @@ async def llama_stream(request: Request):
     except Exception as e:
         logger.error(f"Failed to parse JSON: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON data")
-    
+
+    # 🔒 Publish the per-request delivery recipient-lock in the REQUEST-HANDLER context (a regular async
+    # function, NOT the streaming async generator) so it reliably propagates to the tool-execution
+    # coroutines. Setting it inside generate_stream did NOT survive the generator's yields, so the lock
+    # silently no-op'd for the phase-2 send path. The authoritative delivery PERMISSION is enforced
+    # separately at the execution site (execute_tools_with_email_dependency); this pins the recipient for
+    # permitted restricted-client sends (auto-trusted clients carry no lock and are unaffected).
+    try:
+        _rh_auth = delivery_policy.authorize_delivery(data)
+        _delivery_lock_ctx.set((_rh_auth.recipient_locked, _rh_auth.locked_recipient))
+    except Exception as _e_rhlock:
+        logger.warning(f"🔒 delivery-lock context init (handler) skipped: {_e_rhlock}")
+
     # Extract parameters with defaults (exactly like Flask version)
     user_prompt = data['prompt']  # Use direct access like original for required field
     # 🔧 DEBUG v1.0.3.9: Log what we actually received
@@ -8397,6 +8944,20 @@ async def llama_stream(request: Request):
             complete_llm_response = ""  # Initialize for both Ollama and OpenAI paths
             images_available = False  # Survives image_exists reset inside tools_in_use block; always defined here for non-tools path
 
+            # 🔒 Phase 0: publish THIS request's delivery recipient-lock context so EVERY
+            # secure_email_sender call during the request is enforced at the single chokepoint
+            # (AsyncToolManager.secure_email_sender). A restricted client (one that sent an allowed_tools
+            # whitelist, e.g. a NewX bot) locks to the server-authoritative recipient; an auto-trusted
+            # client (no whitelist, e.g. OpenWebUI) is unaffected. This uses the SAME authorize_delivery
+            # decision the POST-LLM paths use, so the two cannot drift apart.
+            _req_auth = delivery_policy.authorize_delivery(data)
+            _delivery_lock_ctx.set((_req_auth.recipient_locked, _req_auth.locked_recipient))
+            # 🔗 Phase 2 (auto-bind): when delivery is permitted, snapshot the sandbox NOW so any file the
+            # LLM creates during this request can be auto-attached to the (recipient-locked) email at the
+            # chokepoint — the user gets the artifact without depending on the model to thread the path.
+            _artifact_baseline_ctx.set(
+                _list_sandbox_files() if (_req_auth.permitted and _LLM_DRIVEN_DELIVERY) else None)
+
             # 🎯 EMAIL INTERCEPTION STATE  
             email_intercepted = False
             intercepted_email_params = {}
@@ -8490,6 +9051,7 @@ async def llama_stream(request: Request):
                         ]
                     except Exception as _cat_err:
                         logger.warning(f"🧩 Could not build tool catalog for decomposition: {_cat_err}")
+                        _dr_tool_defs = []
                         _dr_tool_catalog = []
 
                     async def _dr_dispatch(name, query):
@@ -8555,24 +9117,35 @@ async def llama_stream(request: Request):
                         # paper to a document and email it by directly dispatching existing tools.
                         # The research paper (footer-less answer_body) is the shared context.
                         _dr_actions = (_dr_result or {}).get("actions") or []
-                        if _dr_actions and _dr_delivery_permitted(data):
-                            # Recipient policy: a restricted client (one that sends allowed_tools, e.g.
-                            # a NewX bot) may ONLY email the server-authoritative delivery_recipient
-                            # (the requesting user's own account email) — prompt recipients are ignored
-                            # so the bot can't be abused to email arbitrary people. An auto-trusted
-                            # single-user client (no allowed_tools, e.g. OpenWebUI) keeps prompt recipients.
-                            _locked_recipient = data.get("delivery_recipient")
-                            _recipient_locked = data.get("allowed_tools") is not None
+                        _dr_auth = delivery_policy.authorize_delivery(data)
+                        if _dr_actions and _dr_auth.permitted:
+                            # Recipient policy (shared with the POST-LLM path via orchestration/policy):
+                            # a restricted client (sends allowed_tools, e.g. a NewX bot) may ONLY email
+                            # the server-authoritative delivery_recipient — prompt recipients are ignored
+                            # so the bot can't email arbitrary people. An auto-trusted single-user client
+                            # (no allowed_tools, e.g. OpenWebUI) keeps prompt recipients.
+                            _locked_recipient = _dr_auth.locked_recipient
+                            _recipient_locked = _dr_auth.recipient_locked
                             # _run_dr_delivery does the work silently and yields a single housekeeping
                             # footnote (its own "---" separator) — no verbose step-by-step header.
+                            _dr_body = (_dr_result or {}).get("answer_body") or _dr_answer
+                            # The Research Audit footer is in the full chat answer but intentionally NOT
+                            # in the delivered paper; recover it (the tail of the answer beyond the
+                            # footer-less body) so DR delivery can preserve it in the email body.
+                            _dr_audit = ""
+                            if _dr_body and isinstance(_dr_answer, str) and _dr_answer.startswith(_dr_body):
+                                _dr_audit = _dr_answer[len(_dr_body):].strip()
                             try:
                                 async for _dr_status in _run_dr_delivery(
                                         _dr_actions,
                                         (_dr_result or {}).get("deliverable_spec") or {},
-                                        (_dr_result or {}).get("answer_body") or _dr_answer,
+                                        _dr_body,
                                         actual_user_prompt, tool_manager, _dr_engine_cfg,
                                         locked_recipient=_locked_recipient,
-                                        recipient_locked=_recipient_locked):
+                                        recipient_locked=_recipient_locked,
+                                        tool_defs=_dr_tool_defs,
+                                        audit_text=_dr_audit,
+                                        generate_stream=_dr_generate_stream):
                                     yield _dr_chunk(_dr_status)
                             except Exception as _deliv_err:
                                 logger.error(f"📦 Delivery fan-out failed: {_deliv_err}", exc_info=True)
@@ -8816,11 +9389,26 @@ The above image analysis was automatically performed on newly uploaded images. T
                         # 🔒 TOOL WHITELIST ENFORCEMENT: Filter tools if allowed_tools is set
                         request_allowed_tools = data.get('allowed_tools')
                         if request_allowed_tools:
+                            # Visibility = capability (Phase 1). When the per-request delivery gate
+                            # permits it, EXPOSE the delivery tool surface so the LLM can create+email
+                            # directly — the recipient-lock chokepoint and create_file-only scoping keep
+                            # restricted clients safe. When NOT permitted, the bot genuinely lacks the
+                            # tools, so it declines honestly (no "invisible system will deliver" prose).
+                            _tool_auth = delivery_policy.authorize_delivery(data)
+                            _effective_allowed = set(request_allowed_tools)
+                            if _tool_auth.permitted and _LLM_DRIVEN_DELIVERY:
+                                _effective_allowed |= set(_DELIVERY_TOOL_SURFACE)
                             tools_array = [
                                 t for t in tools_array
-                                if t['function']['name'] in request_allowed_tools
+                                if t['function']['name'] in _effective_allowed
                             ]
-                            logger.info(f"🔒 Tool whitelist enforced: {request_allowed_tools}")
+                            if _tool_auth.recipient_locked and _LLM_DRIVEN_DELIVERY:
+                                # untrusted-input client → no shell: narrow sandboxed_executor to create_file
+                                tools_array = [_restrict_sandboxed_executor_def(t) for t in tools_array]
+                            logger.info(
+                                f"🔒 Tool whitelist enforced: {sorted(_effective_allowed)} "
+                                f"(delivery={'PERMITTED' if _tool_auth.permitted else 'off'}, "
+                                f"locked={'yes' if _tool_auth.recipient_locked else 'no'})")
 
                         # Tools array prepared
                         if len(tools_array) == 0:
@@ -9168,6 +9756,23 @@ The above image analysis was automatically performed on newly uploaded images. T
                                     Execute tools with smart file dependency: search first, then file creation and email
                                     """
                                     phase2_tools, phase1_tools = should_run_sequentially(tool_calls)
+
+                                    # 🔒 AUTHORITATIVE DELIVERY GATE (at the execution site). The tool-calling model is
+                                    # TAUGHT the delivery tools (secure_email_sender / sandboxed_executor) by
+                                    # pre_tool_model_system_prompt.txt and will emit them for any email/file request,
+                                    # regardless of the per-request function-array whitelist — so the delivery
+                                    # PERMISSION cannot be enforced by hiding tools; it must be enforced HERE, where we
+                                    # actually run them. If this request is not authorized for delivery (a restricted
+                                    # client with no allow_delivery — e.g. a non-delivery NewX bot), drop the delivery/
+                                    # file tools so they neither execute pre-LLM nor get deferred. Uses request `data`
+                                    # directly: reliable and concurrency-safe (no ContextVar). Auto-trusted clients
+                                    # (OpenWebUI) and delivery-authorized bots are `permitted` → unaffected.
+                                    if phase2_tools and not delivery_policy.authorize_delivery(data).permitted:
+                                        _dropped = [t['function']['name'] for t in phase2_tools]
+                                        logger.warning(f"🔒 DELIVERY GATE: request NOT authorized for delivery — dropping "
+                                                       f"tool-calling delivery tools {_dropped} (they will not run)")
+                                        phase2_tools = []
+
                                     all_results = []
                                     phase1_results = []
                                     
@@ -9948,8 +10553,21 @@ Generate the corrected tool calls:"""
             try:
                 logger.info(f"🔧 DEBUG: About to call verifier with prompt='{user_prompt}', tools_called={tools_called}")
                 verification_result = await _verify_task_completion(user_prompt, tools_called, tools_results, tool_manager)
-                logger.info(f"🔧 DEBUG: Verifier result: {verification_result}")
-                
+                logger.info(f"🔧 DEBUG: Verifier result (legacy): {verification_result}")
+                # Phase 3c convergence: if convergence.intent_classifier.mode == 'llm', the LLM intent
+                # classifier becomes AUTHORITATIVE (full tool set), with the legacy result above as the
+                # fallback on any error/timeout. Default mode=legacy → returns the legacy result
+                # unchanged (zero behavior change).
+                _llm_authoritative = (config_loader.load_config().get('convergence', {}) or {}) \
+                    .get('intent_classifier', {}).get('mode') == 'llm'
+                verification_result = await _maybe_llm_authoritative(user_prompt, tools_called, verification_result)
+                if _llm_authoritative:
+                    logger.info(f"🔧 DEBUG: Verifier result (authoritative): {verification_result}")
+                else:
+                    # Phase 2: fire-and-forget SHADOW comparison (no-op unless shadow enabled). Skipped
+                    # when the LLM is already authoritative (the comparison would be meaningless).
+                    _schedule_shadow_classification(user_prompt, tools_called, verification_result, data)
+
                 if not verification_result["complete"]:
                     logger.warning(f"⚠️ TASK INCOMPLETE: {verification_result['reason']}")
                     logger.info(f"📋 DEFERRED AUTO-EXECUTION: Will execute missing tools AFTER Primary LLM completes")
@@ -10146,7 +10764,8 @@ END OF CONTEXT
                     user_system_prompt,
                     tools_were_executed=(len(tools_results.strip()) > 0),
                     tools_results_summary=cleaned_tools_results_summary,
-                    tools_called=tools_called
+                    tools_called=tools_called,
+                    allow_delivery=delivery_policy.authorize_delivery(data).permitted
                 )
                 logger.info(f"📋 Using DEFAULT enhanced system prompt ({len(enhanced_system)} chars)")
             
@@ -10593,25 +11212,22 @@ END OF CONTEXT
                                 from datetime import datetime
                                 timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M')
 
-                                # Determine topic from user_prompt for better naming
-                                user_prompt_lower = user_prompt.lower() if user_prompt else ""
-                                tools_results_lower = tools_results.lower() if tools_results else ""
-
-                                # Check for Gaza/Middle East news
-                                if ("gaza" in user_prompt_lower or "middle east" in user_prompt_lower or
-                                    "gaza" in tools_results_lower or "Tool: get_news_summaries" in tools_results):
-                                    filename = f"gaza_middle_east_analysis_{timestamp}.html"
-                                # Check for stock/financial content
-                                elif "stock" in user_prompt_lower or "financial" in user_prompt_lower:
-                                    filename = f"financial_analysis_{timestamp}.html"
-                                # Generic news
-                                elif "news" in user_prompt_lower or "Tool: get_news_summaries" in tools_results:
-                                    filename = f"news_analysis_{timestamp}.html"
-                                # Generic report
-                                else:
-                                    filename = f"analysis_report_{timestamp}.html"
-
-                                logger.info(f"🔄 STEP 1-GENERATED: Server-generated filename with CORRECT date: '{filename}'")
+                                # Name the file from its CONTENT — never from hardcoded topic keywords
+                                # (LLM-Policy Gate: no keyword classification). Prefer the subject the
+                                # model set for this delivery; else derive a title from the content; slugify.
+                                import re as _re_fn
+                                _doc_title = (intercepted_email_params.get('subject') or '').strip()
+                                if not _doc_title:
+                                    # else derive from the document's OWN first heading (content-derived)
+                                    for _ln in (complete_llm_response or '').splitlines():
+                                        _hm = _re_fn.match(r'^#{1,4}\s+(.+\S)', _ln.strip())
+                                        if _hm:
+                                            _doc_title = _hm.group(1).strip()[:80]
+                                            break
+                                _doc_title = _doc_title or 'document'
+                                _slug = _re_fn.sub(r'[^a-z0-9]+', '_', _doc_title.lower()).strip('_')[:60] or 'document'
+                                filename = f"{_slug}_{timestamp}.html"
+                                logger.info(f"🔄 STEP 1-GENERATED: content-derived filename '{filename}' (from '{_doc_title}')")
                                     
                                 # Determine if PDF conversion is needed based on file extension
                                 convert_to_pdf = filename.lower().endswith('.pdf')
@@ -10747,7 +11363,14 @@ END OF CONTEXT
                                         
                                     logger.info(f"🔄 STEP 4: About to send email with updated attachment: {filename}")
                                     logger.info(f"🔄 STEP 4: Email params: {updated_email_params}")
-                                    email_result = await tool_manager.safe_function_call("secure_email_sender", updated_email_params)
+                                    # Phase 1 D3: enforce the SAME recipient lock as every other delivery
+                                    # path (shared orchestration/policy). Behavior-identical for current
+                                    # traffic (auto-trusted clients aren't locked); closes the latent leak
+                                    # so a restricted client can never be steered to a prompt-chosen address.
+                                    _ic_auth = delivery_policy.authorize_delivery(data)
+                                    email_result = await _send_email_locked(
+                                        tool_manager, updated_email_params,
+                                        _ic_auth.recipient_locked, _ic_auth.locked_recipient)
                                     logger.info(f"🔄 STEP 4A: Email sending completed")
                                     logger.info(f"📧 Email sent: {email_result}")
                                         
@@ -10842,11 +11465,36 @@ END OF CONTEXT
                         # 🔒 v1.0.0.51: Filter POST-LLM missing tools against allowed_tools whitelist
                         post_llm_missing_tools = verification_result['missing_tools']
                         request_allowed_tools = data.get('allowed_tools')
+                        # 📦 v1.0.0.81: DELIVERY PRIVILEGE on the legacy POST-LLM path. A client that
+                        # presents an explicit allow_delivery=True privilege (e.g. a NewX user with the
+                        # "email via RAICA" right) may use the DELIVERY tools (file creation + email)
+                        # even though they are deliberately excluded from its zero-trust allowed_tools
+                        # whitelist. SECURITY: for such a RESTRICTED client (one that sends an
+                        # allowed_tools whitelist) the email recipient is LOCKED to delivery_recipient
+                        # (the user's own server-authoritative account email) inside the executor — a
+                        # prompt-specified address is NEVER honored. This mirrors the deep-research
+                        # delivery path. Phase 1: both paths now derive this from the SAME shared policy
+                        # (orchestration/policy.authorize_delivery) so they cannot drift apart.
+                        _post_auth = delivery_policy.authorize_delivery(data)
+                        _post_allow_delivery = _post_auth.permitted
+                        _post_recipient_locked = _post_auth.recipient_locked
+                        _post_locked_recipient = _post_auth.locked_recipient
                         if request_allowed_tools:
-                            blocked = [t for t in post_llm_missing_tools if t not in request_allowed_tools]
+                            _effective_allowed = set(request_allowed_tools)
+                            if _post_allow_delivery:
+                                # Delivery is permitted for this bot+actor → run the post-generation
+                                # ACTIONS the intent classifier chose. The LLM classifier is the authority
+                                # on WHICH tools the request needs; the privilege gate decides WHETHER
+                                # delivery happens. No hardcoded delivery-tool name list (LLM-Policy Gate).
+                                _effective_allowed |= set(post_llm_missing_tools)
+                            blocked = [t for t in post_llm_missing_tools if t not in _effective_allowed]
                             if blocked:
                                 logger.warning(f"🔒 POST-LLM WHITELIST: Blocked tools not in allowed_tools: {blocked}")
-                            post_llm_missing_tools = [t for t in post_llm_missing_tools if t in request_allowed_tools]
+                            if _post_allow_delivery and post_llm_missing_tools:
+                                logger.info(f"📦 POST-LLM DELIVERY PRIVILEGE: allow_delivery=True → permitting "
+                                            f"classifier-selected actions {post_llm_missing_tools}; recipient "
+                                            f"{'LOCKED to '+str(_post_locked_recipient) if _post_recipient_locked else 'from request (auto-trusted client)'}")
+                            post_llm_missing_tools = [t for t in post_llm_missing_tools if t in _effective_allowed]
 
                         if not post_llm_missing_tools:
                             logger.info(f"🔒 POST-LLM AUTO-EXECUTION SKIPPED: All missing tools blocked by whitelist")
@@ -10867,7 +11515,9 @@ END OF CONTEXT
                                     tools_results,
                                     complete_llm_response,
                                     actual_user_prompt,
-                                    llm_manager
+                                    llm_manager,
+                                    locked_recipient=_post_locked_recipient,
+                                    recipient_locked=_post_recipient_locked
                                 )
                                 logger.info(f"✅ POST-LLM AUTO-EXECUTION COMPLETED: {additional_results}")
 

@@ -1,0 +1,129 @@
+{
+  "document_cover_letter_email": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "document_creation_email"
+  },
+  "email_already_called": {
+    "complete": true,
+    "missing_tools": [],
+    "pattern": null
+  },
+  "email_deferred": {
+    "complete": true,
+    "missing_tools": [],
+    "pattern": null
+  },
+  "file_create_and_email": {
+    "complete": false,
+    "missing_tools": [
+      "secure_email_sender"
+    ],
+    "pattern": "email_required"
+  },
+  "info_just_tell_me": {
+    "complete": true,
+    "missing_tools": [],
+    "pattern": "information_request"
+  },
+  "info_research_only": {
+    "complete": true,
+    "missing_tools": [],
+    "pattern": "information_request"
+  },
+  "info_what_are": {
+    "complete": true,
+    "missing_tools": [],
+    "pattern": "information_request"
+  },
+  "meta_tags": {
+    "complete": true,
+    "missing_tools": null,
+    "pattern": "meta_task"
+  },
+  "meta_title_emoji": {
+    "complete": true,
+    "missing_tools": null,
+    "pattern": "meta_task"
+  },
+  "multi_file_and_email": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "multi_file_creation_and_email"
+  },
+  "news_report_and_email": {
+    "complete": false,
+    "missing_tools": [
+      "get_news_summaries",
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "news_report_and_email"
+  },
+  "newx_email_above_html": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "html_attachment_email"
+  },
+  "plain_poem": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "document_creation_email"
+  },
+  "publish_substack": {
+    "complete": false,
+    "missing_tools": [
+      "social_media_substack"
+    ],
+    "pattern": "content_publishing"
+  },
+  "publish_twitter": {
+    "complete": false,
+    "missing_tools": [
+      "social_media_twitter"
+    ],
+    "pattern": "content_publishing"
+  },
+  "publish_wordpress": {
+    "complete": false,
+    "missing_tools": [
+      "social_media_wordpress"
+    ],
+    "pattern": "content_publishing"
+  },
+  "pure_email_to_addr": {
+    "complete": false,
+    "missing_tools": [
+      "secure_email_sender"
+    ],
+    "pattern": "pure_email_request"
+  },
+  "research_html_report_email": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "research_html_report_email"
+  },
+  "save_output_pdf": {
+    "complete": false,
+    "missing_tools": [
+      "sandboxed_executor",
+      "secure_email_sender"
+    ],
+    "pattern": "research_save_and_email"
+  }
+}

@@ -271,11 +271,20 @@ class ResearchSynthesizer:
             if _tok_count(content) > cap:
                 content = _tok_truncate(content, cap) + "\n[…source truncated to fit context budget…]"
                 truncated += 1
-            tiers = sorted({credibility.get(_domain_of(u), "unknown") for u in e.get("urls", [])})
+            _block_urls = [u for u in (e.get("urls", []) or []) if u]
+            tiers = sorted({credibility.get(_domain_of(u), "unknown") for u in _block_urls})
             tier_tag = ",".join(tiers) if tiers else "unknown"
+            # Surface this block's source URL(s) EXPLICITLY so the synthesis model can attribute the
+            # claims it draws from this block as clickable [Title](URL). Without this line the URLs are
+            # buried inside the content text and the model fails to cite → the report comes out with NO
+            # citations and is (rightly) rejected downstream. Cite ONLY URLs that appear in the evidence.
+            _url_line = ""
+            if _block_urls:
+                _url_line = ("SOURCE URL(S) for this block — cite claims taken from it as clickable "
+                             "[Title](URL) using ONLY these: " + " , ".join(_block_urls) + "\n")
             blocks.append(
                 f"───── EVIDENCE [{e.get('sub_question_id')} | source={e.get('source')} | "
-                f"credibility={tier_tag}] ─────\n{content}"
+                f"credibility={tier_tag}] ─────\n{_url_line}{content}"
             )
         doc = "\n\n".join(blocks)
         if truncated:
@@ -443,8 +452,10 @@ class ResearchSynthesizer:
             "STILL list them (with what is known + a note that detail is limited) rather than omitting "
             "them — an acknowledged-but-thin entry is more complete than a silent omission.\n\n"
             "GROUNDING & CREDIBILITY RULES (strict — these govern ATTRIBUTION, never EXCLUSION):\n"
-            "- Ground every factual claim in the evidence; cite as clickable [Title](URL) using ONLY URLs "
-            "present in the evidence. Never invent URLs, facts, dates, or names.\n"
+            "- CITATIONS ARE MANDATORY (non-negotiable): ground every factual claim in the evidence and "
+            "cite it inline as a clickable [Title](URL), using ONLY the SOURCE URL(S) provided with each "
+            "evidence block. A substantive report with NO citations is a FAILURE and will be rejected. "
+            "Never invent URLs, facts, dates, or names.\n"
             "- Calibrate CONFIDENCE to source credibility, but never use credibility to EXCLUDE a "
             "substantive point. Present well-established findings as established (citing peer_reviewed/"
             "reputable sources). Present contested or low-credibility-sourced claims as ATTRIBUTED "
@@ -457,8 +468,10 @@ class ResearchSynthesizer:
             "- Do NOT overstate your sourcing (e.g. do not call popular/low-credibility sources "
             "'peer-reviewed'). If evidence is thin or absent for part of the request, say so plainly.\n"
             "- STRUCTURE: open with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for "
-            "skim readers), then the detailed sections (as many as the material warrants), and ALWAYS "
-            "end with a **## Conclusion** that recaps the key findings and directly answers the request."
+            "skim readers), then the detailed sections (as many as the material warrants), then a "
+            "**## Conclusion** that recaps the key findings and directly answers the request, and "
+            "FINALLY a **## References** section listing the sources you cited as clickable [Title](URL) "
+            "— every URL in References MUST be one provided in the evidence (never invented)."
         )
         # For enumeration requests, the pre-extracted roster (from the FULL evidence set) is
         # injected so every qualifying item gets a row even if its detail evidence was truncated.

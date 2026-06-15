@@ -5,97 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{TITLE}}</title>
 <style>
-/* Clean, Minimal Styling for Professional Reports */
-body {
-  font-family: Arial, sans-serif;
-  background-color: #f4f4f4;
-  color: #333;
-  line-height: 1.6;
-  margin: 20px;
-  padding: 20px;
-}
-
-h1, h2, h3 {
-  color: #2c3e50;
-}
-
-h1 {
-  margin-top: 20px;
-}
-
-h2 {
-  margin-top: 30px;
-}
-
-h3 {
-  margin-top: 20px;
-}
-
-p {
-  margin: 10px 0;
-}
-
-ul, ol {
-  margin: 10px 0;
-  padding-left: 30px;
-}
-
-li {
-  margin: 5px 0;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 20px 0;
-}
-
-th, td {
-  padding: 10px;
-  border: 1px solid #ddd;
-  text-align: left;
-}
-
-th {
-  background-color: #3498db;
-  color: white;
-}
-
-tr:hover {
-  background-color: #f9f9f9;
-}
-
-a {
-  color: #3498db;
-  text-decoration: none;
-}
-
-a:hover {
-  text-decoration: underline;
-}
-
-/* Citation styling */
-.citation {
-  font-size: 11px;
-  color: #666;
-  font-style: italic;
-}
-
-/* Warning/disclaimer boxes */
-.warning {
-  background-color: #fff3cd;
-  border: 1px solid #ffeeba;
-  color: #856404;
-  padding: 12px;
-  border-radius: 4px;
-  margin: 16px 0;
-}
-
-/* Custom CSS Placeholder */
+/* SINGLE SOURCE OF DOCUMENT STYLE: html_generator injects config/pdf_styles.css here, and the PDF is
+   produced by weasyprinting THIS SAME HTML — so the .html file and the .pdf share one identical
+   stylesheet and one identical structure. Do not add per-format CSS; edit config/pdf_styles.css. */
 {{CUSTOM_CSS}}
 </style>
 </head>
 <body>
+<h1>{{TITLE}}</h1>
 {{CONTENT}}
 </body>
 </html>

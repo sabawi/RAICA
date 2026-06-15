@@ -80,52 +80,35 @@ class CentralizedPDFService:
             }
         
         try:
-            # Ensure output directory exists
-            output_dir = Path(output_path).parent
-            output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Auto-detect content type if needed
-            if content_type == "auto":
-                content_type = self._detect_content_type(content)
-                print(f"🔍 {self.service_name}: Auto-detected content type: {content_type}")
-            
-            # Use WeasyPrint if available (supports CSS @page), otherwise fallback
-            if self.weasyprint_available:
-                # Convert content to markdown format for consistent processing
-                markdown_content = self._normalize_to_markdown(content, content_type)
-                
-                result = self._create_pdf_with_weasyprint(
-                    markdown_content=markdown_content,
-                    output_path=output_path,
-                    title=title
-                )
-            else:
-                # Fallback to markdown-pdf (limited CSS support)
-                markdown_content = self._normalize_to_markdown(content, content_type)
-                
-                result = self._create_pdf_with_markdown_pdf(
-                    markdown_content=markdown_content,
-                    output_path=output_path,
-                    title=title
-                )
-            
-            if result["success"]:
-                print(f"✅ {self.service_name}: PDF created successfully at {output_path}")
-                return {
-                    "success": True,
-                    "file_path": output_path,
-                    "title": self._format_title(title),
-                    "size_bytes": os.path.getsize(output_path) if os.path.exists(output_path) else 0,
-                    "service": self.service_name,
-                    "library": "markdown-pdf"
-                }
-            else:
-                print(f"❌ {self.service_name}: PDF creation failed: {result.get('error')}")
-                return result
-                
+            # ── SINGLE DOCUMENT PIPELINE ────────────────
+            # The PDF is produced by weasyprinting the EXACT SAME HTML that html_generator emits for the
+            # .html file: ONE markdown->HTML converter + ONE stylesheet (config/pdf_styles.css). This is
+            # what guarantees the .pdf and .html are visually identical. The old per-format markdown
+            # conversion + separate CSS is gone.
+            from utils.html_generator import html_generator
+            import weasyprint
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            html_document = html_generator.generate_html_report(
+                content=content, title=title, header_title=title,
+                include_disclaimer=False, force_template=True)
+            weasyprint.HTML(string=html_document).write_pdf(output_path)
+            size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+            if size <= 0:
+                return {"success": False, "error": "PDF written but empty/missing",
+                        "service": self.service_name}
+            print(f"\u2705 {self.service_name}: PDF created (weasyprint <- html_generator) "
+                  f"at {output_path} ({size} bytes)")
+            return {
+                "success": True,
+                "file_path": output_path,
+                "title": self._format_title(title),
+                "size_bytes": size,
+                "service": self.service_name,
+                "library": "weasyprint+html_generator",
+            }
         except Exception as e:
             error_msg = f"PDF creation failed: {str(e)}"
-            print(f"❌ {self.service_name}: {error_msg}")
+            print(f"\u274c {self.service_name}: {error_msg}")
             return {
                 "success": False,
                 "error": error_msg,

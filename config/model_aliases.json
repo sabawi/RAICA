@@ -78,5 +78,19 @@
     "updated_at": "2025-10-29T20:58:25.685297",
     "context_window_size": 32768,
     "fallback_model": "deepseek_ollama_cloud"
+  },
+  "kimi_k2.6_cloud": {
+    "provider": "ollama",
+    "model": "kimi-k2.6:cloud",
+    "base_url": "http://127.0.0.1:11434",
+    "timeout": 1200,
+    "temperature": 0.7,
+    "max_tokens": 32768,
+    "stream": true,
+    "created_at": "2026-05-20T07:42:00.000000",
+    "updated_at": "2026-05-20T07:42:00.000000",
+    "context_window_size": 131072,
+    "think": false,
+    "description": "Moonshot Kimi K2.6 Cloud with 128K context window and 32K output limit"
   }
 }

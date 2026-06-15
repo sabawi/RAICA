@@ -31,7 +31,9 @@ class HTMLReportGenerator:
     def __init__(self):
         self.template_dir = Path(__file__).parent.parent / "templates"
         self.template_path = self.template_dir / "html_report_template.html"
+        self.css_path = Path(__file__).parent.parent / "config" / "pdf_styles.css"
         self._template_cache = None
+        self._css_cache = None
 
     def _load_template(self) -> str:
         """Load HTML template from file with caching"""
@@ -45,6 +47,18 @@ class HTMLReportGenerator:
                 # Fallback to embedded template
                 self._template_cache = self._get_fallback_template()
         return self._template_cache
+
+    def _load_document_css(self) -> str:
+        """THE single document stylesheet (config/pdf_styles.css), cached. Used for BOTH the .html file
+        and the .pdf (the PDF is weasyprinted from the same generated HTML), so the two formats share one
+        identical look. Empty string if the file is missing (degrade gracefully)."""
+        if self._css_cache is None:
+            try:
+                with open(self.css_path, 'r', encoding='utf-8') as f:
+                    self._css_cache = f.read()
+            except Exception:
+                self._css_cache = ""
+        return self._css_cache
 
     def _get_fallback_template(self) -> str:
         """Clean, simple template matching user-preferred style"""
@@ -335,7 +349,8 @@ th {
         header_subtitle: str = "",
         include_disclaimer: bool = True,
         custom_timestamp: Optional[str] = None,
-        custom_css: Optional[str] = None
+        custom_css: Optional[str] = None,
+        force_template: bool = False
     ) -> str:
         """
         Generate clean HTML report using shared template.
@@ -358,10 +373,22 @@ th {
             # This fixes literal \n characters appearing in HTML output
             content = sanitize_for_html(content)
 
-            # 🔧 FIX: If content is already complete HTML, return it as-is
+            # 🔧 FIX: If content is already complete HTML, return it as-is — UNLESS force_template is set
+            # (delivery / document generation). With force_template we STANDARDIZE: pull out the inner
+            # <body>, drop any inline <style>/<script>, then render through the standard template, so every
+            # generated file (HTML and the PDF derived from it) shares ONE consistent layout regardless of
+            # whether the model produced markdown or pasted its own styled HTML.
             if self.is_already_html(content):
-                print(f"✅ HTML GENERATOR: Content is already complete HTML - returning as-is (no wrapping)")
-                return content
+                if not force_template:
+                    print(f"✅ HTML GENERATOR: Content is already complete HTML - returning as-is (no wrapping)")
+                    return content
+                import re as _re
+                _bm = _re.search(r'<body[^>]*>(.*?)</body>', content, _re.DOTALL | _re.IGNORECASE)
+                if _bm:
+                    content = _bm.group(1).strip()
+                content = _re.sub(r'<style[^>]*>.*?</style>', '', content, flags=_re.DOTALL | _re.IGNORECASE)
+                content = _re.sub(r'<script[^>]*>.*?</script>', '', content, flags=_re.DOTALL | _re.IGNORECASE)
+                print(f"🎯 HTML GENERATOR: force_template — re-rendering extracted body through the standard template")
 
             template = self._load_template()
 
@@ -421,10 +448,12 @@ th {
             # Prepare timestamp
             timestamp = custom_timestamp or f"{datetime.now().strftime('%Y-%m-%d at %H:%M:%S')}"
 
-            # Prepare custom CSS
-            custom_css_content = ""
+            # SINGLE SOURCE OF STYLE: load the shared document stylesheet (config/pdf_styles.css) — the
+            # SAME CSS the PDF uses (the PDF is weasyprinted from this exact HTML), so the two formats are
+            # guaranteed identical. Any caller custom_css is appended (overrides).
+            custom_css_content = self._load_document_css()
             if custom_css:
-                custom_css_content = f"\n{custom_css}\n"
+                custom_css_content += f"\n{custom_css}\n"
 
             # Replace placeholders with properly escaped content
             import html as html_module

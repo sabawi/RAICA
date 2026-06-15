@@ -166,10 +166,13 @@ class SandboxedExecutorTool(BaseUserTool):
         sudo_desc = "with sudo access" if self.sudo_enabled else "without sudo"
 
         return (
-            f"Execute system commands, read/write files, and run code in a configurable sandboxed environment. "
-            f"Current mode: {mode_desc} ({sudo_desc}). "
-            f"Access: {self.base_dir}/** and configured paths. "
-            f"Use 'execute' for system commands, 'read_file' to read files, 'create_file' to write files. "
+            f"Create a DOCUMENT FILE (HTML, Markdown, text, or PDF) from content — use action 'create_file' "
+            f"to save the assistant's answer/report as a file for emailing as an attachment or for download "
+            f"(markdown content is auto-converted to a formatted HTML or PDF document). This is the tool to "
+            f"use whenever a file/attachment/'HTML file'/'PDF report' is requested. "
+            f"Also executes system commands, reads files, and runs code in a configurable sandboxed "
+            f"environment. Current mode: {mode_desc} ({sudo_desc}). Access: {self.base_dir}/** and configured "
+            f"paths. Use 'execute' for system commands, 'read_file' to read files. "
             f"Supports: Python, JavaScript, Bash, C, C++, Java, Rust code execution. "
             f"Full diagnostic output capture for LLM analysis."
         )
@@ -1804,7 +1807,9 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
                 title=title,
                 header_title=title,
                 header_subtitle="",
-                include_disclaimer=False  # Don't include financial disclaimer for general content
+                include_disclaimer=False,  # Don't include financial disclaimer for general content
+                force_template=True  # STANDARDIZE: every generated document uses the one shared template
+                                     # (same as Deep Research), never a model-pasted raw-HTML layout
             )
 
         except Exception as e:

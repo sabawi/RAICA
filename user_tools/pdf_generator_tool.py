@@ -58,7 +58,7 @@ class PDFGeneratorTool(BaseUserTool):
     
     @property 
     def description(self) -> str:
-        return "Generate professional PDF documents from text, markdown, or HTML content with proper formatting, headings, lists, and styling. Supports automatic content type detection and conversion."
+        return "Generate a PDF document — use ONLY when the user explicitly asks for a PDF specifically. For an HTML file, a Markdown file, a text file, or a generic 'file/attachment/document', use sandboxed_executor's create_file instead (it produces the requested format). Converts text/markdown/HTML content into a styled PDF with headings and lists."
     
     @property
     def parameters(self) -> Dict[str, Any]:

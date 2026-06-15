@@ -221,6 +221,25 @@ deep_research:
       # Local deliverables in sandbox_workspace are KEPT after sending (and always kept on failure),
       # then a best-effort TTL sweep purges files older than this many hours so disk stays bounded.
       retention_hours: 72
+      # Phase 3 — DYNAMIC ACTION DISPATCH (open-vocabulary tool integration, Principle 6).
+      # The decomposer already emits an OPEN action vocabulary grounded in the live tool catalog
+      # (any registered tool, not a fixed enum). With this ON, RAICA dispatches EVERY such action
+      # generically: for each action whose `type` resolves to a real tool, an LLM "arg-binder" call
+      # is shown that tool's FULL parameter schema + the research output + the user's intent + the
+      # results of prior actions (sequential, dependency-aware), and returns the exact arguments;
+      # RAICA then runs the tool via safe_function_call. New tools need ZERO code here (Generalization
+      # Test). The proven file+email secure pipeline (recipient-locking, doc-fail-blocks-email) is
+      # UNCHANGED and runs after the generic pass. false = legacy: only file+email are wired, other
+      # actions are reported "not wired yet".
+      dynamic_dispatch: true
+      # Max output tokens for each arg-binder LLM call (it returns a small JSON arguments object).
+      binder_max_tokens: 1500
+      # Per-action dispatch hard timeout (seconds) so one slow/hung tool can't stall the whole run.
+      action_timeout_seconds: 180
+      # How many chars of the research output to show the arg-binder as shared context (it can also
+      # use the literal "{{RESEARCH_OUTPUT}}" placeholder for any field that should carry the FULL
+      # paper verbatim — RAICA substitutes it before dispatch, so the LLM never retypes the paper).
+      context_char_budget: 12000
     retry:
       # Resilience for transient upstream LLM-provider 5xx errors (e.g. Ollama-cloud "500 Internal
       # Server Error"). Deep research is a long, resource-heavy operation; rather than fail a run on a
@@ -316,6 +335,42 @@ deep_research:
       # NOTE (2026-06-01 test): gemma4:31b here cut the final answer ~55% (9.7K vs 21K chars)
       # — it summarized instead of merging, killing the elaboration goal. Keep at null.
       arbitration_model: null   # setting it to null will default to primary model
+
+# ============================================================================
+# CONTEXT-AND-ACTION SUBSTRATE CONVERGENCE (docs/RAICA_CONTEXT_SUBSTRATE_CONVERGENCE.md)
+# ============================================================================
+convergence:
+  # Phase 2 — SHADOW-MODE LLM intent classifier. When enabled, an LLM intent classifier runs
+  # ALONGSIDE the legacy keyword classifier (_verify_task_completion) on each verified request, and
+  # the two results are compared and logged. The legacy result stays AUTHORITATIVE — this is purely
+  # observational (zero behavior change), to gather real-traffic divergence data before Phase 3 cuts
+  # intent classification over to the LLM. The shadow runs as a NON-BLOCKING background task, so it
+  # never adds latency to the user's response.
+  shadow_classifier:
+    enabled: false              # master switch — turn on to collect divergence data
+    sample_rate: 1.0            # fraction of eligible requests to shadow (0.0–1.0) to bound cost
+    model: deepseek-v4-flash:cloud   # light/cheap model for the classification call (null = primary)
+    max_prompt_chars: 8000      # skip shadowing requests whose prompt exceeds this (cost guard)
+    max_tokens: 800             # output cap for the classifier JSON
+    timeout_seconds: 60         # hard timeout for the background shadow call
+    # Disagreements are appended (best-effort) as JSONL here for offline analysis; every shadow run
+    # also emits a "🕵️ SHADOW CLASSIFIER" log line. Empty/null = log only (no file).
+    divergence_log: logs/shadow_classifier_divergence.jsonl
+  # Phase 3c — AUTHORITATIVE LLM intent classifier (the cutover). When mode=llm, the LLM intent
+  # classifier (orchestration/intent.py) replaces the legacy keyword classifier for the
+  # post-generation delivery decision AND the tool selection (FULL tool set). The legacy classifier is
+  # ALWAYS still computed and is the FALLBACK on LLM error/timeout/over-length. mode=legacy (default)
+  # keeps the legacy classifier authoritative — i.e. shipping this changes NOTHING until you flip it.
+  # Baseline (v1.0.0.84): LLM delivery-decision 100% stable vs legacy 71.9%; exact-tool stability 93.8%.
+  # NOTE: the POST-LLM executor natively dispatches file + email + social_media_* (publish); other LLM
+  # tool picks (e.g. image/chart) await Phase 4 generic dispatch.
+  intent_classifier:
+    mode: llm                        # legacy | llm  [VALIDATION on dev: prompt hardened vs system-directive bias, 2026-06-06]
+    model: deepseek-v4-flash:cloud   # classifier model (null = primary)
+    max_tokens: 800
+    timeout_seconds: 30              # exceeded → legacy fallback
+    max_prompt_chars: 12000          # over this → legacy fallback (latency/cost guard)
+
 code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models

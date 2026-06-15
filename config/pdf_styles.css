@@ -377,8 +377,10 @@ h1, h2, h3, h4, h5, h6 {
     page-break-after: avoid;
 }
 
-/* Keep lists together when possible */
-ul, ol {
+/* Let long lists (e.g. a References section) FLOW across pages — keep each ITEM intact so an entry is
+   not split mid-line, but do NOT force the whole list onto one page (which strands the preceding
+   heading and leaves a blank page above the list). */
+li {
     page-break-inside: avoid;
 }
 

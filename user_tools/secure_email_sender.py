@@ -1006,6 +1006,10 @@ class SecureEmailSenderTool(BaseUserTool):
         Only removes files that were generated in the sandbox workspace, not user source files.
         This prevents file accumulation and ensures clean state for future requests.
         """
+        import os as _os_kg
+        if _os_kg.getenv("RAICA_KEEP_DELIVERY_FILES"):
+            print("🧪 AUTO-CLEANUP skipped (RAICA_KEEP_DELIVERY_FILES set) — keeping delivery files for test inspection")
+            return
         try:
             import os
             # CRITICAL: Use home directory sandbox, not cwd (consistent with other methods)
@@ -1084,9 +1088,11 @@ class SecureEmailSenderTool(BaseUserTool):
             # Continue with normal processing - no special HTML handling
             
             # Extract and validate required parameters (regular processing)
-            to_email = parsed_args.get("to_email", "").strip()
-            subject = parsed_args.get("subject", "").strip()
-            body = parsed_args.get("body", "").strip()
+            # (x or "") not .get(x, "") — an explicitly-None value passes through .get's default,
+            # so None.strip() crashed ('NoneType' object has no attribute 'strip'). Coerce None→"".
+            to_email = (parsed_args.get("to_email") or "").strip()
+            subject = (parsed_args.get("subject") or "").strip()
+            body = (parsed_args.get("body") or "").strip()
 
             # 🔧 FIX: Make body optional - auto-generate if not provided but attachments exist
             if not body:

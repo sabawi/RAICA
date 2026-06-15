@@ -145,7 +145,23 @@ Each phase is independently shippable, version-bumped, and leaves Deep Research 
 - Outcome: the failing prompt now **researches → writes paper → renders PDF → emails it.** End-to-end.
 - Risk: medium. Reuses proven machinery; main work is the bridge + email-scope policy.
 
-### Phase 3 — Authoring stage (publication-grade deliverable)
+### Phase 3 — Dynamic action dispatch (open-vocabulary tool integration) — **DONE (v1.0.0.80)**
+- **Shipped 2026-06-05.** The delivery fan-out now dynamically dispatches **any registered tool** the
+  decomposer names (Principle 6), not just the hardcoded file/email classes. Mechanism: an **LLM
+  arg-binder** is shown each resolved tool's full parameter schema + the research output + prior
+  action results (sequential, dependency-aware) and returns `{"arguments": {...}}`; RAICA substitutes
+  the `{{RESEARCH_OUTPUT}}` placeholder and dispatches via `safe_function_call`. A new tool is
+  dispatchable with **zero code changes** (Generalization Test). The file/email secure pipeline is
+  unchanged and runs after the generic pass; `_dr_delivery_permitted` still gates who may deliver.
+- Code: `_dr_bind_and_dispatch_action` / `_dr_inject_research_output` / `_dr_dispatch_failed` +
+  `_run_dr_delivery` (`tool_defs`/`generate_stream` params) in `fastapi_server_complete.py`; config
+  `deep_research.engine.delivery.{dynamic_dispatch,binder_max_tokens,action_timeout_seconds,context_char_budget}`.
+- Resolves Open Decision #2 (arg schema) via the per-tool binder and #3 (parallelism) as
+  *sequential, dependency-aware*. Changelog: `CHANGELOG_v1.0.0.80.md`.
+- **Out of scope (documented):** cross-category artifact handoff (a generic tool's output file →
+  email attachment / PDF embed) — tracked in `DEEP_RESEARCH_MULTIMODAL_PLAN.md`.
+
+### Phase 3b — Authoring stage (publication-grade deliverable) — *future*
 - A dedicated authoring subagent (or a `deliverable_spec`-parameterized synthesis mode) that turns research context into the requested artifact: arXiv-format sections, ≥N words, footnotes, references section.
 - Outcome: deliverable quality matches "publishable paper" requests, distinct from a normal research answer.
 - Risk: medium. Mostly prompt/format engineering on existing context.

@@ -1,0 +1,62 @@
+{
+  "_detect_html_email_request": {
+    "html_no_addr": {},
+    "html_with_addr": {
+      "detected": true,
+      "source": "current_response",
+      "style": null,
+      "subject": "Email Analysis Report",
+      "to_email": "bob@x.com"
+    },
+    "plain_no_email": {}
+  },
+  "_detect_html_email_request_in_args": {
+    "args_empty_no_addr": {
+      "detected": true,
+      "source": "current_response",
+      "style": null,
+      "subject": "HTML Report",
+      "to_email": null
+    },
+    "args_empty_prompt_addr": {
+      "detected": true,
+      "source": "current_response",
+      "style": null,
+      "subject": "HTML Report",
+      "to_email": "c@d.com"
+    },
+    "args_to_email": {
+      "detected": true,
+      "source": "current_response",
+      "style": null,
+      "subject": "HTML Report",
+      "to_email": "a@b.com"
+    }
+  },
+  "_resolve_email_recipients": {
+    "dedup": [
+      "dup@x.com"
+    ],
+    "email_key": [
+      "ek@x.com"
+    ],
+    "none_found": [],
+    "prompt_fallback": [
+      "c@d.com"
+    ],
+    "prompt_multiple": [
+      "one@x.com",
+      "two@y.com"
+    ],
+    "recipient_singular_key": [
+      "single@x.com"
+    ],
+    "recipients_list": [
+      "x@y.com",
+      "z@w.com"
+    ],
+    "structured_to_wins_over_prompt": [
+      "a@b.com"
+    ]
+  }
+}
