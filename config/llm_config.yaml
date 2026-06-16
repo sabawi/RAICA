@@ -203,6 +203,16 @@ deep_research:
   # ---- Stage 1: Deep Research Engine ----
   engine:
     enabled: true
+    # Citation grounding (output-side safety net): classify every cited URL against the GATHERED evidence;
+    # strip FABRICATED links (URLs no tool returned — the model invented them, e.g. a 404 news article with a
+    # fabricated opaque ID) while distinguishing provider-ROTTED links (gathered but now dead — hot stories
+    # get pulled/moved). Start in SHADOW (log only, answer unchanged) to baseline the live fabrication rate;
+    # set shadow:false to ENFORCE. No-op on healthy paths (wiki/papers/static — every cited URL is in
+    # evidence). on_unsourced governs a block left with 0 valid sources after grounding.
+    citation_grounding:
+      enabled: true
+      shadow: true              # true = compute + log only (answer unchanged); false = enforce (strip)
+      on_unsourced: flag        # flag (mark) | drop (remove block) | off
     # LOAD-BASED MODEL SPLIT for deep-research LLM calls. Deep research is NOT one-size-fits-all:
     # the high-frequency, SMALL calls (gate, planner, roster, grade, verify — all <~140K chars) run
     # great on the fast/cheap LIGHT model, while the single LARGE call (synthesis, which assembles

@@ -355,6 +355,33 @@ async def run_deep_research_pipeline(
     if not answer:
         answer = ("Deep research gathered evidence but the synthesis step produced no answer. "
                   "Please try again.")
+
+    # ── Citation grounding (output-side, news-focused safety net) ──────────────────────────────────────
+    # Classify every cited URL against the GATHERED evidence set. A URL no tool returned was INVENTED by the
+    # model (e.g. a 404 news article with a fabricated opaque ID — the reply-409 failure) → strip the link,
+    # keep the visible text; a gathered-but-now-dead URL is provider-ROTTED (hot breaking stories get pulled/
+    # re-titled/moved within minutes) and is distinguished, not blamed on the model. PURE + config-gated;
+    # SHADOW (default) logs the would-be changes WITHOUT touching the answer, to baseline the live fabrication
+    # rate first. No-op on healthy paths (wiki/papers/static: every cited URL is in evidence). Must NEVER
+    # discard a hard-won answer. See docs/RAICA_CITATION_GROUNDING_BY_REFERENCE.md.
+    try:
+        from research.citation_grounding import ground_citations
+        _cg = config.get("citation_grounding", {}) or {}
+        if _cg.get("enabled", True):
+            _shadow = bool(_cg.get("shadow", True))
+            _ev_urls = {u for e in evidence for u in (e.get("urls") or []) if u}
+            _gr = ground_citations(answer, _ev_urls,
+                                   on_unsourced=_cg.get("on_unsourced", "flag"), shadow=_shadow)
+            _s = _gr["stats"]
+            if _s["fabricated"] or _s["rotted"] or _s["items_unsourced"]:
+                logger.info("🔗 citation-grounding [%s]: fabricated=%d rotted=%d unsourced=%d/%d valid=%d "
+                            "stripped=%s", "SHADOW" if _shadow else "ACTIVE", _s["fabricated"], _s["rotted"],
+                            _s["items_unsourced"], _s["items_total"], _s["valid"],
+                            [u for _v, u in _s["stripped_urls"][:6]])
+            answer = _gr["text"]   # SHADOW → original unchanged; ACTIVE → grounded text
+    except Exception as _cg_e:  # noqa: BLE001 — grounding must NEVER discard a hard-won answer
+        logger.warning("🔗 citation-grounding skipped (non-fatal): %s", _cg_e)
+
     # Footer-less body for downstream delivery (PDF/email document content) — the audit footer is a
     # chat-UX affordance, not part of the deliverable. answer_body is captured BEFORE the footer.
     answer_body = answer
