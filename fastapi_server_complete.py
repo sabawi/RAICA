@@ -10413,18 +10413,62 @@ The above image analysis was automatically performed on newly uploaded images. T
 
                                     forced_tools = []
 
-                                    # Skip forced tools for title generation, tagging, or other meta tasks
+                                    # Skip the fallback for RAICA's OWN internal meta-task prompts (title / tag /
+                                    # summary generation): they use fixed templates, never need tools, and re-prompting
+                                    # them would add an LLM round-trip to every post. (This matches RAICA's own generated
+                                    # prompt text — NOT user-intent classification.)
                                     if any(meta_task in current_request for meta_task in ['generate a concise', 'title with emoji', 'generate 1-3 broad tags', 'chat history']):
                                         logger.info("🚫 SKIPPING FORCED TOOLS: This is a meta/title/tag generation request")
-                                    elif any(keyword in current_request for keyword in ['aapl', 'apple stock', 'apple inc']):
-                                        forced_tools.append(('get_news_summaries', {'filter': 'AAPL'}))
-                                        logger.info("🚨 FORCING get_news_summaries(filter='AAPL') - model refused to gather AAPL data")
-                                    elif any(keyword in current_request for keyword in ['stock', 'financial analysis', 'company analysis']):
-                                        forced_tools.append(('comprehensive_stock_analyzer', {}))
-                                        logger.info("🚨 FORCING comprehensive_stock_analyzer() - model refused to gather stock data")
-                                    elif any(keyword in current_request for keyword in ['news', 'current events']):
-                                        forced_tools.append(('get_news_summaries', {}))
-                                        logger.info("🚨 FORCING get_news_summaries() - model refused to gather news data")
+                                    else:
+                                        # POLICY-DRIVEN FALLBACK (CLAUDE.md LLM-Policy Gate — NO keyword meaning-guessing):
+                                        # the tool model returned no tools. The old code here classified the request by
+                                        # keywords and force-called a tool — which mis-routed news/general requests to a
+                                        # ticker-only stock tool whenever the prompt merely contained the word "stock"
+                                        # (e.g. the tool name "get_stock_and_company_data" printed in the bot's own
+                                        # citation prompt), producing a TOOL-MISUSE error and a sourceless post. Instead,
+                                        # re-prompt the SAME tool model ONCE with a firm directive: gather evidence IF the
+                                        # request needs external/current info, else return none. The LLM decides; RAICA
+                                        # only executes what it returns. (Transient 5xx that produce an empty result are
+                                        # already retried inside the provider, so reaching here is a GENUINE "no tools".)
+                                        try:
+                                            reprompt = (
+                                                f"{user_message}\n\n"
+                                                "=== TOOL-USE RE-CHECK ===\n"
+                                                "You returned NO tool calls for the request above. Reconsider:\n"
+                                                "- If answering it ACCURATELY requires current or external information "
+                                                "(latest news, real-world facts, live data/prices, web pages, documents, "
+                                                "company/financial data, etc.), you MUST now call the appropriate tool(s) "
+                                                "to gather it.\n"
+                                                "- If the request is purely conversational/creative or is fully "
+                                                "answerable from your own knowledge, return NO tools.\n"
+                                                "Use ONLY the tools provided."
+                                            )
+                                            logger.info("🔁 NO-TOOLS RE-PROMPT: asking the tool model to reconsider evidence gathering")
+                                            reprompt_resp = await llm_manager.generate_tools(
+                                                prompt=reprompt,
+                                                tools=tools_array,
+                                                model=tools_model,
+                                                system_prompt=system_prompt,
+                                                temperature=0,
+                                                max_tokens=4096
+                                            )
+                                            for tc in (reprompt_resp or {}).get('tool_calls', []) or []:
+                                                fn = tc.get('function', {})
+                                                fn_name = fn.get('name')
+                                                fn_args = fn.get('arguments')
+                                                if isinstance(fn_args, str):
+                                                    try:
+                                                        fn_args = json.loads(fn_args)
+                                                    except (json.JSONDecodeError, TypeError):
+                                                        fn_args = {}
+                                                if fn_name:
+                                                    forced_tools.append((fn_name, fn_args if isinstance(fn_args, dict) else {}))
+                                            if forced_tools:
+                                                logger.info(f"🔁 RE-PROMPT selected evidence tool(s): {[t[0] for t in forced_tools]}")
+                                            else:
+                                                logger.info("🔁 RE-PROMPT confirmed no tools needed — trusting the model")
+                                        except Exception as _reprompt_err:
+                                            logger.warning(f"🔁 NO-TOOLS RE-PROMPT skipped (non-fatal): {_reprompt_err}")
 
                                     # Execute forced tool calls - PARALLEL EXECUTION OPTIMIZATION
                                     if forced_tools:

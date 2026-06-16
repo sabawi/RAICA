@@ -188,54 +188,82 @@ class OpenAIProvider(LLMProvider):
         logger.info(f"🔧 OpenAI tool request: model={model}, tools={len(tools)}")
         # logger.info(f"🔍 OPENAI PAYLOAD SIMULATION: {json.dumps(payload, indent=2)[:500]}...")
         
-        try:
-            async with session.post(
-                f"{self.base_url}/chat/completions",
-                json=payload
-            ) as response:
-                
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"❌ OpenAI tool API error {response.status}: {error_text}")
-                    raise Exception(f"OpenAI tool API error: {response.status} - {error_text}")
-                
-                response_data = await response.json()
-                
-                # Extract tool calls and content
-                choices = response_data.get('choices', [])
-                if not choices:
-                    raise Exception("No choices in OpenAI response")
-                
-                message = choices[0].get('message', {})
-                tool_calls = message.get('tool_calls', [])
-                content = message.get('content', '')
-                
-                # Convert OpenAI format to our standard format
-                formatted_tool_calls = []
-                for tool_call in tool_calls:
-                    function = tool_call.get('function', {})
-                    formatted_tool_calls.append({
-                        'id': tool_call.get('id'),
-                        'type': 'function',
-                        'function': {
-                            'name': function.get('name'),
-                            'arguments': function.get('arguments')
+        # Transient-error resilience: the cloud tool endpoint (e.g. *:cloud via the Ollama OpenAI proxy)
+        # intermittently returns 5xx. Without a retry, one brief blip silently degrades to "no tool calls"
+        # → no evidence gathered → e.g. autonomous news posts get discarded for missing citations. Retry
+        # 5xx and timeouts with linear backoff (config-driven). NEVER retry 4xx (client errors won't fix).
+        retry_attempts = max(1, int(self.config.get('retry_attempts', 3)))
+        retry_delay = float(self.config.get('retry_delay', 1))
+        last_error = None
+
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload
+                ) as response:
+
+                    if response.status >= 500:
+                        # Transient server error — retry with backoff.
+                        error_text = await response.text()
+                        last_error = Exception(f"OpenAI tool API error: {response.status} - {error_text[:300]}")
+                        logger.warning(
+                            f"⚠️ OpenAI tool API {response.status} (attempt {attempt}/{retry_attempts}) — "
+                            f"transient: {error_text[:150]}"
+                        )
+                    elif response.status != 200:
+                        # Client error (4xx) — not retryable.
+                        error_text = await response.text()
+                        logger.error(f"❌ OpenAI tool API error {response.status}: {error_text}")
+                        raise Exception(f"OpenAI tool API error: {response.status} - {error_text}")
+                    else:
+                        response_data = await response.json()
+
+                        # Extract tool calls and content
+                        choices = response_data.get('choices', [])
+                        if not choices:
+                            raise Exception("No choices in OpenAI response")
+
+                        message = choices[0].get('message', {})
+                        tool_calls = message.get('tool_calls', [])
+                        content = message.get('content', '')
+
+                        # Convert OpenAI format to our standard format
+                        formatted_tool_calls = []
+                        for tool_call in tool_calls:
+                            function = tool_call.get('function', {})
+                            formatted_tool_calls.append({
+                                'id': tool_call.get('id'),
+                                'type': 'function',
+                                'function': {
+                                    'name': function.get('name'),
+                                    'arguments': function.get('arguments')
+                                }
+                            })
+
+                        if attempt > 1:
+                            logger.info(f"✅ OpenAI tool API recovered on attempt {attempt}/{retry_attempts}")
+                        return {
+                            'tool_calls': formatted_tool_calls,
+                            'content': content,
+                            'usage': response_data.get('usage', {}),
+                            'model': model
                         }
-                    })
-                
-                return {
-                    'tool_calls': formatted_tool_calls,
-                    'content': content,
-                    'usage': response_data.get('usage', {}),
-                    'model': model
-                }
-                
-        except asyncio.TimeoutError:
-            logger.error("⏰ OpenAI tool request timeout")
-            raise Exception("OpenAI tool request timed out")
-        except Exception as e:
-            logger.error(f"❌ OpenAI tool calling error: {e}")
-            raise
+
+            except asyncio.TimeoutError:
+                last_error = Exception("OpenAI tool request timed out")
+                logger.warning(f"⏰ OpenAI tool request timeout (attempt {attempt}/{retry_attempts})")
+            except Exception as e:
+                # Non-transient (4xx, no-choices, parse) — do not retry.
+                logger.error(f"❌ OpenAI tool calling error: {e}")
+                raise
+
+            # Reached only after a transient failure (5xx or timeout): back off before the next attempt.
+            if attempt < retry_attempts:
+                await asyncio.sleep(retry_delay * attempt)
+
+        logger.error(f"❌ OpenAI tool API failed after {retry_attempts} attempts: {last_error}")
+        raise last_error if last_error else Exception("OpenAI tool calling failed")
     
     async def health_check(self) -> bool:
         """Check OpenAI API health
