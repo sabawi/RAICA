@@ -81,7 +81,7 @@ llm:
   tool_calling:
     type: openai
     config:
-      model: qwen3-coder-next:cloud
+      model: glm-5.2:cloud   # was qwen3-coder-next:cloud — swapped for more reliable tool selection (qwen threw intermittent 500s on Ollama cloud, breaking news-bot evidence gathering). LOCAL trial first.
       timeout: 120
       context_window_size: 32768
       temperature: 0.1
@@ -160,7 +160,7 @@ arbitrator:
   enabled: true
   type: openai
   config:
-    model: qwen3-coder-next:cloud
+    model: glm-5.2:cloud   # was qwen3-coder-next:cloud — same swap as tool_calling; no path should depend on the flaky qwen cloud model.
     timeout: 60
     context_window_size: 4096
     temperature: 0.1
