@@ -42,14 +42,16 @@ def test_validate_article_url_baseline():
     assert not F._validate_article_url("")
 
 
-def test_google_news_article_redirect_accepted_but_feeds_rejected():
-    # A Google-News per-article redirect (/rss/articles/…) IS a specific article — must be accepted,
-    # even though it contains '/rss'. But Google-News FEEDS (/rss/headlines, /rss/search) and ordinary
-    # RSS feeds must STILL be rejected.
-    assert F._validate_article_url("https://news.google.com/rss/articles/CBMiYkFVX3lxTFBRb1lveXZVdjZ")
+def test_google_news_urls_suppressed():
+    # Google News is SUPPRESSED in favor of search_web (v1.0.0.125): ALL google-news URLs are rejected —
+    # the article redirects (/rss/articles/…) AND the feeds (/rss/headlines, /rss/search) — because the
+    # /rss/articles/ redirects are story AGGREGATORS that collapse many outlets onto one shared google.com
+    # URL (confusing "every citation points to the same URL" links). Real publisher article URLs are kept.
+    assert not F._validate_article_url("https://news.google.com/rss/articles/CBMiYkFVX3lxTFBRb1lveXZVdjZ")
     assert not F._validate_article_url("https://news.google.com/rss/headlines/section/topic/WORLD")
     assert not F._validate_article_url("https://news.google.com/rss/search?q=fifa")
     assert not F._validate_article_url("https://www.theguardian.com/world/rss")
+    assert F._validate_article_url("https://www.bbc.com/news/articles/cd0p8me2m5do")
 
 
 def test_rss_extracts_specific_urls_and_skips_no_url_items():
@@ -97,7 +99,7 @@ def test_rss_feed_with_valid_article_is_cited_with_specific_url():
 
 if __name__ == "__main__":
     test_validate_article_url_baseline();                       print("PASS: _validate_article_url baseline")
-    test_google_news_article_redirect_accepted_but_feeds_rejected(); print("PASS: Google News article accepted, feeds rejected")
+    test_google_news_urls_suppressed();                         print("PASS: Google News URLs suppressed (favor search_web)")
     test_rss_extracts_specific_urls_and_skips_no_url_items();   print("PASS: RSS extracts specific URLs / skips no-URL")
     test_non_rss_section_page_is_not_cited();                   print("PASS: section page not cited")
     test_rss_feed_yielding_no_article_is_skipped_not_feed_cited(); print("PASS: empty feed skipped (no feed-URL citation)")

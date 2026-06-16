@@ -3014,14 +3014,14 @@ def _validate_article_url(url: str) -> bool:
     if not url.startswith(('http://', 'https://')):
         return False
 
-    # Reject feed/RSS endpoints (these are not article URLs). EXCEPTION: a Google-News article link lives
-    # under '/rss/articles/…' — that is a SPECIFIC per-article URL (it resolves, in a browser, to the
-    # publisher's article via Google's redirect), so the '/rss' indicator must NOT reject it. This is a
-    # URL-structure distinction (article path vs feed endpoint), not content/intent classification.
+    # Reject feed/RSS endpoints (these are not article URLs). This deliberately ALSO rejects Google-News
+    # article-redirect links (news.google.com/rss/articles/…): those are story AGGREGATORS — one shared
+    # google.com URL spanning many outlets — which the synthesis model collapses into confusing "every
+    # citation points to the same URL" links (plus a bare google.com host). Google News is SUPPRESSED in
+    # favor of search_web, which returns clean, specific publisher URLs. (Reverts the v1.0.0.123
+    # /rss/articles/ exemption; see CHANGELOG_v1.0.0.125.)
+    feed_indicators = ['/feed', '/rss', '.xml', '.rss', '/atom', 'feedburner']
     url_lower = url.lower()
-    feed_indicators = ['/feed', '.xml', '.rss', '/atom', 'feedburner']
-    if '/rss/articles/' not in url_lower:
-        feed_indicators.append('/rss')
     for indicator in feed_indicators:
         if indicator in url_lower:
             return False
