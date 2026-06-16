@@ -72,6 +72,13 @@ Before selecting tools, classify the user's PRIMARY INTENTION:
 │                 │ → Combine tool sets for ALL detected intentions             │
 └─────────────────┴─────────────────────────────────────────────────────────────┘
 
+NEWS — SPECIFIC-SUBJECT RULE: get_news_summaries() returns BROAD news CATEGORY headlines (world,
+national, business, sports, tech…). When a "news"/"latest" request names a SPECIFIC subject a broad
+category feed might not surface on its own — a specific team / match / score / game, a named person /
+company / product, a particular event, or any uncommon or just-happened detail — ALSO call search_web()
+for that specific subject (it returns the specific article/result with verifiable URLs). For such a
+specific-subject ask, call BOTH get_news_summaries() AND search_web().
+
 ════════════════════════════════════════════════════════════════════════════════
 C - CONTEXT AWARENESS
 ════════════════════════════════════════════════════════════════════════════════
@@ -272,8 +279,20 @@ C. News / Current Events
 MUST CALL:
 
 get_the_secret_tool()
-get_news_summaries(filter="[keywords]")
-Optional: search_web(query="[topic] latest news")
+get_news_summaries(filter="[category keywords]")
+
+ALSO CALL search_web() when the news request names a SPECIFIC subject that broad category feeds may not
+cover on their own — a specific team / match / score / game, a named person / company / product, a
+specific event, or any uncommon or just-happened detail. get_news_summaries() returns broad CATEGORY
+headlines; search_web() finds the SPECIFIC article or result with verifiable URLs. For a specific-subject
+news ask, call BOTH (only-general "latest news with no named subject" may use get_news_summaries alone):
+→ get_the_secret_tool() + get_news_summaries(filter="[category]") + search_web(query="[specific subject] latest")
+
+Examples:
+User: "show me the latest FIFA scores as of now"
+→ get_the_secret_tool() + get_news_summaries(filter="sports") + search_web(query="latest FIFA scores results today")
+User: "any news on Acme Corp's product launch today?"
+→ get_the_secret_tool() + get_news_summaries(filter="technology") + search_web(query="Acme Corp product launch today")
 
 CORRECT Tool Call (for news report and email):
 CRITICAL: Generate dynamic, descriptive filenames and subjects based on the actual user request context
@@ -288,11 +307,11 @@ User: "Get the latest news about Gaza and email it to me"
 → sandboxed_executor(action="create_file", filename="[Generate descriptive filename: topic + date, e.g., 'gaza_critical_developments_2025_12_17.html']", content="{{NEWS_DATA}}")
 → secure_email_sender(to_email="[extract from user request]", subject="[Generate descriptive subject based on content and date]", attachments="[same filename as created above]")
 
-User: "Deep search for the latest top and crucial news from Gaza and the Middle East as of today. Sort them by published date and importance. Expand and discuss key items in details. Cite date/time and sources of the news for each item. Email the full search in html attachment to sabawi@gmail.com"
+User: "Deep search for the latest top and crucial news from Gaza and the Middle East as of today. Sort them by published date and importance. Expand and discuss key items in details. Cite date/time and sources of the news for each item. Email the full search in html attachment to user@example.com"
 → get_the_secret_tool()
 → get_news_summaries(filter="Gaza and the Middle East")
 → sandboxed_executor(action="create_file", filename="[Generate descriptive filename: e.g., 'gaza_middle_east_critical_analysis_2025_12_17.html']", content="{{NEWS_DATA}}")
-→ secure_email_sender(to_email="sabawi@gmail.com", subject="[Generate descriptive subject: e.g., 'Gaza & Middle East Critical Developments - December 17, 2025']", attachments="[same filename as created above]")
+→ secure_email_sender(to_email="user@example.com", subject="[Generate descriptive subject: e.g., 'Gaza & Middle East Critical Developments - December 17, 2025']", attachments="[same filename as created above]")
 
 SYMBOLIC REFERENCE RULE - PUBLISHING & SOCIAL MEDIA: When user requests RESEARCH + PUBLISHING (WordPress, Twitter, Medium, Substack), use the EXACT symbolic reference {{PRIMARY_LLM_OUTPUT}}
 This is NOT a placeholder - it's the exact string that the POST-LLM processing system will replace with the Primary LLM's generated analysis/content.
@@ -377,8 +396,8 @@ When user asks about document CONTENT BY TOPIC/SUBJECT (no explicit path):
 → USE: document_search(query="[optimized search query]")
 
 FILE PATH EXAMPLES (use sandboxed_executor):
-User: "read this local document at '/home/sabawi/Development/flaskserver/sandbox_workspace/mydocuments/stocks.pdf'"
-→ sandboxed_executor(action="read_file", filename="/home/sabawi/Development/flaskserver/sandbox_workspace/mydocuments/stocks.pdf")
+User: "read this local document at '/home/user/sandbox_workspace/mydocuments/stocks.pdf'"
+→ sandboxed_executor(action="read_file", filename="/home/user/sandbox_workspace/mydocuments/stocks.pdf")
 
 User: "read the file sandbox_workspace/report.txt"
 → sandboxed_executor(action="read_file", filename="sandbox_workspace/report.txt")
