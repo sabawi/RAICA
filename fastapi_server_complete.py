@@ -6341,6 +6341,31 @@ async def _llm_document_title(content: str, user_prompt: str, llm_manager) -> st
     return "Document"
 
 
+async def _llm_title_from_request(user_prompt: str, content: str, generate_stream) -> str:
+    """Concise document title derived by the LLM from the user's RESEARCH REQUEST (with a content excerpt
+    for context) — used when the document has NO usable top-level title heading (none, or the first
+    heading is an enumerated *section* like '# 1. …'). Unlike `_llm_document_title`, this does NOT read
+    the content's first heading, so it can't echo a section heading back as the title. No keyword/topic
+    map (LLM-Policy Gate). `generate_stream` is the LLM streaming fn (e.g. llm_manager.generate_stream).
+    Returns '' on failure/unavailable so the caller can apply its own generic fallback."""
+    try:
+        if not generate_stream:
+            return ""
+        from research.engine import _collect_stream
+        _sys = ("Produce a SHORT document title (3-8 words, Title Case, no surrounding quotes, no trailing "
+                "punctuation, NOT numbered) naming the OVERALL topic of the user's request below. Ignore any "
+                "delivery instructions (email/PDF/format). Output ONLY the title text, nothing else.")
+        _usr = (f"USER REQUEST:\n{(user_prompt or '')[:600]}\n\n"
+                f"DOCUMENT EXCERPT:\n{(content or '')[:1200]}\n\nTitle:")
+        _raw = await _collect_stream(generate_stream, _usr, system_prompt=_sys,
+                                     temperature=0.0, max_tokens=24, stream=False)
+        _lines = (_raw or "").strip().splitlines()
+        return _lines[0].strip().strip('"').strip("#").strip()[:120] if _lines else ""
+    except Exception as _e:  # noqa: BLE001 — a title is cosmetic; never break delivery over it
+        logger.warning(f"📄 DR title-from-request failed ({_e}); caller will use a generic title")
+        return ""
+
+
 async def _llm_requested_formats(user_prompt: str, llm_manager, default: str = "html") -> list:
     """Which document format(s) the user asked to RECEIVE (subset of pdf/html/md/txt) — decided by the
     LLM, NOT brittle substring matching. (The old `resolve_delivery_formats` matched 'text' inside
@@ -7727,12 +7752,21 @@ async def _run_dr_delivery(actions: list, deliverable_spec: dict, doc_body: str,
     for _i, _line in enumerate(_body_lines):
         _m = _re.match(r'^#{1,4}\s+(.+\S)', _line.strip())
         if _m:
-            doc_title = _m.group(1).strip().strip("#").strip()[:120]
-            _title_idx = _i
+            _cand = _m.group(1).strip().strip("#").strip()
+            # Accept the first heading as the document TITLE only if it is NOT an enumerated SECTION
+            # heading ("1. …", "2) …", "Part 3 …", "Section 4 …", "Chapter 5 …"). A numbered first
+            # heading is a section, not a title — using it is what made the email subject read like a
+            # section ("1. The Deep Roots …"). When it IS a section, leave doc_title empty so we derive a
+            # proper title from the research request below (and do NOT strip the section from the body).
+            if not _re.match(r'^(\d+\s*[\.\):]|part\s+\d+|section\s+\d+|chapter\s+\d+)', _cand, _re.IGNORECASE):
+                doc_title = _cand[:120]
+                _title_idx = _i
             break
     _title_from_body = bool(doc_title)
     if not doc_title:
-        doc_title = _generate_dynamic_title(user_prompt, "") or "Deep Research Report"
+        # No usable title heading (none, or the first heading was an enumerated section): derive the title
+        # from the RESEARCH REQUEST via the LLM — topic-accurate and policy-compliant (no keyword map).
+        doc_title = (await _llm_title_from_request(user_prompt, doc_body, generate_stream)) or "Deep Research Report"
     _slug = _re.sub(r'[^a-z0-9]+', '_', doc_title.lower()).strip('_')[:60] or "deep_research"
     # PDF body: drop the paper's own leading title heading so the rendered title (passed as the
     # `title` param) isn't duplicated. Only when the title actually came from the body. The chat
