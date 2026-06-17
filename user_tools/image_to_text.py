@@ -170,26 +170,42 @@ class ImageToTextTool(BaseUserTool):
         # Use the appropriate vision provider based on configuration
         vision_type = self.vision_config.get('type', 'ollama')
 
-        try:
+        def _run(model):
             if vision_type == 'ollama':
-                return self._process_with_ollama(image_processing_model, imgPrompt, processed_img, todayStr)
-            else:
-                return self._process_with_openai_compatible_api(image_processing_model, imgPrompt, processed_img, todayStr)
-            
+                return self._process_with_ollama(model, imgPrompt, processed_img, todayStr)
+            return self._process_with_openai_compatible_api(model, imgPrompt, processed_img, todayStr)
+
+        try:
+            return _run(image_processing_model)
         except TimeoutError as e:
-            logger.error(f"🖼️ Vision model timeout: {e}")
-            return {
-                "success": False,
-                "error": f"Vision model processing timeout: {str(e)}. The model qwen2.5vl:3b may need to be reloaded or replaced."
-            }
+            primary_error = f"timeout: {e}"
+            logger.error(f"🖼️ Vision model '{image_processing_model}' timeout: {e}")
         except Exception as e:
-            logger.error(f"🖼️ Image processing exception: {e}")
-            # Try fallback to basic error response
-            fallback_response = f"Image processing encountered an error: {str(e)}. The vision model may need attention."
-            return {
-                "success": False,
-                "error": fallback_response
-            }
+            primary_error = str(e)
+            logger.error(f"🖼️ Image processing exception ({image_processing_model}): {e}")
+
+        # Primary vision model failed (e.g. retired/410, 4xx, timeout). Retry ONCE with the configured
+        # CLOUD fallback_model — ideally a DIFFERENT model family. This is exactly what auto-survives a
+        # model retirement like the qwen3-vl:235b removal (Ollama, 2026-06-16) instead of telling the
+        # user "I can't see the image". Both models must be cloud (live server has no GPU).
+        fallback_model = self.vision_config.get('fallback_model')
+        if fallback_model and fallback_model != image_processing_model:
+            logger.warning(f"🖼️ Primary vision model '{image_processing_model}' failed "
+                           f"({primary_error[:140]}) — retrying with fallback '{fallback_model}'")
+            try:
+                result = _run(fallback_model)
+                logger.info(f"🖼️ Fallback vision model '{fallback_model}' succeeded")
+                return result
+            except Exception as fe:
+                logger.error(f"🖼️ Fallback vision model '{fallback_model}' also failed: {fe}")
+                primary_error = f"{primary_error}; fallback '{fallback_model}' also failed: {fe}"
+
+        return {
+            "success": False,
+            "error": (f"Image processing failed (primary '{image_processing_model}'"
+                      + (f" + fallback '{fallback_model}'" if fallback_model else "")
+                      + f"): {primary_error}. The vision model(s) may need attention.")
+        }
 
     def _process_image_data(self, img_data):
         """Process different image data formats for Ollama."""

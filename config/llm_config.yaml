@@ -518,12 +518,12 @@ code_generation:
 vision:
   type: ollama
   config:
-    model: qwen3-vl:235b-cloud
+    model: kimi-k2.7-code:cloud   # was qwen3-vl:235b-cloud — Ollama RETIRED qwen3-vl:235b on 2026-06-16 (HTTP 410), breaking all image input. kimi-k2.7-code:cloud is vision-capable, fast (~5s) and accurate (verified on a real photo). Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
     timeout: 1800
     temperature: 0.7
     max_tokens: 16384
     base_url: http://127.0.0.1:11434
-    fallback_model: qwen2.5vl:3b
+    fallback_model: gemma3:27b-cloud   # was qwen2.5vl:3b (local, too slow on the no-GPU live box) — gemma3:27b-cloud is a verified vision-capable CLOUD backup in a DIFFERENT model family than the primary (survives if either family is retired).
   image_processing:
     max_size_mb: 1.0
     resize_enabled: true
