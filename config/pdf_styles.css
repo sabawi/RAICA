@@ -494,3 +494,24 @@ li {
 .page-break-before { page-break-before: always; }
 .page-break-after { page-break-after: always; }
 .no-page-break { page-break-inside: avoid; }
+
+/* ── On-screen (browser) view — DOES NOT affect the PDF ──────────────────────────────────────────
+   The PDF's page margins come from the @page rules above, which BROWSERS IGNORE; combined with
+   `body { margin: 0 }` that left the standalone .html rendering edge-to-edge and looking far plainer
+   than the weasyprinted .pdf (this is the "html not as stylized as the pdf" report). WeasyPrint
+   renders this stylesheet as PRINT media, so these @media screen rules apply ONLY to the .html opened
+   in a browser — giving it the same letter-width, centered, margined "page" framing (6.5in text
+   measure, identical to the PDF) while leaving the .pdf visually unchanged. */
+@media screen {
+    html {
+        background: #e9ecef;
+    }
+    body {
+        max-width: 8.5in;
+        margin: 2rem auto;
+        padding: 1in;
+        background: #ffffff;
+        box-shadow: 0 2px 14px rgba(0, 0, 0, 0.12);
+        border-radius: 4px;
+    }
+}

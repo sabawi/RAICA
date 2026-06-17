@@ -1030,7 +1030,7 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
             return await self._create_real_pdf_file(filename, content, title=kwargs.get("title"))
         elif filename_lower.endswith('.html'):
             print("💥💥💥 _CREATE_FILE: Detected .html extension -> calling _create_real_html_file")
-            return await self._create_real_html_file(filename, content)
+            return await self._create_real_html_file(filename, content, title=kwargs.get("title"))
         elif filename_lower.endswith('.md'):
             print("💥💥💥 _CREATE_FILE: Detected .md extension -> calling _create_real_md_file")
             return await self._create_real_md_file(filename, content)
@@ -1403,7 +1403,7 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
             print(f"⚠️ Resume name extraction error: {e}")
             return None  # Return original content if replacement fails
 
-    async def _create_real_html_file(self, filename: str, content: str) -> Dict[str, Any]:
+    async def _create_real_html_file(self, filename: str, content: str, title: str = None) -> Dict[str, Any]:
         """Create a properly formatted HTML file from markdown or plain text content"""
         try:
             print(f"🔧 AUTO-HTML: Detected .html request, creating formatted HTML file")
@@ -1419,28 +1419,26 @@ Configuration: config/llm_config.yaml -> user_tools.sandboxed_executor
             # Create parent directories if needed
             Path(file_path).parent.mkdir(parents=True, exist_ok=True)
             
-            # Check if content is already complete HTML (starts with DOCTYPE or <html>)
-            content_lower = content.strip().lower()
-            if content_lower.startswith('<!doctype html') or content_lower.startswith('<html'):
-                print("🔧 AUTO-HTML: Content is already complete HTML, saving directly")
-                html_content = content  # Use content as-is
-            else:
-                print("🔧 AUTO-HTML: Content needs HTML conversion, formatting as HTML")
-                # Extract title from content
+            # SINGLE WORKFLOW (design invariant): EVERY .html file is rendered through the ONE shared
+            # template — html_generator.generate_html_report(force_template=True) via _convert_to_html_shared
+            # — the SAME generator the .pdf uses. Content that is ALREADY a complete HTML document is NOT
+            # saved raw here (that would bypass the standard style and FORK the workflow): force_template
+            # detects it and re-renders its <body> through the standard template (html_generator.py), so the
+            # .html and .pdf stay consistent in structure + style. Title precedence MATCHES the PDF path: an
+            # explicit caller-supplied title (e.g. deep-research delivery) wins; otherwise derive one from
+            # the content (first '# ' heading, else first substantial line).
+            if not title:
                 title = Path(filename).stem if filename else "Report"
                 if content:
-                    lines = content.split('\n')
-                    for line in lines[:5]:  # Check first 5 lines for title
+                    for line in content.split('\n')[:5]:
                         line = line.strip()
                         if line.startswith('# '):
                             title = line[2:].strip()
                             break
                         elif line and not line.startswith('#') and len(line) > 10:
-                            title = line[:50] + "..." if len(line) > 50 else line
+                            title = (line[:50] + "...") if len(line) > 50 else line
                             break
-                
-                # Convert markdown-like content to HTML using shared template
-                html_content = self._convert_to_html_shared(content, title)
+            html_content = self._convert_to_html_shared(content, title)
             
             # Write HTML file
             with open(file_path, 'w', encoding='utf-8') as f:
