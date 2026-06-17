@@ -145,3 +145,6 @@ test_sys_dep.py
 debug_pygobject.py
 examine_*
 fix_this_*
+deepseek_output.txt
+scratch_*.py
+test_reasoning.py
