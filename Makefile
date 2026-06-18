@@ -12,5 +12,8 @@ benchmark-full:           ## Tier 1 — real-LLM golden scenarios vs baseline (l
 benchmark-all:            ## Tiers 0+1+2
 	$(PY) tests/benchmark/run_benchmark.py --tier all
 
+benchmark-nightly:        ## Tier 1 nightly run (local) -> logs/benchmark/ (cron-able)
+	bash tools/benchmark_nightly.sh
+
 install-hooks:            ## wire the benchmark Tier-0 pre-commit trigger (idempotent)
 	bash tools/install_git_hooks.sh

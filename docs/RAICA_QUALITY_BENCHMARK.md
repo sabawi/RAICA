@@ -209,12 +209,20 @@ tests/benchmark/
 ---
 
 ## 10. Rollout plan
-1. **Phase A (cheap, immediate):** consolidate Tier 0 into `run_benchmark.py` + `make benchmark` + the
-   pre-commit hook (blocks on Tier-0 CODE regression). Floor in place same day.
-2. **Phase B:** build the scoring engine (`scoring.py`) + the scorecard/baseline-delta model + S1/S2/S3
-   (news, DR+email, vision) — the three highest-value real scenarios. Capture the baseline.
-3. **Phase C:** add S4/S5/S6, latency Tier 2, nightly cron (local).
-4. Maintain: baseline updates are explicit + reviewed.
+1. **Phase A — DONE (bb43fdf, 2026-06-17):** Tier-0 runner + `make benchmark` + pre-commit hook (blocks on
+   a Tier-0 CODE regression when a CORE file is staged). Floor in place.
+2. **Phase B — DONE (74001f0):** scoring engine (`scoring.py`) + scorecard/baseline-delta + `/v1` client +
+   S1/S2/S3. Baseline captured at RAICA v1.0.0.131 / NewX f43b3e2 (SUITE PASS): S1 specific_url_ratio 0.909
+   / citation_count 11; S3 keyword_hits 1.0; S2 attachments 2, pdf_valid + html_self_contained True,
+   doc_title_is_section False, DR latency 237s.
+3. **Phase C — DONE:** Tier-2 per-stage latency added to the scorecard (`vision_model_s` — the
+   kimi/minimax dial; `dr_synthesize_s`, `dr_verify_s` — parsed from the server log) + nightly automation
+   (`make benchmark-nightly` / `tools/benchmark_nightly.sh`, cron line documented). Baseline re-captured =
+   16 metrics, SUITE PASS (vision_model_s 7.9s; dr_synthesize 71.6s; dr_verify 82.6s). **Design refinement:**
+   S5 (grounding) + S6 (resilience) are kept as **Tier-0 deterministic gates** (correct home — always-on
+   commit gate; not duplicated into the costly real-LLM scorecard). S4 (NewX citation guard) is folded into
+   the NewX work (it's NewX behavior).
+4. Maintain: baseline updates are explicit + reviewed (`--update-baseline --reason`).
 
 ---
 

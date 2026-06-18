@@ -55,7 +55,9 @@ def run(base, repeats=1):   # DR is ~5 min; default 1 run (expensive). Median of
     for _ in range(repeats):
         t0 = time.time()
         r = RC.post_v1(PROMPT, base=base, deep_research=True, timeout=700)
-        files = RC.created_delivery_files(RC.log_window_since(t0))
+        log = RC.log_window_since(t0)
+        files = RC.created_delivery_files(log)
+        phases = RC.dr_phase_timings(log)   # Tier-2 per-stage
         pdfs = [f for f in files if f.lower().endswith(".pdf")]
         htmls = [f for f in files if f.lower().endswith(".html")]
         html0 = htmls[0] if htmls else None
@@ -65,6 +67,8 @@ def run(base, repeats=1):   # DR is ~5 min; default 1 run (expensive). Median of
             _m("pdf_valid",             "CODE", _pdf_valid(pdfs[0]) if pdfs else False,   "bool", "must_equal", 0),
             _m("html_self_contained",   "CODE", _html_self_contained(html0),              "bool", "must_equal", 0),
             _m("doc_title_is_section",  "CODE", _title_is_section(html0),                 "bool", "must_equal", 0),
+            _m("dr_synthesize_s",       "PERF", phases.get("synthesize"),                 "seconds", "lower_better", 40),
+            _m("dr_verify_s",           "PERF", phases.get("verify"),                     "seconds", "lower_better", 40),
             _m("dr_latency_s",          "PERF", r["latency_s"],                           "seconds", "lower_better", 120),
         ])
     return runs

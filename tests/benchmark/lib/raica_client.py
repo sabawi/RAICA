@@ -117,6 +117,30 @@ def log_window_since(t_start):
         return []
 
 
+def vision_seconds(log_lines):
+    """Per-stage latency (Tier 2): seconds the VISION model took, from
+    '🖼️ FORCED IMAGE PROCESSING COMPLETE: 1 images processed in Xs'. None if not found."""
+    for line in reversed(log_lines):
+        m = re.search(r"images processed in ([\d.]+)s", line)
+        if m:
+            return float(m.group(1))
+    return None
+
+
+def dr_phase_timings(log_lines):
+    """Per-stage latency (Tier 2): DR pipeline phase seconds from the 'Deep research pipeline complete'
+    metadata timings dict (synthesize/verify/grade/gather). {} if not found."""
+    for line in reversed(log_lines):
+        if "Deep research pipeline complete" in line:
+            out = {}
+            for k in ("synthesize", "verify", "grade", "gather"):
+                m = re.search(rf"'{k}':\s*([\d.]+)", line)
+                if m:
+                    out[k] = float(m.group(1))
+            return out
+    return {}
+
+
 def created_delivery_files(log_lines):
     """Parse '📦 delivery: created N document(s): [a.pdf, b.html]' -> absolute paths in the sandbox dir."""
     sandbox = os.path.join(os.path.expanduser("~"), "sandbox_workspace")

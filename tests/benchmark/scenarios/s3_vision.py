@@ -19,16 +19,20 @@ def _m(name, cls, value, unit, direction, tol):
 
 
 def run(base, repeats=3):
+    import time
     img = RC.encode_image(FIXTURE)
     runs = []
     for _ in range(repeats):
+        t0 = time.time()
         r = RC.post_v1(PROMPT, base=base, images=[img], deep_research=False, timeout=180)
         low = (r["text"] or "").lower()
         ran = bool(r["text"]) and len(r["text"]) > 40
         hits = round(sum(1 for k in EXPECTED if k in low) / len(EXPECTED), 3)
+        vis_s = RC.vision_seconds(RC.log_window_since(t0))   # Tier-2 per-stage (the kimi/minimax dial)
         runs.append([
             _m("vision_ran",               "CODE", ran,            "bool",    "must_equal",    0),
             _m("description_keyword_hits", "CODE", hits,           "ratio",   "higher_better", 0.25),
+            _m("vision_model_s",           "PERF", vis_s,          "seconds", "lower_better",  10),
             _m("latency_s",                "PERF", r["latency_s"], "seconds", "lower_better",  20),
         ])
     return runs
