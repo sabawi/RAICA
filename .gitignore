@@ -151,3 +151,7 @@ test_reasoning.py
 
 # Benchmark run output
 tests/benchmark/scorecard.json
+
+# Benchmark engine (override any generic lib/ ignore)
+!tests/benchmark/lib/
+!tests/benchmark/lib/*.py

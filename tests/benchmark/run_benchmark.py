@@ -31,6 +31,8 @@ import sys
 import time
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, BENCH_DIR)   # so `lib` and `scenarios` import even when run via the hook/subprocess
 
 # ── Tier 0: deterministic offline gates (each file is a standalone script exiting 0 on pass) ──────────
 # These are the locked-in behaviors as machine-checkable contracts. Keep this list in sync as we add
@@ -91,12 +93,38 @@ def run_tier0():
     return 1
 
 
-def run_tier1(live, repeats):
-    print(f"\n{YELLOW}Tier 1 (real-LLM golden scenarios) — NOT YET IMPLEMENTED (Phase B).{RESET}")
-    print(f"  Will run {repeats}x median, {'LIVE' if live else 'LOCAL'} RAICA, scorecard vs baseline.json.")
-    print("  Scenarios: S1 news-citation, S2 DR+email-delivery (file-only local), S3 vision,")
-    print("             S4 NewX guard, S5 grounding, S6 resilience. See docs/RAICA_QUALITY_BENCHMARK.md.\n")
-    return 0
+def run_tier1(live, repeats, update_baseline, reason):
+    import json
+    from datetime import datetime, timezone
+    from lib import scoring as S
+    from lib import raica_client as RC
+    from scenarios import s1_news_citation, s2_dr_email_delivery, s3_vision
+
+    base = RC.LIVE_BASE if live else RC.LOCAL_BASE
+    print(f"\n{'='*78}\n  RAICA BENCHMARK — Tier 1 (golden scenarios)  [{'LIVE' if live else 'LOCAL'} {base}]\n{'='*78}")
+    SCENARIOS = [s1_news_citation, s3_vision, s2_dr_email_delivery]  # S2 (DR) last — it's the slow one
+    baseline_path = os.path.join(BENCH_DIR, "baseline.json")
+    baseline = S.load_baseline(baseline_path)
+
+    all_metrics = []
+    for mod in SCENARIOS:
+        reps = 1 if mod.SCENARIO == "S2_dr_delivery" else repeats   # DR ~5 min: single run
+        print(f"  ▶ {mod.SCENARIO}  (x{reps}) ...", flush=True)
+        try:
+            all_metrics.extend(S.median_runs(mod.run(base, reps)))
+        except Exception as e:  # noqa: BLE001 — a scenario crash shouldn't lose the others
+            print(f"    {RED}scenario {mod.SCENARIO} errored: {e}{RESET}")
+
+    if update_baseline:
+        S.save_baseline(baseline_path, all_metrics, reason, datetime.now(timezone.utc).isoformat())
+        print(f"\n  {GREEN}baseline.json updated{RESET} ({len(all_metrics)} metrics) — reason: {reason}")
+        baseline = S.load_baseline(baseline_path)
+
+    sc = S.score_run(all_metrics, baseline)
+    json.dump(sc, open(os.path.join(BENCH_DIR, "scorecard.json"), "w"), indent=2, default=str)
+    print(S.render(sc))
+    print()
+    return 0 if sc["suite"] != S.REGRESSION else 1
 
 
 def main():
@@ -116,7 +144,7 @@ def main():
     if args.tier in ("0", "all"):
         rc |= run_tier0()
     if args.tier in ("1", "all"):
-        rc |= run_tier1(args.live, args.repeats)
+        rc |= run_tier1(args.live, args.repeats, args.update_baseline, args.reason)
     # Tier 2 latency lands with Tier 1 (Phase C).
     return 1 if rc else 0
 

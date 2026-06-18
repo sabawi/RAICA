@@ -1,0 +1,134 @@
+"""
+Benchmark scoring engine — metric verdicts, baseline deltas, CODE/ENV/PERF classification, rendering.
+
+Design: docs/RAICA_QUALITY_BENCHMARK.md. Pure + deterministic (no I/O except baseline.json load/save).
+
+A metric a scenario emits:
+    {"scenario","name","cls","value","unit","direction","tolerance"}
+  cls       : "CODE" (our regression -> FAIL) | "ENV" (world changed -> WARN) | "PERF" (latency)
+  direction : "higher_better" | "lower_better" | "must_equal"
+
+Verdict vs baseline: IMPROVEMENT | PASS | REGRESSION | WARN.
+  - ENV metrics NEVER produce REGRESSION (a model 410 / site 403 / news churn -> WARN, never a red bar).
+  - No baseline yet -> INFO (treated as PASS; the value becomes the candidate baseline).
+Suite verdict = REGRESSION if ANY CODE/PERF metric REGRESSED, else PASS (with IMPROVEMENTS + ENV WARNs listed).
+"""
+import json
+import os
+import statistics
+
+IMPROVEMENT, PASS, REGRESSION, WARN, INFO = "IMPROVEMENT", "PASS", "REGRESSION", "WARN", "INFO"
+_C = {IMPROVEMENT: "\033[36m", PASS: "\033[32m", REGRESSION: "\033[31m", WARN: "\033[33m", INFO: "\033[2m"}
+_RESET = "\033[0m"
+
+
+def key(scenario, name):
+    return f"{scenario}.{name}"
+
+
+def verdict_for(value, baseline, *, cls, direction, tolerance):
+    """Verdict of one metric value against its baseline. Pure."""
+    if baseline is None:
+        return INFO  # first run / new metric — record it, don't fail
+    if value is None:
+        return WARN if cls == "ENV" else REGRESSION  # the run couldn't measure it
+    bad = WARN if cls == "ENV" else REGRESSION
+    if direction == "must_equal":
+        return PASS if value == baseline else bad
+    if direction == "higher_better":
+        if value > baseline + tolerance:
+            return IMPROVEMENT
+        return PASS if value >= baseline - tolerance else bad
+    if direction == "lower_better":
+        if value < baseline - tolerance:
+            return IMPROVEMENT
+        return PASS if value <= baseline + tolerance else bad
+    return PASS
+
+
+def median_runs(per_run_metrics):
+    """Collapse N runs (each a list of metric dicts) into one list of metric dicts using the MEDIAN of
+    numeric values per metric (booleans -> majority True). Noise control for non-deterministic LLM runs."""
+    by_key = {}
+    for run in per_run_metrics:
+        for m in run:
+            by_key.setdefault(key(m["scenario"], m["name"]), []).append(m)
+    out = []
+    for _, ms in by_key.items():
+        base = dict(ms[0])
+        vals = [m["value"] for m in ms if m["value"] is not None]
+        if not vals:
+            base["value"] = None
+        elif isinstance(vals[0], bool):
+            base["value"] = sum(1 for v in vals if v) * 2 >= len(vals)   # majority True
+        else:
+            base["value"] = statistics.median(vals)
+        out.append(base)
+    return out
+
+
+def load_baseline(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def save_baseline(path, metrics, reason, measured_at):
+    """Write/refresh baseline.json from a run's metrics. NEVER silent — `reason` is mandatory."""
+    if not reason or not reason.strip():
+        raise ValueError("baseline update requires a non-empty reason")
+    data = load_baseline(path)
+    for m in metrics:
+        data[key(m["scenario"], m["name"])] = {
+            "value": m["value"], "cls": m["cls"], "direction": m["direction"],
+            "tolerance": m["tolerance"], "unit": m.get("unit", ""),
+            "measured_at": measured_at, "reason": reason.strip(),
+        }
+    data["_meta"] = {"measured_at": measured_at, "reason": reason.strip()}
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    return data
+
+
+def score_run(metrics, baseline):
+    """Compare a run's metrics to baseline. Returns a scorecard dict."""
+    rows = []
+    for m in metrics:
+        b = baseline.get(key(m["scenario"], m["name"]))
+        bval = b["value"] if b else None
+        v = verdict_for(m["value"], bval, cls=m["cls"], direction=m["direction"], tolerance=m["tolerance"])
+        rows.append({**m, "baseline": bval, "verdict": v})
+    suite = PASS
+    if any(r["verdict"] == REGRESSION for r in rows):
+        suite = REGRESSION
+    return {"rows": rows, "suite": suite}
+
+
+def render(scorecard):
+    lines = []
+    rows = scorecard["rows"]
+    by_scen = {}
+    for r in rows:
+        by_scen.setdefault(r["scenario"], []).append(r)
+    for scen, rs in by_scen.items():
+        lines.append(f"\n  {scen}")
+        for r in rs:
+            v, c = r["verdict"], r["cls"]
+            col = _C.get(v, "")
+            val = r["value"]
+            base = r["baseline"]
+            vs = f"{val:.3g}" if isinstance(val, float) else str(val)
+            bs = "—" if base is None else (f"{base:.3g}" if isinstance(base, float) else str(base))
+            lines.append(f"    [{col}{v:<11}{_RESET}] {c:<4} {r['name']:<32} {vs:>10}  (base {bs}, {r['direction']})")
+    s = scorecard["suite"]
+    lines.append(f"\n  {'='*70}")
+    lines.append(f"  SUITE: {_C.get(s,'')}{s}{_RESET}")
+    imps = [r for r in rows if r["verdict"] == IMPROVEMENT]
+    warns = [r for r in rows if r["verdict"] == WARN]
+    if imps:
+        lines.append(f"  IMPROVEMENTS: {', '.join(key(r['scenario'], r['name']) for r in imps)}")
+    if warns:
+        lines.append(f"  ENV WARNINGS (world changed, not a code regression): "
+                     f"{', '.join(key(r['scenario'], r['name']) for r in warns)}")
+    return "\n".join(lines)
