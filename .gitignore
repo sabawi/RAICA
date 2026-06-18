@@ -148,3 +148,6 @@ fix_this_*
 deepseek_output.txt
 scratch_*.py
 test_reasoning.py
+
+# Benchmark run output
+tests/benchmark/scorecard.json
