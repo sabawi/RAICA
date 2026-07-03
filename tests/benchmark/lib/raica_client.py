@@ -11,7 +11,7 @@ import os
 import re
 import time
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, quote
 
 LOCAL_BASE = "http://localhost:5000"
 LIVE_BASE = "https://sabawi.net"
@@ -85,6 +85,21 @@ def specific_url_ratio(urls):
     return round(sum(1 for u in urls if is_specific_url(u)) / len(urls), 3) if urls else 0.0
 
 
+def _ascii_url(u):
+    """Percent-encode a URL so raw urllib can send it. Unlike requests/urllib3, urllib does NOT auto-encode
+    non-ASCII characters, so a citation URL with an accented slug (e.g. 'jürgen') would raise
+    UnicodeEncodeError and be falsely counted as unresolved. IDNA-encode the host and percent-encode the
+    path/query (with '%' in safe so already-encoded sequences aren't double-encoded)."""
+    try:
+        s = urlsplit(u)
+        host = s.netloc.encode("idna").decode("ascii") if any(ord(c) > 127 for c in s.netloc) else s.netloc
+        path = quote(s.path, safe="/%:@!$&'()*+,;=~-._")
+        query = quote(s.query, safe="=&/?%:@!$'()*+,;~-._")
+        return urlunsplit((s.scheme, host, path, query, s.fragment))
+    except Exception:
+        return u
+
+
 def resolve_ratio(urls, timeout=15):
     """Fraction of URLs returning a non-error HTTP status (ENV — sites bot-block; informational)."""
     urls = [u for u in urls if u]
@@ -94,7 +109,7 @@ def resolve_ratio(urls, timeout=15):
     ok = 0
     for u in urls:
         try:
-            req = urllib.request.Request(u, headers={"User-Agent": ua}, method="HEAD")
+            req = urllib.request.Request(_ascii_url(u), headers={"User-Agent": ua}, method="HEAD")
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 if r.status < 400:
                     ok += 1
