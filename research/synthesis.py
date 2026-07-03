@@ -117,6 +117,16 @@ class ResearchSynthesizer:
         return bool(self._cfg.get("synthesis", {}).get("credibility_grading", True))
 
     @property
+    def _provenance_cfg(self) -> Dict[str, Any]:
+        return self._cfg.get("synthesis", {}).get("source_provenance", {}) or {}
+
+    @property
+    def _provenance_on(self) -> bool:
+        """Master switch for the primary-vs-secondary provenance feature (docs/RAICA_SOURCE_PROVENANCE.md).
+        Phase 0 wires ONLY the shadow role-grading + logging (no answer change)."""
+        return bool(self._provenance_cfg.get("enabled", False))
+
+    @property
     def _verify_on(self) -> bool:
         return bool(self._cfg.get("verification", {}).get("enabled", True))
 
@@ -218,6 +228,65 @@ class ResearchSynthesizer:
             tally[t] = tally.get(t, 0) + 1
         logger.info("🏷️ Graded %d domains: %s", len(graded), tally)
         return graded
+
+    async def _grade_roles_shadow(self, evidence: List[Dict[str, Any]]) -> Dict[str, str]:
+        """SHADOW (Phase 0, docs/RAICA_SOURCE_PROVENANCE.md): LLM classifies each source domain's ROLE
+        (primary | secondary | unknown) for a factual claim — a SEPARATE call from grade_sources so tier
+        grading stays byte-identical. No answer impact: the result is only logged (a baseline for the
+        provenance feature). Semantic — NO hardcoded domain lists (LLM-Policy Gate). Any error → 'unknown'."""
+        domains = self._unique_domains(evidence)
+        if not domains:
+            return {}
+        system_prompt = (
+            "Classify each source domain by its ROLE relative to a factual claim, into exactly ONE of:\n"
+            "- primary: the ORIGIN of information — peer-reviewed papers/preprints, patents, court "
+            "rulings, legislation and other .gov primary documents, company/regulatory filings, datasets, "
+            "an author's own original work, or an original interview/speech/letter/transcript.\n"
+            "- secondary: REPORTS, summarizes, or aggregates primary sources — encyclopedias (e.g. "
+            "Wikipedia, Britannica), explainers, most news write-ups, review/aggregator sites.\n"
+            "- unknown: cannot tell from the domain alone.\n"
+            "A domain can host both — pick its PREDOMINANT role. Respond with STRICT JSON only, e.g.:\n"
+            '{"arxiv.org": "primary", "en.wikipedia.org": "secondary", "example.com": "unknown"}'
+        )
+        prompt = "DOMAINS:\n" + "\n".join(f"- {d}" for d in domains)
+        try:
+            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                        temperature=0.0, max_tokens=2000, stream=False)
+            data = extract_json_object(raw)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("🔬 Provenance role grading (shadow) failed (%s) → all 'unknown'", e)
+            return {d: "unknown" for d in domains}
+        roles = {}
+        for d in domains:
+            r = str(data.get(d, "unknown")).strip().lower()
+            roles[d] = r if r in ("primary", "secondary", "unknown") else "unknown"
+        return roles
+
+    def _log_provenance_shadow(self, evidence: List[Dict[str, Any]],
+                               credibility: Dict[str, str], roles: Dict[str, str]) -> None:
+        """SHADOW (Phase 0): log the primary-vs-secondary baseline — the source role mix and how many
+        sub-questions currently have NO primary source (future 'chase the primary' candidates). Pure
+        logging; never raises, never alters the answer."""
+        try:
+            role_tally: Dict[str, int] = {}
+            for r in roles.values():
+                role_tally[r] = role_tally.get(r, 0) + 1
+            sq_has_primary: Dict[str, bool] = {}
+            for e in evidence:
+                sq = str(e.get("sub_question_id", "?"))
+                has_primary = any(roles.get(_domain_of(u)) == "primary"
+                                  for u in (e.get("urls", []) or []) if u)
+                sq_has_primary[sq] = sq_has_primary.get(sq, False) or has_primary
+            total_sq = len(sq_has_primary)
+            no_primary_sq = sum(1 for v in sq_has_primary.values() if not v)
+            logger.info(
+                "🔬 PROVENANCE SHADOW: domains — primary=%d secondary=%d unknown=%d | "
+                "sub-questions with NO primary source (chase candidates): %d/%d",
+                role_tally.get("primary", 0), role_tally.get("secondary", 0),
+                role_tally.get("unknown", 0), no_primary_sq, total_sq,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("🔬 Provenance shadow logging failed (%s) — ignored", e)
 
     @property
     def _evidence_token_budget(self) -> int:
@@ -617,7 +686,15 @@ class ResearchSynthesizer:
 
         await emit("Grading source credibility…")
         _t = time.monotonic()
-        credibility = await self.grade_sources(evidence)
+        if self._provenance_on:
+            # SHADOW (Phase 0): grade source ROLES in PARALLEL with credibility so tier grading stays
+            # byte-identical and no wall-clock is added; log the primary-vs-secondary baseline. The role
+            # result is NOT fed to synthesis/verify yet → zero answer change (docs/RAICA_SOURCE_PROVENANCE.md).
+            credibility, _roles = await asyncio.gather(
+                self.grade_sources(evidence), self._grade_roles_shadow(evidence))
+            self._log_provenance_shadow(evidence, credibility, _roles)
+        else:
+            credibility = await self.grade_sources(evidence)
         timings["grade"] = round(time.monotonic() - _t, 1)
 
         # Optional enumeration roster (None for non-list requests → unchanged single-pass path).

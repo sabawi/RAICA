@@ -298,6 +298,19 @@ deep_research:
       # Grounded draft from the evidence pool. Credibility-aware: scholarly claims must
       # lean on higher-tier sources; low-tier sources are reported as "claimed by X".
       credibility_grading: true
+      # SOURCE PROVENANCE (primary-vs-secondary) — docs/RAICA_SOURCE_PROVENANCE.md. Phase 0 wires ONLY
+      # the shadow role-grading + logging (a baseline; ZERO answer change — roles are logged, not fed to
+      # synthesis). Later phases flip prefer_primary (synthesis prefers the primary in evidence),
+      # chase_primary (gather loop seeks the origin for secondary-only claims), and corroboration/footer
+      # flags. All fail-open; set enabled:false to fully disable.
+      source_provenance:
+        enabled: true
+        shadow: true                     # Phase 0: compute + log only
+        prefer_primary: false            # Phase 1
+        chase_primary: false             # Phase 2
+        corroboration_elevates: false    # Phase 3
+        min_independent_secondaries: 2   # the "multiple witnesses" threshold
+        flag_single_secondary: false     # Phase 3
       # A deep run can gather >1MB of evidence, overflowing the model context window.
       # The evidence fed to each LLM call is budgeted to this many TOKENS (measured with
       # tiktoken), shared fairly across sources (small sources kept whole, leftover given
