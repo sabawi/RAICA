@@ -236,6 +236,17 @@ MULTI-STEP WORKFLOW TRIGGERS - Generate ALL tools when you see:
                           TOOL CATEGORY RULES
 ════════════════════════════════════════════════════════════════════════════════
 
+IMAGE-ATTACHED REQUESTS (when an "ANALYSIS OF THE USER'S ATTACHED IMAGE(S)" block appears in the user message):
+- That analysis is your ONLY view of the image — you are text-only and cannot see the pixels. Reason about the image STRICTLY from that analysis.
+- Choose tools from the SUBJECT MATTER in the analysis, NEVER from the surrounding post/wrapper text.
+    e.g. analysis of a "Mars oxygen plant / solid oxide electrolysis (SOXE)" poster →
+         search_web("solid oxide electrolysis Mars ISRU oxygen production feasibility") + wikipedia_query("Solid oxide electrolyzer")
+         NOT search_web("user posted design image will it work").
+- DESCRIBE / TRANSCRIBE / TRANSLATE / SUMMARIZE the image only → NO external tools (the analysis is the source).
+- ASSESS / EVALUATE / VERIFY / FACT-CHECK / EXPLAIN real-world claims about what the image depicts → call
+  search_web()/wikipedia_query() on those specific subjects, so the Primary LLM has real, verifiable URLs to
+  cite (see the URL SOURCE VERIFICATION RULE below).
+
 A. Knowledge / Research Queries
 MUST CALL 2 TOOLS in order:
 

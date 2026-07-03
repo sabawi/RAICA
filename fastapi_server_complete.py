@@ -9508,6 +9508,27 @@ The above image analysis was automatically performed on newly uploaded images. T
                     image_count = len([img for img in data.get("images", []) if img != "noimage"])
                     user_message_content += f"""\n\n🖼️ IMPORTANT: User has provided {image_count} image(s). You MUST call image_to_text() with image="user_provided_image_data" to analyze the image(s)."""
 
+                # 🖼️ VISION CONTEXT FOR TOOL SELECTION (root-cause fix): the FORCED IMAGE PROCESSING block
+                # already ran image_to_text, so the hint above is (correctly) skipped — but the tool-calling
+                # model is TEXT-ONLY and cannot see the raw image. Without the analysis it forms its
+                # evidence-gathering queries from the user's wrapper text alone and searches BLIND (observed:
+                # "user posted design image will it work" → irrelevant results) instead of the real subject
+                # ("solid oxide electrolysis SOXE Mars oxygen ISRU"). Give it the analysis as its EYES so it
+                # can decide, per policy, whether external evidence is needed and what to query. The model
+                # still decides — this is context, not a keyword router. (This same user_message flows into
+                # the NO-TOOLS RE-PROMPT below, so both call sites are covered by this one change.)
+                if "image_to_text" in tools_called and forced_image_processing_result.strip():
+                    user_message_content += (
+                        "\n\n🖼️ ANALYSIS OF THE USER'S ATTACHED IMAGE(S) — you cannot see the raw image, so "
+                        "treat this as your eyes. Base any tool/query decisions on the SUBJECT MATTER described "
+                        "here, NOT on the surrounding post text. If the user only wants the image described, "
+                        "transcribed, translated, or summarized, NO external tools are needed (the image is the "
+                        "source). If they ask you to assess, evaluate, verify, fact-check, or explain real-world "
+                        "claims about what it depicts, call search_web()/wikipedia_query() on those specific "
+                        "subjects so the Primary LLM has real, verifiable URLs to cite:\n"
+                        f"{forced_image_processing_result}"
+                    )
+
                 user_message_content += f"""\n\nUser Prompt: {prompt_context + user_prompt}"""
 
                 messages = [
