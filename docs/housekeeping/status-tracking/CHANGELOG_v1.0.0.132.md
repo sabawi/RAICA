@@ -57,12 +57,22 @@ No config, schema, dependency, or API changes. NewX's citation guard is unchange
 Before the fix these evaluate-with-image posts were discarded for missing citations; after, they post on
 the first attempt with real, clickable sources. The describe path does **not** over-search.
 
-## Known follow-up (separate component — NewX, not this change)
+## Follow-ups (both RESOLVED same day)
 
-The describe test was discarded once then rescued by the guard's LLM judge on retry: NewX
-`_classify_user_intent` uses a hardcoded keyword list that does not match phrasings like *"describe
-what's shown in this image"*, so it falls through to the non-deterministic LLM judge. Tracked as a NewX
-citation-guard robustness follow-up; it does not block posting.
+**NewX citation-guard robustness** — shipped NewX **v1.0.0.53** (`bd492b0`) + **v1.0.0.54** (`d2c573c`),
+live 2026-07-03. The describe test was discarded once then rescued by the guard's LLM judge on retry: NewX
+`_classify_user_intent` uses a hardcoded keyword list that misses phrasings like *"describe what's shown in
+this image"*, so it fell through to the non-deterministic judge (worst case: a silent drop). Fixed in NewX
+(not RAICA) WITHOUT weakening the judge — a **citation floor** (an image reply rejected *only* for citations
+is posted anyway; the image is the source) + a **recovery notice** (all attempts fail / RAICA unreachable →
+post an honest status reply instead of silence). Recovery verified end-to-end; floor discrimination locked
+by unit tests (`test_citation_guard.py`, 19/19).
+
+**Benchmark harness fix** — RAICA `0e7a81a` (test-only, no version bump). `tests/benchmark/lib/raica_client.py`
+`resolve_ratio` mis-counted a citation URL with a non-ASCII slug (e.g. `…/jürgen-klopp/…`) as unresolved —
+raw `urllib` raised `UnicodeEncodeError` (unlike urllib3, which auto-encodes). Added `_ascii_url()` (IDNA
+host + percent-encode path/query). Production link-verify (`_verify_url_live`, urllib3 + lenient) was
+checked and confirmed NOT affected.
 
 ## Files
 - `fastapi_server_complete.py` (image analysis → tool-calling message)
