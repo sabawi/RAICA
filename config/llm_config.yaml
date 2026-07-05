@@ -227,6 +227,14 @@ deep_research:
         max_workers: 8          # parallelism for the cited-URL liveness batch
         # A dead verdict is re-verified once (short pause + re-fetch) before a link is stripped, so a
         # transient CDN/rate-limit flap never removes a valid citation (research/link_liveness.py).
+    # RETRIEVAL-QUALITY AUDIT (docs/RAICA_DR_CITATION_LIVENESS.md §groundedness). SHADOW measurement only —
+    # never changes the answer. For each CITED url, classifies what RAICA actually held: real body / thin
+    # (snippet-only) / error (403/paywall/5xx extraction-error) / over_captured (cited but never fetched as a
+    # source) / absent. Logs "📊 retrieval-audit: ..." to quantify body-retrieval (hallucination) exposure
+    # before designing a fix. Pure/offline, fail-open. enabled:false turns it off.
+    retrieval_audit:
+      enabled: true
+      min_body_chars: 200       # fetched body shorter than this counts as 'thin' (snippet-only / sparse)
     # LOAD-BASED MODEL SPLIT for deep-research LLM calls. Deep research is NOT one-size-fits-all:
     # the high-frequency, SMALL calls (gate, planner, roster, grade, verify — all <~140K chars) run
     # great on the fast/cheap LIGHT model, while the single LARGE call (synthesis, which assembles

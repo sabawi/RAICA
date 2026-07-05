@@ -422,6 +422,23 @@ async def run_deep_research_pipeline(
     except Exception as _cg_e:  # noqa: BLE001 — grounding must NEVER discard a hard-won answer
         logger.warning("🔗 citation-grounding skipped (non-fatal): %s", _cg_e)
 
+    # ── Retrieval-quality audit (SHADOW measurement — docs/RAICA_DR_CITATION_LIVENESS.md §groundedness) ──
+    # Liveness proves a URL RESOLVES; it does NOT prove RAICA retrieved the real page BODY. For each URL the
+    # (post-grounding) answer cites, classify what RAICA actually held: real body / thin (snippet-only) /
+    # error (403/paywall/5xx extraction-error) / over_captured (cited but never a fetched source) / absent.
+    # Log-only, PURE, fail-open — quantifies the body-retrieval (hallucination) exposure before any fix.
+    try:
+        _ra = config.get("retrieval_audit", {}) or {}
+        if _ra.get("enabled", True):
+            from research.retrieval_quality import assess_retrieval
+            _rq = assess_retrieval(answer, evidence, min_body_chars=int(_ra.get("min_body_chars", 200)))
+            _rs = _rq["stats"]
+            logger.info("📊 retrieval-audit: real=%d thin=%d error=%d over_captured=%d absent=%d / %d cited "
+                        "| flagged=%s", _rs["real"], _rs["thin"], _rs["error"], _rs["over_captured"],
+                        _rs["absent"], _rs["cited_total"], _rq["flagged"][:8])
+    except Exception as _ra_e:  # noqa: BLE001 — measurement must NEVER affect the answer
+        logger.warning("📊 retrieval-audit skipped (non-fatal): %s", _ra_e)
+
     # Footer-less body for downstream delivery (PDF/email document content) — the audit footer is a
     # chat-UX affordance, not part of the deliverable. answer_body is captured BEFORE the footer.
     answer_body = answer
