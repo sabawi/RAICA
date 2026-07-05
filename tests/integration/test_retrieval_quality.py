@@ -99,9 +99,52 @@ def test_papers_mandatory_marker_counts_as_real_not_overcaptured():
     assert res["flagged"] == []
 
 
+# ---- headline↔URL consistency (mispairing detection) ----
+def test_headline_benign_title_suffix_matches():
+    # gathered <title> has a " - site" suffix; the model cites it without the suffix → MATCHED (not a
+    # mispairing). This is the philippdubach case: <title> gathered, on-page <h1>/slug differs, still fine.
+    url = "https://philippdubach.com/posts/the-last-architecture-designed-by-hand/"
+    gathered = "What Comes After Transformers: Hybrid AI Architecture in 2026 - philippdubach.com"
+    ev = [{"content": _block(url, f"Description: s.\n\nExtracted Content: {LONG}", title=gathered),
+           "urls": [url]}]
+    ans = f"See [What Comes After Transformers: Hybrid AI Architecture in 2026]({url})."
+    hl = assess_retrieval(ans, ev)["headline"]
+    assert hl["checked"] == 1 and hl["matched"] == 1 and hl["mismatched"] == 0, hl
+
+
+def test_headline_true_mispairing_flagged():
+    # cited headline belongs to a DIFFERENT article than the gathered title for this URL → MISMATCHED.
+    url = "https://example.com/article-a"
+    ev = [{"content": _block(url, f"Description: s.\n\nExtracted Content: {LONG}",
+                             title="Deep Learning for Protein Folding: A 2026 Review"), "urls": [url]}]
+    ans = f"[Quarterly Earnings Report of Acme Corporation]({url})"
+    hl = assess_retrieval(ans, ev)["headline"]
+    assert hl["mismatched"] == 1 and hl["matched"] == 0, hl
+    assert hl["flagged"][0][1] == url
+
+
+def test_headline_papers_format_matches():
+    url = "https://europepmc.org/article/MED/42273255"
+    title = "CRISPR base editing for sickle cell disease: current progress"
+    ev = [{"content": _papers_block(url, f"Abstract: {LONG}", title=title), "urls": [url]}]
+    hl = assess_retrieval(f"[{title}]({url})", ev)["headline"]
+    assert hl["checked"] == 1 and hl["matched"] == 1, hl
+
+
+def test_headline_not_judged_without_gathered_title():
+    # over_captured / absent URLs have no gathered title → not counted in the headline check.
+    hl = assess_retrieval(_answer([OVERCAP, ABSENT]), _evidence())["headline"]
+    assert hl["checked"] == 0, hl
+
+
 if __name__ == "__main__":
     test_each_class_counted();          print("PASS: each retrieval class counted")
     test_all_real_when_bodies_substantial(); print("PASS: all-real when bodies substantial")
     test_html_answer_and_dedupe();      print("PASS: HTML + dedupe")
     test_no_citations();                print("PASS: no citations")
+    test_papers_mandatory_marker_counts_as_real_not_overcaptured(); print("PASS: papers block format")
+    test_headline_benign_title_suffix_matches(); print("PASS: headline benign title-suffix matches")
+    test_headline_true_mispairing_flagged();     print("PASS: headline true mispairing flagged")
+    test_headline_papers_format_matches();       print("PASS: headline papers format matches")
+    test_headline_not_judged_without_gathered_title(); print("PASS: headline not judged without title")
     print("ALL TESTS PASSED")

@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
-from research.citation_grounding import extract_cited_urls, normalize_url
+from research.citation_grounding import extract_cited_urls, extract_cited_links, normalize_url
 
 # Source-block markers. RAICA has TWO block formats: fastapi_server_complete._format_source_block
 # (search_web / news) uses "🔗 CITATION URL:" + "─" dividers; user_tools/citation_mastery.format_source_block
@@ -38,6 +38,29 @@ _EXTRACTED_MARK = re.compile(r'Extracted Content:\s*(.*)', re.DOTALL)
 _DIVIDER = re.compile(r'\n[─═]{5,}')
 # RAICA's own extraction-error marker (fastapi_server_complete get_text_from_url_simplified except-branch).
 _ERROR_MARK = "Error extracting content:"
+# The block's TITLE (what RAICA gathered for the URL) sits on the line IMMEDIATELY before its CITATION URL,
+# as "📄 SOURCE: {title}" (search_web/news) or "Title: {title}" (papers/citation_mastery).
+_TITLE_URL = re.compile(r'(?:📄 SOURCE:|Title:)[ \t]*(.+?)[ \t]*\n🔗 (?:MANDATORY )?CITATION URL:\s*(\S+)')
+_STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "how", "what", "why"}
+
+
+def _title_tokens(s: str):
+    """Significant lowercased word tokens of a title/headline (drops punctuation, html entities, stopwords,
+    and very short tokens) — for a lenient, order-independent comparison."""
+    s = re.sub(r'&[a-z]+;', ' ', (s or "").lower())
+    return {t for t in re.split(r'[^a-z0-9]+', s) if len(t) > 2 and t not in _STOP}
+
+
+def _headline_matches(cited: str, gathered_title: str) -> bool:
+    """True if the cited headline is consistent with the title RAICA gathered for that URL. Lenient: the
+    model routinely drops a " - site name" suffix or lightly rewords, so we require only that the two
+    share a majority of significant tokens (relative to the shorter). A TRUE mispairing (a headline from
+    a different source) shares almost none. NOTE: this compares to the GATHERED title, so a page whose
+    on-page <h1>/slug differs from its <title> is correctly NOT flagged (RAICA gathered the <title>)."""
+    a, b = _title_tokens(cited), _title_tokens(gathered_title)
+    if not a or not b:
+        return True   # can't judge → don't flag (fail-safe: no false alarm)
+    return len(a & b) >= 0.5 * min(len(a), len(b))
 
 
 def _parse_blocks(content: str) -> List[Tuple[str, str]]:
@@ -77,24 +100,31 @@ _RANK = {"error": 0, "thin": 1, "real": 2}
 
 def assess_retrieval(answer: str, evidence: List[Dict[str, Any]], *, min_body_chars: int = 200) -> Dict:
     """
-    For every URL cited in `answer`, classify what RAICA actually held for it.
+    For every URL cited in `answer`, classify what RAICA actually held for it, AND whether the cited
+    HEADLINE (link text) matches the title RAICA gathered for that URL (mispairing detection).
 
     Returns {"stats": {real, thin, error, over_captured, absent, cited_total},
-             "flagged": [(verdict, url), ...]}   # everything that is NOT 'real'
+             "flagged": [(verdict, url), ...],                          # body verdict != 'real'
+             "headline": {"matched", "mismatched", "checked",
+                          "flagged": [(cited_headline, url), ...]}}     # cited headline != gathered title
     """
     cited = extract_cited_urls(answer)
 
     block_quality: Dict[str, str] = {}   # normalized primary URL -> best body verdict
+    block_title: Dict[str, str] = {}     # normalized primary URL -> title RAICA gathered for it
     ev_urls: set = set()                 # every URL anywhere in evidence (for over-capture detection)
     for e in (evidence or []):
+        content = e.get("content") or ""
         for u in (e.get("urls") or []):
             if u:
                 ev_urls.add(normalize_url(u))
-        for burl, body in _parse_blocks(e.get("content") or ""):
+        for burl, body in _parse_blocks(content):
             n = normalize_url(burl)
             q = _classify_body(body, min_body_chars)
             if n not in block_quality or _RANK[q] > _RANK[block_quality[n]]:
                 block_quality[n] = q     # keep the BEST body seen for a URL fetched more than once
+        for title, burl in _TITLE_URL.findall(content):
+            block_title.setdefault(normalize_url(burl), title.strip())
 
     stats = {"real": 0, "thin": 0, "error": 0, "over_captured": 0, "absent": 0, "cited_total": len(cited)}
     flagged: List[Tuple[str, str]] = []
@@ -113,6 +143,22 @@ def assess_retrieval(answer: str, evidence: List[Dict[str, Any]], *, min_body_ch
         stats[verdict] = stats.get(verdict, 0) + 1
         if verdict != "real":
             flagged.append((verdict, u))
-    # cited_total counts links; recompute over unique for a clean denominator
     stats["cited_total"] = len(seen)
-    return {"stats": stats, "flagged": flagged}
+
+    # ── Headline↔URL consistency: does the cited headline match the title RAICA GATHERED for that URL? ──
+    # Only judged for URLs we hold a gathered title for. A benign <title>≠<h1>/slug page is NOT flagged
+    # (RAICA gathered the <title>, the model used it). A TRUE mispairing (headline from another source) is.
+    hl = {"matched": 0, "mismatched": 0, "checked": 0, "flagged": []}
+    hl_seen: set = set()
+    for text, url in extract_cited_links(answer):
+        n = normalize_url(url)
+        if n in hl_seen or n not in block_title or not text:
+            continue
+        hl_seen.add(n)
+        hl["checked"] += 1
+        if _headline_matches(text, block_title[n]):
+            hl["matched"] += 1
+        else:
+            hl["mismatched"] += 1
+            hl["flagged"].append((text, url))
+    return {"stats": stats, "flagged": flagged, "headline": hl}

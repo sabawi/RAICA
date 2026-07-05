@@ -59,6 +59,31 @@ def extract_cited_urls(answer: str) -> List[str]:
     return out
 
 
+_TAG = re.compile(r'<[^>]+>')
+
+
+def extract_cited_links(answer: str):
+    """Like extract_cited_urls, but returns (link_text, url) pairs — the clickable HEADLINE and its URL.
+    HTML anchor text has any nested tags stripped. De-duplicated by (text, url). PURE, offline."""
+    seen = set()
+    out = []
+    for mo in _HTML_LINK.finditer(answer or ""):
+        url = mo.group(2)
+        text = _TAG.sub("", mo.group(4) or "").strip()
+        key = (text, url)
+        if url and key not in seen:
+            seen.add(key)
+            out.append((text, url))
+    for mo in _MD_LINK.finditer(answer or ""):
+        url = mo.group(2)
+        text = (mo.group(1) or "").strip()
+        key = (text, url)
+        if url and key not in seen:
+            seen.add(key)
+            out.append((text, url))
+    return out
+
+
 # Block boundaries for the quorum (split losslessly: concatenation of pieces == original).
 _HTML_BLOCK_CLOSE = re.compile(r'(</(?:p|li|h[1-6]|blockquote|div)>)', re.IGNORECASE)
 _HTML_BLOCK_OPEN = re.compile(r'^(\s*<(?:p|li|h[1-6]|blockquote|div)\b[^>]*>)', re.IGNORECASE)

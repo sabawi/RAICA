@@ -426,6 +426,8 @@ async def run_deep_research_pipeline(
     # Liveness proves a URL RESOLVES; it does NOT prove RAICA retrieved the real page BODY. For each URL the
     # (post-grounding) answer cites, classify what RAICA actually held: real body / thin (snippet-only) /
     # error (403/paywall/5xx extraction-error) / over_captured (cited but never a fetched source) / absent.
+    # Also checks HEADLINE↔URL consistency (does the cited headline match the title RAICA gathered for that
+    # URL — a true mispairing, vs a benign <title>≠<h1>/slug page which is NOT flagged).
     # Log-only, PURE, fail-open — quantifies the body-retrieval (hallucination) exposure before any fix.
     try:
         _ra = config.get("retrieval_audit", {}) or {}
@@ -436,6 +438,11 @@ async def run_deep_research_pipeline(
             logger.info("📊 retrieval-audit: real=%d thin=%d error=%d over_captured=%d absent=%d / %d cited "
                         "| flagged=%s", _rs["real"], _rs["thin"], _rs["error"], _rs["over_captured"],
                         _rs["absent"], _rs["cited_total"], _rq["flagged"][:8])
+            _hl = _rq.get("headline", {})
+            if _hl.get("checked"):
+                logger.info("📎 headline-audit: matched=%d mismatched=%d / %d checked (cited headline vs "
+                            "gathered title) | flagged=%s", _hl.get("matched", 0), _hl.get("mismatched", 0),
+                            _hl.get("checked", 0), _hl.get("flagged", [])[:6])
     except Exception as _ra_e:  # noqa: BLE001 — measurement must NEVER affect the answer
         logger.warning("📊 retrieval-audit skipped (non-fatal): %s", _ra_e)
 
