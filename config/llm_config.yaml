@@ -221,9 +221,12 @@ deep_research:
       # before enforcing. Set shadow:false to ENFORCE (strip). enabled:false turns the whole liveness step off.
       verify_live:
         enabled: true
-        shadow: true            # true = fetch + log only (answer unchanged); false = enforce (strip dead links)
+        shadow: false           # PHASE 1 (v1.0.0.136): ENFORCE — strip verified-dead cited links (headline
+                                #   text kept). true = shadow (fetch + log only, answer unchanged).
         timeout_seconds: 6      # lenient per-URL liveness timeout (a timeout KEEPS the URL)
         max_workers: 8          # parallelism for the cited-URL liveness batch
+        # A dead verdict is re-verified once (short pause + re-fetch) before a link is stripped, so a
+        # transient CDN/rate-limit flap never removes a valid citation (research/link_liveness.py).
     # LOAD-BASED MODEL SPLIT for deep-research LLM calls. Deep research is NOT one-size-fits-all:
     # the high-frequency, SMALL calls (gate, planner, roster, grade, verify — all <~140K chars) run
     # great on the fast/cheap LIGHT model, while the single LARGE call (synthesis, which assembles

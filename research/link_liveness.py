@@ -17,6 +17,7 @@ docs/RAICA_DR_CITATION_LIVENESS.md.
 """
 from __future__ import annotations
 
+import time
 from urllib.parse import urlparse
 
 from http_helpers import requests_compatible_get
@@ -34,27 +35,41 @@ def is_homepage_redirect(orig_url: str, final_url: str) -> bool:
         return False
 
 
-def verify_url_live(url: str, timeout: float = 6.0) -> bool:
+def verify_url_live(url: str, timeout: float = 6.0, reverify: bool = True) -> bool:
     """LENIENT liveness check for a candidate citation URL. Returns False (DROP) ONLY for a hard 404/410
     or a redirect to the site homepage; returns True (KEEP) for everything else — 200, 403, 401, 405,
     429, 5xx, paywalls, JS shells, timeouts, connection errors — so a valid article that merely blocks
-    bots/crawlers is never dropped. This is empirical verification, not URL pattern-matching."""
+    bots/crawlers is never dropped. This is empirical verification, not URL pattern-matching.
+
+    reverify=True: a DEAD verdict is CONFIRMED with one more fetch (after a short pause) before it counts
+    — a valid article can momentarily 404 (CDN/rate-limit flaps), and a citation must NEVER be stripped
+    on a transient blip. A URL is declared dead only if it is dead on BOTH checks. Live URLs cost one
+    fetch (no re-verify); only the rare dead-looking URL pays the second."""
     if not url or not isinstance(url, str) or not url.startswith(("http://", "https://")):
         return False
-    try:
-        resp = requests_compatible_get(url, timeout=timeout, allow_redirects=True, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        status = getattr(resp, "status_code", 0)
-        final_url = getattr(resp, "url", "") or url
-        if status in (404, 410):
-            return False
-        if is_homepage_redirect(url, final_url):
-            return False
+
+    def _one_check() -> bool:
+        try:
+            resp = requests_compatible_get(url, timeout=timeout, allow_redirects=True, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            status = getattr(resp, "status_code", 0)
+            final_url = getattr(resp, "url", "") or url
+            if status in (404, 410):
+                return False
+            if is_homepage_redirect(url, final_url):
+                return False
+            return True
+        except Exception:
+            # Transient/blocked → lenient KEEP (never drop a possibly-valid article on a network hiccup).
+            return True
+
+    if _one_check():
         return True
-    except Exception:
-        # Transient/blocked → lenient KEEP (never drop a possibly-valid article on a network hiccup).
-        return True
+    if not reverify:
+        return False
+    time.sleep(0.7)          # let a transient CDN/rate-limit flap clear before confirming dead
+    return _one_check()      # dead only if the SECOND check also fails
 
 
 def filter_live_article_urls(urls, timeout: float = 6.0, max_workers: int = 8):
