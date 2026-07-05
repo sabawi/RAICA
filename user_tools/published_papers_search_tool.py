@@ -554,12 +554,18 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             
             authors = article.get("authorString", "").split(", ") if article.get("authorString") else []
             
-            # Create URL for citation
+            # Create URL for citation. EuropePMC article URLs are /article/{SOURCE}/{ID} and the SOURCE↔ID
+            # MUST match (MED→PubMed id, PMC→PMCID, PPR→preprint id, …). The API returns the correct pair as
+            # `source`+`id`; the old MED/{pmcid} form builds a MISMATCHED pair that renders a client-side
+            # "Page not found" (a SOFT-404: HTTP 200, so no link checker catches it). Use the record's own
+            # source+id (correct for every source, no hardcoded namespace); fall back to the primary DOI.
             pmcid = article.get("pmcid")
             doi = article.get("doi")
+            src = article.get("source")
+            aid = article.get("id")
             europe_url = None
-            if pmcid:
-                europe_url = f"https://europepmc.org/article/MED/{pmcid}"
+            if src and aid:
+                europe_url = f"https://europepmc.org/article/{src}/{aid}"
             elif doi:
                 europe_url = f"https://doi.org/{doi}"
             
