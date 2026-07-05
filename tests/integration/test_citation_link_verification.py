@@ -15,8 +15,12 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import fastapi_server_complete as F
+# The lenient live verifier moved to research/link_liveness (v1.0.0.134); F re-exports it under the same
+# _-names, but verify_url_live resolves `requests_compatible_get` in link_liveness's namespace — so the HTTP
+# call must be monkeypatched THERE, not on F, for the fake responses to take effect.
+import research.link_liveness as LL
 
-_ORIG_GET = F.requests_compatible_get
+_ORIG_GET = LL.requests_compatible_get
 
 
 class _FakeResp:
@@ -27,11 +31,11 @@ class _FakeResp:
 
 
 def _set(fn):
-    F.requests_compatible_get = fn
+    LL.requests_compatible_get = fn
 
 
 def _restore():
-    F.requests_compatible_get = _ORIG_GET
+    LL.requests_compatible_get = _ORIG_GET
 
 
 def test_homepage_redirect_detection():

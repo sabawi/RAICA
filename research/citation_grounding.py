@@ -43,6 +43,22 @@ _FLAG_MARKER = "⚠️ [unverified — no working source] "
 _HTML_LINK = re.compile(r'<a\b([^>]*?)href="(https?://[^"]+)"([^>]*)>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 _MD_LINK = re.compile(r'\[([^\]]*)\]\((https?://[^)\s]+)\)')
 
+
+def extract_cited_urls(answer: str) -> List[str]:
+    """Return the URLs cited as links in an answer (HTML `<a href>` or Markdown `[text](url)`),
+    de-duplicated in first-seen order. Reuses the SAME patterns ground_citations acts on, so 'cited'
+    means exactly the links grounding/liveness will consider. PURE, offline — no network."""
+    seen: Set[str] = set()
+    out: List[str] = []
+    for pat in (_HTML_LINK, _MD_LINK):
+        for mo in pat.finditer(answer or ""):
+            u = mo.group(2)
+            if u and u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out
+
+
 # Block boundaries for the quorum (split losslessly: concatenation of pieces == original).
 _HTML_BLOCK_CLOSE = re.compile(r'(</(?:p|li|h[1-6]|blockquote|div)>)', re.IGNORECASE)
 _HTML_BLOCK_OPEN = re.compile(r'^(\s*<(?:p|li|h[1-6]|blockquote|div)\b[^>]*>)', re.IGNORECASE)

@@ -213,6 +213,17 @@ deep_research:
       enabled: true
       shadow: true              # true = compute + log only (answer unchanged); false = enforce (strip)
       on_unsourced: flag        # flag (mark) | drop (remove block) | off
+      # Output-side citation LIVENESS (docs/RAICA_DR_CITATION_LIVENESS.md). Actually FETCHES each CITED URL
+      # and treats only a hard 404/410 or an article→homepage redirect as dead (403/paywall/JS/timeout are
+      # KEPT — a bot-blocked valid article is never dropped). The verified-dead set feeds grounding as
+      # `dead_urls` so a dead "Page not found" link is stripped as ROTTED (headline text kept). Phase 0 =
+      # SHADOW: fetch + log the would-be dead-strips, answer UNCHANGED, to baseline the live dead-link rate
+      # before enforcing. Set shadow:false to ENFORCE (strip). enabled:false turns the whole liveness step off.
+      verify_live:
+        enabled: true
+        shadow: true            # true = fetch + log only (answer unchanged); false = enforce (strip dead links)
+        timeout_seconds: 6      # lenient per-URL liveness timeout (a timeout KEEPS the URL)
+        max_workers: 8          # parallelism for the cited-URL liveness batch
     # LOAD-BASED MODEL SPLIT for deep-research LLM calls. Deep research is NOT one-size-fits-all:
     # the high-frequency, SMALL calls (gate, planner, roster, grade, verify — all <~140K chars) run
     # great on the fast/cheap LIGHT model, while the single LARGE call (synthesis, which assembles

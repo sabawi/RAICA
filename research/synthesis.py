@@ -28,7 +28,7 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from research.engine import extract_json_object, _collect_stream, GenerateStream
+from research.engine import extract_json_object, salvage_json_map, _collect_stream, GenerateStream
 
 logger = logging.getLogger(__name__)
 
@@ -201,15 +201,26 @@ class ResearchSynthesizer:
             '"someblog.com": {"tier": "low_credibility", "reason": "self-published, no sourcing"}}'
         )
         prompt = "DOMAINS:\n" + "\n".join(f"- {d}" for d in domains)
-        # Grading is non-essential context: on ANY failure (call or parse) fall back to
-        # 'unknown' for every domain so synthesis can still proceed.
+        # Output budget auto-scales with the domain count (each domain returns {tier, reason}) so a large
+        # run does not truncate the JSON mid-object; bounded to keep the call cheap.
+        grade_max_tokens = min(16000, max(3000, 1000 + 80 * len(domains)))
+        # Grading is non-essential context: never let a malformed/failed grade collapse the whole run.
+        raw = ""
         try:
             raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
-                                        temperature=0.0, max_tokens=3000, stream=False)
+                                        temperature=0.0, max_tokens=grade_max_tokens, stream=False)
             data = extract_json_object(raw)
         except Exception as e:  # noqa: BLE001
-            logger.warning("🏷️ Credibility grading failed (%s) → all 'unknown'", e)
-            return {d: "unknown" for d in domains}
+            # Tolerant salvage: recover the domains that DID parse instead of zeroing ALL to 'unknown'
+            # (root cause of the v1.0.0.133 "all unknown" collapse — one bad entry broke the whole batch).
+            data = salvage_json_map(raw)
+            n_ok = sum(1 for d in domains if d in data)
+            if n_ok:
+                logger.warning("🏷️ Credibility grading JSON malformed (%s) → salvaged %d/%d domains "
+                               "(rest 'unknown')", e, n_ok, len(domains))
+            else:
+                logger.warning("🏷️ Credibility grading failed (%s) → all 'unknown'", e)
+                return {d: "unknown" for d in domains}
         graded = {}
         for d in domains:
             entry = data.get(d, "unknown")

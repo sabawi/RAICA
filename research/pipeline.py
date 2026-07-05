@@ -365,12 +365,45 @@ async def run_deep_research_pipeline(
     # rate first. No-op on healthy paths (wiki/papers/static: every cited URL is in evidence). Must NEVER
     # discard a hard-won answer. See docs/RAICA_CITATION_GROUNDING_BY_REFERENCE.md.
     try:
-        from research.citation_grounding import ground_citations
+        from research.citation_grounding import ground_citations, extract_cited_urls
         _cg = config.get("citation_grounding", {}) or {}
         if _cg.get("enabled", True):
             _shadow = bool(_cg.get("shadow", True))
             _ev_urls = {u for e in evidence for u in (e.get("urls") or []) if u}
-            _gr = ground_citations(answer, _ev_urls,
+
+            # ── Output-side citation LIVENESS (docs/RAICA_DR_CITATION_LIVENESS.md) ─────────────────────────
+            # The evidence URL set (engine.py `_URL_RE` over the WHOLE block) also captures URLs embedded in
+            # snippets / page-body cross-references that were NEVER fetch-verified — so a cited-but-dead
+            # ("Page not found") link is "in evidence" and grounding-by-reference keeps it as VALID. Here we
+            # actually FETCH each *cited* URL (lenient: only hard 404/410 or homepage-redirect = dead; 403/
+            # paywall/timeout kept) and feed the verified-dead set into grounding as `dead_urls`, so a dead
+            # link is stripped as ROTTED (headline text kept, only the broken link removed). Phase 0 = SHADOW
+            # (fetch + log the would-be strips, answer UNCHANGED) to baseline the live dead-link rate first.
+            _dead_urls = None
+            _vl = _cg.get("verify_live", {}) or {}
+            if _vl.get("enabled", False):
+                _vl_shadow = bool(_vl.get("shadow", True))
+                try:
+                    from research.link_liveness import filter_live_article_urls
+                    _cited = extract_cited_urls(answer)
+                    _dead = []
+                    if _cited:
+                        _live = filter_live_article_urls(
+                            _cited, timeout=float(_vl.get("timeout_seconds", 6)),
+                            max_workers=int(_vl.get("max_workers", 8)))
+                        _dead = [u for u in _cited if u not in _live]
+                    # ALWAYS log when the step runs (dead=0 included): the Phase-0 baseline needs the
+                    # denominator (total cited checked) AND confirmation the step executed.
+                    logger.info("🩺 citation-liveness [%s]: dead=%d/%d cited (verified 404/410/homepage-"
+                                "redirect)%s", "SHADOW" if _vl_shadow else "ACTIVE", len(_dead), len(_cited),
+                                (" sample=%s" % _dead[:6]) if _dead else "")
+                    # Phase 0 SHADOW → do NOT strip (answer unchanged). Enforce → feed the dead set.
+                    if _dead and not _vl_shadow:
+                        _dead_urls = _dead
+                except Exception as _vl_e:  # noqa: BLE001 — liveness must NEVER discard a hard-won answer
+                    logger.warning("🩺 citation-liveness skipped (non-fatal): %s", _vl_e)
+
+            _gr = ground_citations(answer, _ev_urls, dead_urls=_dead_urls,
                                    on_unsourced=_cg.get("on_unsourced", "flag"), shadow=_shadow)
             _s = _gr["stats"]
             if _s["fabricated"] or _s["rotted"] or _s["items_unsourced"]:

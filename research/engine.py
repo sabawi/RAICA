@@ -111,6 +111,28 @@ def extract_json_object(text: str) -> Dict[str, Any]:
         raise
 
 
+def salvage_json_map(raw: str) -> Dict[str, Any]:
+    """Best-effort recovery of a flat {key: value} JSON map when the whole object won't parse (e.g. ONE
+    entry has an unescaped quote in a string, or the output was truncated). Scans for top-level
+    `"key": <json-value>` pairs and decodes each value INDEPENDENTLY with json.JSONDecoder.raw_decode,
+    skipping any entry that won't parse. Structural only (no meaning interpretation) — lets a caller keep
+    the entries that DID parse instead of collapsing the whole batch. Never raises; returns {} on total loss.
+
+    Note: this also recovers nested keys (e.g. 'tier'/'reason' inside a value object) as spurious top-level
+    entries — harmless to callers that look up only their known keys and ignore the rest."""
+    out: Dict[str, Any] = {}
+    if not raw or not isinstance(raw, str):
+        return out
+    dec = json.JSONDecoder()
+    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"\s*:\s*', raw):
+        try:
+            value, _ = dec.raw_decode(raw, m.end())
+        except Exception:
+            continue
+        out[m.group(1)] = value
+    return out
+
+
 async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs) -> str:
     """
     Run an injected streaming LLM call and return the full text.
