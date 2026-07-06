@@ -29,7 +29,7 @@ class QuickTester:
             {
                 "name": "Simple Query (No Tools)",
                 "payload": {
-                    "model": "deepseek-v3.1:671b-cloud",
+                    "model": "deepseek-v4-flash:cloud",
                     "prompt": "What is 2+2? Give me a brief answer.",
                     "stream": True,
                     "toolsInUse": False,
@@ -39,7 +39,7 @@ class QuickTester:
             {
                 "name": "Tool Calling Query",
                 "payload": {
-                    "model": "deepseek-v3.1:671b-cloud",
+                    "model": "deepseek-v4-flash:cloud",
                     "prompt": "What is the current weather in Paris? Please search for information.",
                     "stream": True,
                     "toolsInUse": True,
@@ -49,7 +49,7 @@ class QuickTester:
             {
                 "name": "Non-Streaming Simple Query",
                 "payload": {
-                    "model": "deepseek-v3.1:671b-cloud",
+                    "model": "deepseek-v4-flash:cloud",
                     "prompt": "Explain what machine learning is in one sentence.",
                     "stream": False,
                     "toolsInUse": False,

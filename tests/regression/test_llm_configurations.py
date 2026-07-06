@@ -105,7 +105,7 @@ class LLMConfigTester:
                     "primary": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 3600,
                             "context_window_size": 8192,
                             "temperature": 0.7,
@@ -120,7 +120,7 @@ class LLMConfigTester:
                     "tool_calling": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 300,
                             "context_window_size": 8192,
                             "temperature": 0.7,
@@ -140,7 +140,7 @@ class LLMConfigTester:
                     "primary": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 3600,
                             "context_window_size": 8192,
                             "temperature": 0.7,
@@ -155,7 +155,7 @@ class LLMConfigTester:
                     "tool_calling": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 300,
                             "context_window_size": 8192,
                             "temperature": 0.7,
@@ -221,7 +221,7 @@ class LLMConfigTester:
                     "tool_calling": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 300,
                             "context_window_size": 8192,
                             "temperature": 0.7,
@@ -241,7 +241,7 @@ class LLMConfigTester:
                     "primary": {
                         "type": "ollama",
                         "config": {
-                            "model": "deepseek-v3.1:671b-cloud",
+                            "model": "deepseek-v4-flash:cloud",
                             "timeout": 3600,
                             "context_window_size": 8192,
                             "temperature": 0.7,

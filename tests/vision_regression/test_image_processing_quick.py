@@ -35,7 +35,7 @@ print(f"📤 Base64 encoded: {len(b64_image):,} characters")
 print("\n🧪 Test 1: Natural Language Request")
 payload1 = {
     "prompt": "I want to analyze an image. Can you help describe what's in it?",
-    "model": "deepseek-v3.1:671b-cloud",
+    "model": "deepseek-v4-flash:cloud",
     "tools": True,
     "stream": False
 }
@@ -54,7 +54,7 @@ except Exception as e:
 print("\n🧪 Test 2: Direct Tool Call (File Path)")
 payload2 = {
     "prompt": "Analyze image with image_to_text tool",
-    "model": "deepseek-v3.1:671b-cloud",
+    "model": "deepseek-v4-flash:cloud",
     "tools": True,
     "stream": False,
     "tool_calls": [{

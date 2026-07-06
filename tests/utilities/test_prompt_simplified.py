@@ -34,7 +34,7 @@ def test_citation_with_simplified_prompt():
         
         try:
             payload = {
-                "model": "deepseek-v3.1:671b-cloud",
+                "model": "deepseek-v4-flash:cloud",
                 "messages": [
                     {"role": "user", "content": test_case['prompt']}
                 ],

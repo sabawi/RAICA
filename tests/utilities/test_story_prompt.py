@@ -36,7 +36,7 @@ def test_story_with_email():
         response = requests.post(
             f"{SERVER_URL}/v1",
             json={
-                "model": "deepseek-v3.1:671b-cloud",
+                "model": "deepseek-v4-flash:cloud",
                 "prompt": prompt,
                 "toolsInUse": True,
                 "searchWebInUse": False

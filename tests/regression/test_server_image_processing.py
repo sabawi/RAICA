@@ -27,7 +27,7 @@ def test_server_image_processing():
         "prompt": "Please analyze this chart image and describe what type of distribution it shows, including any notable patterns or characteristics.",
         "images": [data_url],
         "toolsInUse": True,
-        "model": "deepseek-v3.1:671b-cloud"
+        "model": "deepseek-v4-flash:cloud"
     }
     
     print("📤 Sending request to server...")

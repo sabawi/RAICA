@@ -15,7 +15,7 @@ def send_test_request(prompt, test_name):
     print(f"{'='*60}")
     
     payload = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "prompt": prompt,
         "stream": False
     }

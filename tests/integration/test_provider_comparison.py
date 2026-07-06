@@ -53,7 +53,7 @@ async def test_provider_formats():
             "name": "Ollama (qwen3:8b)",
             "type": "ollama",
             "config": {
-                "model": "deepseek-v3.1:671b-cloud",
+                "model": "deepseek-v4-flash:cloud",
                 "timeout": 300,
                 "max_tokens": 1024,
                 "temperature": 0.1,

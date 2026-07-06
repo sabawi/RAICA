@@ -484,19 +484,17 @@ code_generation:
       model: gpt-oss:120b-cloud
     glm-4.7:
       provider: ollama
-      model: glm-4.7:cloud
+      model: glm-5.2:cloud            # was glm-4.7:cloud — Ollama retired glm-4.7/glm-5 (2026-07) → glm-5.2
     deepseek-v3:
       provider: ollama
-      model: deepseek-v3.1:671b-cloud
+      model: deepseek-v4-flash:cloud  # was deepseek-v3.1:671b-cloud — retired (2026-07) → deepseek-v4-flash
     qwen-coder:
       provider: ollama
-      model: qwen3-coder:480b-cloud
-    ministral-3:14b:
-      provider: ollama
-      model: ministral-3:14b-cloud
+      model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07) → qwen3.5:397b
     qwen3-coder-next:
       provider: ollama
-      model: qwen3-coder-next:cloud
+      model: qwen3.5:397b-cloud       # was qwen3-coder-next:cloud — retired (2026-07) → qwen3.5:397b
+    # (ministral-3:14b catalog entry removed — Ollama retired ministral-3:* with no cloud equivalent, 2026-07)
 
   # Fallback order (used when selected model fails)
   fallback:
@@ -506,7 +504,7 @@ code_generation:
       - provider: ollama
         model: gpt-oss:120b-cloud
       - provider: ollama
-        model: qwen3-coder:480b-cloud
+        model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07)
       - provider: openai
         model: gpt-4o
       - provider: anthropic
@@ -516,9 +514,9 @@ code_generation:
       - provider: gemini
         model: gemini-2.0-flash
       - provider: ollama
-        model: deepseek-v3.1:671b-cloud
+        model: deepseek-v4-flash:cloud  # was deepseek-v3.1:671b-cloud — retired (2026-07)
       - provider: ollama
-        model: qwen3-coder:480b-cloud
+        model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07)
 
   # Provider configurations (credentials and settings)
   providers:
@@ -567,7 +565,7 @@ vision:
     temperature: 0.7
     max_tokens: 16384
     base_url: http://127.0.0.1:11434
-    fallback_model: gemma3:27b-cloud   # was qwen2.5vl:3b (local, too slow on the no-GPU live box) — gemma3:27b-cloud is a verified vision-capable CLOUD backup in a DIFFERENT model family than the primary (survives if either family is retired).
+    fallback_model: gemma4:31b-cloud   # was gemma3:27b-cloud — Ollama retired gemma3:* (2026-07). gemma4:31b-cloud is a verified vision-capable CLOUD backup (tested: correctly described a test image) in a DIFFERENT family than the kimi primary (survives if either family is retired). Both vision models MUST be cloud: the live box has no GPU.
   image_processing:
     max_size_mb: 1.0
     resize_enabled: true

@@ -56,7 +56,7 @@ async def test_qwen3_direct():
     ]
 
     payload = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "messages": [{"role": "user", "content": "Search for recent news about AI developments"}],
         "tools": tools,
         "stream": False

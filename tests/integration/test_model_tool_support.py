@@ -19,7 +19,7 @@ class ModelToolSupportTester:
             "qwen3:4b",           # Qwen3 series should support tools
             "qwen3:8b",           # Qwen3 series should support tools
             "llama3.2:3b",        # Llama 3.2 might support tools
-            "gemma3:4b",          # Gemma3 might support tools
+            "gemma4:31b-cloud",          # Gemma3 might support tools
             "qwen2.5-coder:7b",   # Qwen 2.5 coder might support tools
         ]
 

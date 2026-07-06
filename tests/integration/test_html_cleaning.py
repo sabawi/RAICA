@@ -9,7 +9,7 @@ def test_clean_html():
     
     payload = {
         "prompt": "Research latest tech news and create a report, then email it to test@example.com",
-        "model": "deepseek-v3.1:671b-cloud", 
+        "model": "deepseek-v4-flash:cloud", 
         "stream": False
     }
     

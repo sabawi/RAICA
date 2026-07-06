@@ -19,7 +19,7 @@ class SpacingTester:
         """Test spacing preservation"""
 
         payload = {
-            "model": "deepseek-v3.1:671b-cloud",
+            "model": "deepseek-v4-flash:cloud",
             "prompt": "What is the capital of Egypt? Give me a detailed answer with proper spacing.",
             "stream": True,
             "toolsInUse": False,

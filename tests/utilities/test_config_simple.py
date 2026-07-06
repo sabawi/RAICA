@@ -24,7 +24,7 @@ class SimpleConfigTester:
         """Test simple query without tools"""
 
         payload = {
-            "model": "deepseek-v3.1:671b-cloud",
+            "model": "deepseek-v4-flash:cloud",
             "prompt": "What is 5+7? Just give me the answer.",
             "stream": True,
             "toolsInUse": False,
@@ -88,7 +88,7 @@ class SimpleConfigTester:
         """Test query with tool calling"""
 
         payload = {
-            "model": "deepseek-v3.1:671b-cloud",
+            "model": "deepseek-v4-flash:cloud",
             "prompt": "What time is it in New York right now?",
             "stream": True,
             "toolsInUse": True,

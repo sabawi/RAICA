@@ -13,7 +13,7 @@ def test_pdf_conversation_request():
     
     payload = {
         "prompt": "Email the above response as PDF to test@example.com",
-        "model": "deepseek-v3.1:671b-cloud", 
+        "model": "deepseek-v4-flash:cloud", 
         "toolsInUse": True,
         "stream": False,
         "prompt_context": """
@@ -49,7 +49,7 @@ def test_image_analysis():
     
     payload = {
         "prompt": "I want to analyze an image. Use the image_to_text tool to help me.",
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "toolsInUse": True,
         "stream": False
     }

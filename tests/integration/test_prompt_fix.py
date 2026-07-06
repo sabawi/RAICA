@@ -10,7 +10,7 @@ def test_single_prompt():
     payload = {
         "prompt": "Send an email to test@example.com with subject 'Test' and body 'Hello world'",
         "toolsInUse": True,
-        "model": "deepseek-v3.1:671b-cloud"
+        "model": "deepseek-v4-flash:cloud"
     }
     
     print("🧪 Testing Fixed Prompt Format")

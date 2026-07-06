@@ -51,7 +51,7 @@ def test_image_processing():
     # Test 1: Correct native API format with model and messages
     print("\n🧪 TEST 1: Native API with correct format")
     payload = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "messages": [
             {"role": "user", "content": "Please analyze this image and describe what you see."}
         ],
@@ -90,7 +90,7 @@ def test_simple_request():
 
     print("\n🧪 TEST 2: Simple request without images")
     payload = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "messages": [
             {"role": "user", "content": "Hello, how are you?"}
         ],

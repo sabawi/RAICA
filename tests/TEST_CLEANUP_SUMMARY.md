@@ -435,10 +435,10 @@ Replaced slow local Ollama models with fast cloud models for testing:
 ```
 Local Models              →  Cloud Model
 -------------------          -------------------------
-qwen3:8b                 →  deepseek-v3.1:671b-cloud
-qwen3:4b                 →  deepseek-v3.1:671b-cloud
-llama3.2:3b              →  deepseek-v3.1:671b-cloud
-llama3.2:1b              →  deepseek-v3.1:671b-cloud
+qwen3:8b                 →  deepseek-v4-flash:cloud
+qwen3:4b                 →  deepseek-v4-flash:cloud
+llama3.2:3b              →  deepseek-v4-flash:cloud
+llama3.2:1b              →  deepseek-v4-flash:cloud
 ```
 
 **Impact:**

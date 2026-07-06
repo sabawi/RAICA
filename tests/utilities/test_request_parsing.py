@@ -30,7 +30,7 @@ def test_request_parsing_equivalence():
             "payload": {
                 "prompt": "What is the latest news about technology?",
                 "prompt_context": "You are a helpful AI assistant focused on technology news.",
-                "model": "deepseek-v3.1:671b-cloud",
+                "model": "deepseek-v4-flash:cloud",
                 "toolsInUse": True,
                 "searchWebInUse": False,
                 "images": ["noimage"],

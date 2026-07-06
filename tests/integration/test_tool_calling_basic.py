@@ -5,7 +5,7 @@ import json
 def test_tool_calling():
     # Test with explicit tool calling instruction
     payload = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "prompt": """You have access to tools. When a user asks you to send an email, you should use the email tool.
 
 Available tools:

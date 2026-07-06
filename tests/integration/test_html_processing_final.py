@@ -9,7 +9,7 @@ def test_html_creation():
     
     payload = {
         "prompt": "Create html_success_final.html with content SUCCESS and email it to test@example.com",
-        "model": "deepseek-v3.1:671b-cloud", 
+        "model": "deepseek-v4-flash:cloud", 
         "stream": False
     }
     

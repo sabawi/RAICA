@@ -210,7 +210,7 @@ def test_6_tools():
         response = requests.post(
             "http://127.0.0.1:11434/api/chat",
             json={
-                "model": "deepseek-v3.1:671b-cloud",
+                "model": "deepseek-v4-flash:cloud",
                 "messages": messages,
                 "options": {"temperature": 0},
                 "tools": tools,

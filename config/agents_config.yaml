@@ -309,7 +309,7 @@ agents:
     # Verification Settings (90% success gate)
     verification:
       enabled: true
-      model: "glm-4.7:cloud"
+      model: "glm-5.2:cloud"   # was glm-4.7:cloud — Ollama retired glm-4.7 (2026-07) → glm-5.2
       provider: "ollama"
       success_threshold: 90
       max_verification_iterations: 3

@@ -20,7 +20,7 @@ def test_pdf_async_fix():
     
     payload = {
         "prompt": "Create a PDF document called async_test.pdf with some test content about async event loops",
-        "model": "deepseek-v3.1:671b-cloud", 
+        "model": "deepseek-v4-flash:cloud", 
         "toolsInUse": True,
         "stream": False
     }

@@ -16,7 +16,7 @@ def test_arxiv_pdf():
     # Test arXiv paper PDF URL
     payload = {
         "prompt": "Explain this paper in details: URL: https://arxiv.org/pdf/2501.00139v2.pdf",
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "toolsInUse": True,
         "system": "You are a helpful assistant."
     }

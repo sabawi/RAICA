@@ -13,7 +13,7 @@ def test_clean_architecture():
     
     # Simple test request that should trigger tool calls
     test_request = {
-        "model": "deepseek-v3.1:671b-cloud",
+        "model": "deepseek-v4-flash:cloud",
         "prompt": "What's the current date and give me today's top news summary?",
         "stream": False,
         "toolsInUse": [

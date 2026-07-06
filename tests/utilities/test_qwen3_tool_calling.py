@@ -19,7 +19,7 @@ class Qwen3ToolDebugger:
         """Test a specific query type"""
 
         payload = {
-            "model": "deepseek-v3.1:671b-cloud",
+            "model": "deepseek-v4-flash:cloud",
             "prompt": prompt,
             "stream": True,
             "toolsInUse": True,
