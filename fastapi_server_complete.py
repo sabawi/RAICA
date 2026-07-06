@@ -950,7 +950,11 @@ class AsyncToolManager:
         """
         try:
             # Remove TOOLS_AVAILABLE check - let function handle missing deps gracefully
-                
+
+            # LLM-driven source-category selection is computed in the async body below (in the event
+            # loop) and read by sync_news_query via this closure variable. Init here so it is always bound.
+            _llm_selected_categories = None
+
             def sync_news_query():
                 # Handle parameter parsing like the original
                 if isinstance(args, str):
@@ -1688,12 +1692,15 @@ class AsyncToolManager:
                 today = datetime.now()
                 todayStr = today.strftime("%A, %B %d, %Y %I:%M:%S %p")
                 
-                # 🎯 UNION-BASED MULTI-SOURCE SYSTEM
-                # Step 1: Smart Category Detection (returns ranked categories)
-                ranked_categories = find_categories_ranked(newsFilter)
-                
-                # Step 2: Keyword-based source filtering
-                keyword_sources = find_keyword_sources(newsFilter)
+                # 🎯 LLM-DRIVEN MULTI-SOURCE SELECTION
+                # Step 1: categories were chosen by the LLM in the async wrapper (policy-compliant; see
+                #         the _select_news_categories_llm call before run_in_executor). RETIRES the keyword
+                #         classifier — find_categories_ranked/find_keyword_sources are no longer invoked.
+                ranked_categories = _llm_selected_categories or \
+                    [c for c in ("world", "national", "business", "technology", "science") if c in NEWS_URLS]
+
+                # Step 2: keyword-based source filtering RETIRED (LLM selection above is authoritative)
+                keyword_sources = []
                 
                 # Step 3: UNION all sources from categories + keywords
                 urls = get_union_sources(ranked_categories, keyword_sources)
@@ -1822,6 +1829,28 @@ class AsyncToolManager:
                 
                 return res
             
+            # 🎯 LLM-DRIVEN news category selection (policy-compliant; retires the keyword classifier).
+            # Must run in the event loop, BEFORE dispatching the sync worker to the executor thread.
+            # sync_news_query reads _llm_selected_categories via closure. Selector fails safe internally.
+            try:
+                if isinstance(args, str):
+                    _sel_data = json.loads(args) if args.strip().startswith('{') else {'filter': args}
+                else:
+                    _sel_data = args if isinstance(args, dict) else {'filter': str(args)}
+                _sel_filter = (_sel_data.get('filter', '') or '').lower().strip()
+            except Exception:
+                _sel_filter = ''
+            try:
+                import yaml as _yaml
+                with open('config/news_sources.yaml') as _nf:
+                    _sel_cats = list((_yaml.safe_load(_nf) or {}).get('news_sources', {}).keys())
+            except Exception:
+                _sel_cats = []
+            if not _sel_cats:
+                _sel_cats = ["world", "national", "business", "finance", "economy",
+                             "technology", "crypto", "science", "politics", "local"]
+            _llm_selected_categories = await _select_news_categories_llm(_sel_filter, _sel_cats)
+
             # 🔒 CRITICAL GLOBAL TIMEOUT: Wrap entire news query with 60-second timeout
             # Parallel fetching should complete much faster now
             try:
@@ -1892,6 +1921,19 @@ class AsyncToolManager:
                                 # _validate_article_url gate. Checked BEFORE fetching to also save work.
                                 if href == 'No URL' or not _validate_article_url(href):
                                     print(f"🔗 search_web: skipping non-article result URL: {str(href)[:80]}", flush=True)
+                                    continue
+
+                                # Section/landing-page guard — symmetric with get_news_summaries (which
+                                # already refuses non-article section pages). _validate_article_url PASSES
+                                # sections like bbc.com/news/world/middle_east; this rejects them so the
+                                # model never cites a section as if it were a specific article. Config-gated
+                                # (non_dr.search_article_guard.enabled) so it is reversible.
+                                try:
+                                    _sw_guard_on = config_loader.load_config().get('non_dr', {}).get('search_article_guard', {}).get('enabled', True)
+                                except Exception:
+                                    _sw_guard_on = True
+                                if _sw_guard_on and not _is_specific_article_url(href):
+                                    print(f"🔗 search_web: skipping section/landing result URL (not a specific article): {str(href)[:80]}", flush=True)
                                     continue
 
                                 # Extract content from each URL. This fetch also serves as the Layer 3
@@ -3037,6 +3079,39 @@ def _validate_article_url(url: str) -> bool:
     return True
 
 
+def _is_specific_article_url(url: str) -> bool:
+    """Structural test: does the URL PATH look like a SPECIFIC article vs a section/landing page?
+
+    A specific article's path carries an article identifier — a date, a numeric/alphanumeric story id,
+    or a multi-word hyphenated headline slug. A section/landing page has only short categorical
+    segments (e.g. /news, /world, /middle_east, /middleeast, /world/mena). This is a STRUCTURAL SHAPE
+    test (article-shaped vs section-shaped) — NOT a keyword list of section names — so a never-seen
+    section URL with short categorical segments is caught, and any article with a real slug/date/id
+    is kept, generically.
+
+    Complements _validate_article_url (which only rejects feeds / bare homepages / too-short); this
+    rejects the section pages _validate_article_url passes (e.g. bbc.com/news/world/middle_east,
+    aljazeera.com/middle-east, arabnews.com/middleeast). Fail-open on parse error (don't over-reject).
+    """
+    if not _validate_article_url(url):
+        return False
+    try:
+        from urllib.parse import urlsplit
+        path = (urlsplit(url).path or "").strip("/")
+    except Exception:
+        return True  # fail-open
+    if not path:
+        return False  # bare homepage / site root
+    for seg in path.split("/"):
+        if re.search(r'\d{4}', seg):                                   # a year/date or long numeric run
+            return True
+        if re.search(r'[A-Za-z]', seg) and re.search(r'\d', seg) and len(seg) >= 8:  # alphanumeric story id
+            return True
+        if ('-' in seg or '_' in seg) and len(seg) >= 12:              # multi-word headline slug
+            return True
+    return False  # only short categorical segments → a section/landing page, not an article
+
+
 def _citation_verify_cfg() -> dict:
     """Layer 3 (citation accuracy) config — fail-safe defaults. A LENIENT live check that drops only
     clearly-dead article URLs (hard 404/410, or a redirect that lands on the site homepage) before they
@@ -3599,6 +3674,63 @@ async def _is_research_query(user_prompt: str, tools_called: List[str]) -> bool:
 
     _research_classification_cache[cache_key] = is_research
     return is_research
+
+
+# Cache: "filter|categories" -> ranked category list (avoid repeated LLM calls on the hot path).
+_news_category_cache: Dict[str, List[str]] = {}
+
+async def _select_news_categories_llm(news_filter: str, available_categories: List[str]) -> List[str]:
+    """LLM-driven news source-category selection — RETIRES the hardcoded keyword classifier.
+
+    Given the user's news topic and the list of available RSS source categories, the LLM chooses which
+    categories are relevant. Policy-compliant: the LLM decides meaning; no keyword/phrase lists, no
+    per-category scoring. Cached per (filter, categories).
+
+    Fails SAFE: on ANY failure, empty/invalid reply, or unavailable LLM → a BROAD general-news default
+    (NOT the old keyword classifier, never empty). The primary model's relevance selection over the
+    fetched sources does the final filtering, so a slightly-broad category set is harmless.
+    """
+    import json as _json, re as _re
+    cats = [c for c in (available_categories or []) if c not in ("default",)]
+    if not cats:
+        return list(available_categories or [])
+    cache_key = (news_filter or "").strip().lower() + "|" + ",".join(sorted(cats))
+    if cache_key in _news_category_cache:
+        return _news_category_cache[cache_key]
+
+    # Broad general-news default (general coverage — not keyword-derived).
+    broad_default = [c for c in ("world", "national", "business", "technology", "science") if c in cats] or cats[:4]
+
+    mgr = globals().get("llm_manager")
+    if mgr is None:
+        return broad_default
+
+    prompt = (
+        "You route a news query to the most relevant SOURCE CATEGORIES for fetching RSS feeds.\n"
+        f"Available categories: {', '.join(cats)}\n\n"
+        f"News topic/query:\n{(news_filter or '')[:600]}\n\n"
+        "Return ONLY a JSON array of the 1-4 most relevant category names, spelled EXACTLY as listed "
+        'above, most relevant first. Example: ["world", "politics"]. No prose, no explanation.'
+    )
+    try:
+        chunks = []
+        async for chunk in mgr.generate_stream(prompt, temperature=0.0, max_tokens=120, stream=False):
+            chunks.append(chunk)
+        raw = "".join(chunks)
+        m = _re.search(r'\[.*?\]', raw, _re.DOTALL)
+        picked = _json.loads(m.group(0)) if m else []
+        # Keep only valid, known categories (LLM's choice ∩ our whitelist — structural, not keyword).
+        result = [c for c in picked if isinstance(c, str) and c in cats]
+        if not result:
+            raise ValueError(f"no valid categories in LLM reply: {raw[:120]!r}")
+        logger.info(f"📰 news category selection (LLM): {(news_filter or '')[:50]!r} -> {result}")
+    except Exception as e:
+        logger.warning(f"📰 news category LLM selection failed ({e}) → broad default {broad_default}")
+        result = broad_default
+
+    _news_category_cache[cache_key] = result
+    return result
+
 
 async def process_with_safe_optimization(
     tool_results: List[Dict],

@@ -184,6 +184,9 @@ non_dr:
   citation_grounding:
     enabled: true      # master switch for the shadow audit
     shadow: true       # Phase 0 — log-only; enforcement (stripping) not wired yet
+  search_article_guard:
+    enabled: true      # search_web cites only SPECIFIC-article URLs; reject section/landing pages
+                       # (symmetric with get_news_summaries). Reversible: set false to disable.
 
 # ============================================================
 # DEEP RESEARCH ENGINE (Stage 0 foundations)

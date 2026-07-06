@@ -26,7 +26,9 @@ news_sources:
 
   # World/International News
   world:
-    - https://apnews.com/world-news
+    # NOTE: keep these as RSS/Atom FEEDS only. get_news_summaries skips non-RSS section/landing pages
+    # (e.g. apnews.com/world-news, a site homepage, bbc.com/news/world/middle_east) — they yield no
+    # citable article and only waste a fetch. Removed 2026-07-06.
     - https://feeds.bbci.co.uk/news/world/rss.xml
     - https://www.aljazeera.com/xml/rss/all.xml
     - https://rss.dw.com/atom/rss-en-all
@@ -34,9 +36,6 @@ news_sources:
     - https://theintercept.com/feed/
     - https://www.france24.com/en/rss
     - https://www.euronews.com/rss?level=vertical&name=news
-    - https://english.alarabiya.net/
-    - https://www.bbc.com/news/world/middle_east
-    - https://eurasianet.org/
     - https://www.scmp.com/rss/feed/
     - https://www.reuters.com/world/rss  # ADDED: Reuters world wire (breaking news)
     - https://www.ft.com/world?format=rss  # ADDED: Financial Times world coverage (analytical depth)
@@ -264,7 +263,6 @@ category_mapping:
       - earnings report
       - market analysis
       - stock trading
-      - middle east
     business_crossover:
       - corporate earnings
       - business finance
