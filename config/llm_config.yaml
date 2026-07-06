@@ -320,6 +320,15 @@ deep_research:
       # Grounded draft from the evidence pool. Credibility-aware: scholarly claims must
       # lean on higher-tier sources; low-tier sources are reported as "claimed by X".
       credibility_grading: true
+      # CONTENT-QUALITY GATE (docs/RAICA_DR_CITATION_LIVENESS.md §groundedness). Marks source blocks whose
+      # page BODY could not be fetched (extraction-error/paywall — ~2% of live citations) so the synthesizer
+      # knows it holds only the TITLE, not the article, and won't attribute specific facts/quotes/stats to
+      # them. Marks 'error' blocks only (a short abstract/snippet is real content). SHADOW = count + log only
+      # (evidence + prompt UNCHANGED); shadow:false = ACTIVE (annotate evidence + add the attribution rule).
+      # Fail-open; enabled:false turns it off.
+      retrieval_gate:
+        enabled: true
+        shadow: true
       # SOURCE PROVENANCE (primary-vs-secondary) — docs/RAICA_SOURCE_PROVENANCE.md. Phase 0 wires ONLY
       # the shadow role-grading + logging (a baseline; ZERO answer change — roles are logged, not fed to
       # synthesis). Later phases flip prefer_primary (synthesis prefers the primary in evidence),

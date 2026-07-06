@@ -95,6 +95,42 @@ def _classify_body(body: str, min_body_chars: int) -> str:
     return "real" if len(fetched) >= min_body_chars else "thin"
 
 
+# Content-quality gate (docs/RAICA_DR_CITATION_LIVENESS.md §groundedness). Marks a source block whose page
+# BODY could not be fetched (extraction-error / paywall / block) so the synthesizer knows it holds only the
+# title, not the article — and won't attribute specific facts to it. Marks 'error' ONLY (a 'thin' abstract/
+# snippet is short but REAL content). Inserted right after the block's CITATION URL line.
+_GATE_MARKER = "⚠️ BODY-NOT-RETRIEVED (page body could not be fetched — TITLE/snippet only, not the article)"
+# Capturing split on the CITATION URL marker → [preamble, marker, seg, marker, seg, ...] (lossless: the
+# concatenation of all pieces == original). Each `seg` = "url\n…CONTENT: body…\n<next block's preamble>".
+_BLOCK_SPLIT_CAP = re.compile(r'(🔗 (?:MANDATORY )?CITATION URL:\s*)')
+
+
+def annotate_unretrieved_blocks(content: str, *, min_body_chars: int = 200,
+                                marker: str = _GATE_MARKER) -> Tuple[str, int]:
+    """Insert the BODY-NOT-RETRIEVED marker after the CITATION URL line of each source block whose body is an
+    extraction-ERROR (RAICA holds no page body). Marks 'error' ONLY. Returns (annotated_content, n_marked).
+    PURE, offline; LOSSLESS (output == input) when nothing is marked. Handles both source-block formats."""
+    if not content:
+        return content, 0
+    parts = _BLOCK_SPLIT_CAP.split(content)   # parts[0] = preamble; then (marker, seg) pairs
+    out = [parts[0]]
+    n = 0
+    i = 1
+    while i < len(parts):
+        delim = parts[i]
+        seg = parts[i + 1] if i + 1 < len(parts) else ""
+        # `seg` holds this block's body (up to the NEXT block's CITATION URL); "Error extracting content:"
+        # in it => this source is an extraction error. Insert the marker just after the url (first line).
+        if _classify_body(seg, min_body_chars) == "error":
+            n += 1
+            nl = seg.find("\n")
+            seg = (seg + "\n" + marker) if nl == -1 else (seg[:nl + 1] + marker + "\n" + seg[nl + 1:])
+        out.append(delim)
+        out.append(seg)
+        i += 2
+    return "".join(out), n
+
+
 _RANK = {"error": 0, "thin": 1, "real": 2}
 
 

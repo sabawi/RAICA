@@ -484,7 +484,37 @@ class ResearchSynthesizer:
     async def synthesize(self, user_request: str, evidence: List[Dict[str, Any]],
                          credibility: Dict[str, str], model: Optional[str] = None,
                          roster: Optional[str] = None) -> str:
-        doc = self._evidence_document(evidence, credibility)
+        # ── Content-quality gate (docs/RAICA_DR_CITATION_LIVENESS.md §groundedness) ──────────────────────
+        # Mark source blocks whose page BODY could not be fetched (extraction-error/paywall) so the writer
+        # treats them as title-only and never attributes specific facts to them. SHADOW = count + log only
+        # (evidence unchanged); ACTIVE = annotate the evidence + add the attribution rule to the prompt.
+        _rg = self._cfg.get("synthesis", {}).get("retrieval_gate", {}) or {}
+        _rg_active = bool(_rg.get("enabled", False)) and not bool(_rg.get("shadow", True))
+        _ev = evidence
+        if _rg.get("enabled", False):
+            try:
+                from research.retrieval_quality import annotate_unretrieved_blocks
+                _marked, _gated = 0, []
+                for e in evidence:
+                    _c, _n = annotate_unretrieved_blocks(e.get("content", ""))
+                    _marked += _n
+                    _gated.append({**e, "content": _c} if _n else e)
+                if _marked:
+                    logger.info("🚧 retrieval-gate [%s]: %d source-block(s) body-not-retrieved (title-only)",
+                                "ACTIVE" if _rg_active else "SHADOW", _marked)
+                if _rg_active:
+                    _ev = _gated
+            except Exception as _rg_e:  # noqa: BLE001 — gate must NEVER break synthesis
+                logger.warning("🚧 retrieval-gate skipped (non-fatal): %s", _rg_e)
+        _gate_rule = (
+            "- BODY-NOT-RETRIEVED SOURCES: a source block marked '⚠️ BODY-NOT-RETRIEVED' could NOT be fetched "
+            "(paywall/block/error) — you hold ONLY its title, not its content. Do NOT attribute any specific "
+            "fact, quote, statistic, figure, date, or detail to it; reference it only for the existence of a "
+            "topic or as further reading, clearly framed. Never present unseen specifics as sourced to it, and "
+            "prefer sources WITH a retrieved body for concrete claims. (Governs ATTRIBUTION, not exclusion.)\n"
+        ) if _rg_active else ""
+
+        doc = self._evidence_document(_ev, credibility)
         system_prompt = (
             "You are an expert research writer producing an authoritative, in-depth report. A large "
             "body of evidence has been gathered for you — your job is to convey as much of its insight "
@@ -554,6 +584,7 @@ class ResearchSynthesizer:
             "source's standing — include and explain them, do not merely dismiss them. Reserve outright "
             "'debunking' for claims the evidence actually refutes; for the rest, present the debate fairly "
             "and let the reader weigh it.\n"
+            + _gate_rule +
             "- Where sources CONFLICT, explicitly say so and present both/all sides with citations — the "
             "disagreement itself is valuable research content.\n"
             "- Do NOT overstate your sourcing (e.g. do not call popular/low-credibility sources "

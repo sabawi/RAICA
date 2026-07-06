@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from research.retrieval_quality import assess_retrieval
+from research.retrieval_quality import assess_retrieval, annotate_unretrieved_blocks
 
 LONG = "Substantial article body text. " * 12          # > 200 chars of real body
 DIV = "───────────────────────────"
@@ -137,6 +137,42 @@ def test_headline_not_judged_without_gathered_title():
     assert hl["checked"] == 0, hl
 
 
+# ---- content-quality gate: annotate_unretrieved_blocks (error-only, both formats, lossless) ----
+def test_gate_marks_error_block_search_web_format():
+    err = _block(ERR, "Description: s.\n\nExtracted Content: Error extracting content: 403 Forbidden",
+                 title="Blocked Article")
+    out, n = annotate_unretrieved_blocks(err)
+    assert n == 1 and "BODY-NOT-RETRIEVED" in out
+
+
+def test_gate_marks_error_block_papers_format():
+    # papers block has a '───' divider BETWEEN the URL and CONTENT — the marker must still land.
+    err = _papers_block("https://ex.com/paper", "Error extracting content: 403 Forbidden", title="Paper")
+    out, n = annotate_unretrieved_blocks(err)
+    assert n == 1 and "BODY-NOT-RETRIEVED" in out
+
+
+def test_gate_lossless_on_real_block():
+    real = _block(REAL, f"Description: s.\n\nExtracted Content: {LONG}", title="Real")
+    out, n = annotate_unretrieved_blocks(real)
+    assert n == 0 and out == real and "BODY-NOT-RETRIEVED" not in out
+
+
+def test_gate_does_not_mark_thin():
+    # a short abstract/snippet is REAL content — the gate marks 'error' only, never 'thin'.
+    thin = _block(THIN, "Description: s.\n\nExtracted Content: short snippet", title="Thin")
+    _out, n = annotate_unretrieved_blocks(thin)
+    assert n == 0
+
+
+def test_gate_multiple_blocks_only_error_marked():
+    combined = (_block(REAL, f"Description: s.\n\nExtracted Content: {LONG}", title="Good")
+                + _block(ERR, "Description: s.\n\nExtracted Content: Error extracting content: 403",
+                         title="Bad"))
+    out, n = annotate_unretrieved_blocks(combined)
+    assert n == 1 and out.count("BODY-NOT-RETRIEVED") == 1
+
+
 if __name__ == "__main__":
     test_each_class_counted();          print("PASS: each retrieval class counted")
     test_all_real_when_bodies_substantial(); print("PASS: all-real when bodies substantial")
@@ -147,4 +183,9 @@ if __name__ == "__main__":
     test_headline_true_mispairing_flagged();     print("PASS: headline true mispairing flagged")
     test_headline_papers_format_matches();       print("PASS: headline papers format matches")
     test_headline_not_judged_without_gathered_title(); print("PASS: headline not judged without title")
+    test_gate_marks_error_block_search_web_format();  print("PASS: gate marks error (search_web fmt)")
+    test_gate_marks_error_block_papers_format();      print("PASS: gate marks error (papers fmt)")
+    test_gate_lossless_on_real_block();               print("PASS: gate lossless on real block")
+    test_gate_does_not_mark_thin();                   print("PASS: gate does not mark thin")
+    test_gate_multiple_blocks_only_error_marked();    print("PASS: gate marks only error in mixed")
     print("ALL TESTS PASSED")
