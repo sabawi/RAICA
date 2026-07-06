@@ -57,6 +57,19 @@ def test_clean_answer_no_flags():
     assert a["cited"] == 2 and a["distinct_urls"] == 2, a
 
 
+def test_tracking_params_not_false_fabricated():
+    # The news tool returns article URLs with tracking params (?traffic_source=rss); the model cites
+    # the CLEAN URL. Same host+path → must NOT be flagged fabricated (the earlier false-positive bug).
+    evidence = "🔗 CITATION URL: https://www.aljazeera.com/news/2026/7/6/macron-arrives-in-syria?traffic_source=rss\n"
+    answer = "[Macron arrives in Syria](https://www.aljazeera.com/news/2026/7/6/macron-arrives-in-syria)"
+    a = audit_citations(answer, evidence)
+    assert a["fabricated"] == 0, a
+    # www vs non-www, trailing slash, and utm params must also match
+    e2 = "🔗 CITATION URL: https://dw.com/en/story/a-77857033?utm_source=x\n"
+    an2 = "[NATO chief](https://www.dw.com/en/story/a-77857033/)"
+    assert audit_citations(an2, e2)["fabricated"] == 0, "www/slash/utm should still match"
+
+
 def test_empty_evidence_is_failsafe():
     # If evidence extraction yields nothing, do NOT flag everything as fabricated.
     answer = "[some story](https://example.org/article/x)"

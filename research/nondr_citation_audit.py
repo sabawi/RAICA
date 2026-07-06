@@ -27,7 +27,7 @@ import re
 from typing import Any, Dict
 from urllib.parse import urlsplit
 
-from research.citation_grounding import extract_cited_links, normalize_url
+from research.citation_grounding import extract_cited_links
 
 # Any URL appearing in the evidence text (the prompt/context the model was shown).
 _URL_RE = re.compile(r'https?://[^\s<>"\')\]}]+')
@@ -39,6 +39,25 @@ def _bare_homepage(url: str) -> bool:
         return (urlsplit(url.strip()).path or "") in ("", "/")
     except Exception:
         return False
+
+
+def _norm_match(url: str) -> str:
+    """Match key = scheme + host(no 'www.') + path(no trailing slash), lowercased, NO query/fragment.
+
+    A news article is identified by its host+path; query params (?traffic_source=rss, utm_*, etc.) are
+    tracking noise that DIFFERS between the tool-returned URL and the model's cited URL. Ignoring them
+    prevents false 'fabricated' flags (a path-identical, in-evidence article looking un-sourced).
+    Distinct articles never share a host+path, so this cannot create false negatives.
+    """
+    try:
+        s = urlsplit((url or "").strip())
+        host = (s.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        path = (s.path or "").rstrip("/")
+        return f"{(s.scheme or 'https').lower()}://{host}{path}"
+    except Exception:
+        return (url or "").strip().lower()
 
 
 def audit_citations(answer: str, evidence_text: str) -> Dict[str, Any]:
@@ -54,7 +73,7 @@ def audit_citations(answer: str, evidence_text: str) -> Dict[str, Any]:
     evidence = set()
     try:
         for u in _URL_RE.findall(evidence_text or ""):
-            n = normalize_url(u.rstrip('.,);]'))
+            n = _norm_match(u.rstrip('.,);]'))
             if n:
                 evidence.add(n)
     except Exception:
@@ -63,11 +82,11 @@ def audit_citations(answer: str, evidence_text: str) -> Dict[str, Any]:
     # normalized url -> set of distinct headline texts it is cited under
     per_url: Dict[str, set] = {}
     for text, url in cited:
-        per_url.setdefault(normalize_url(url), set()).add((text or "").strip().lower())
+        per_url.setdefault(_norm_match(url), set()).add((text or "").strip().lower())
 
     fabricated, bare = set(), set()
     for text, url in cited:
-        n = normalize_url(url)
+        n = _norm_match(url)
         # fail-safe: only call it fabricated if we actually extracted an evidence set
         if evidence and n and n not in evidence:
             fabricated.add(n)
