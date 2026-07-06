@@ -11351,7 +11351,26 @@ END OF CONTEXT
                     # Output condition: PRIMARY LLM completed
                     llm_duration = time.time() - llm_start_time
                     logger.info(f"🤖 PRIMARY LLM: COMPLETE | {llm_duration:.2f}s | Output: {len(complete_llm_response)} chars")
-                        
+
+                    # --- NON-DR output-side citation grounding — Phase 0 SHADOW (log-only, offline, fail-open) ---
+                    # The non-DR answer path never got the output-side grounding DR has. Here we AUDIT (do not
+                    # modify) the finished answer for fabricated / reused / bare-homepage citations, to baseline
+                    # the rate on real traffic before enforcing. DR requests are excluded (they have their own
+                    # grounding). See docs/RAICA_NONDR_CITATION_GROUNDING.md.
+                    try:
+                        _nondr_cg = config_loader.load_config().get('non_dr', {}).get('citation_grounding', {})
+                        if _nondr_cg.get('enabled') and not bool(locals().get('_dr_on', False)):
+                            from research.nondr_citation_audit import audit_citations, format_shadow_line
+                            _nondr_audit = audit_citations(complete_llm_response, stream_payload.get('prompt', ''))
+                            if _nondr_audit.get('cited', 0):
+                                logger.info(format_shadow_line(_nondr_audit))
+                                if _nondr_audit.get('fabricated') or _nondr_audit.get('reuse'):
+                                    logger.info(f"🩹 nondr-citation [SHADOW] offenders: "
+                                                f"fabricated={_nondr_audit.get('fabricated_urls')} "
+                                                f"reuse={_nondr_audit.get('reuse_detail')}")
+                    except Exception as _nondr_err:
+                        logger.debug(f"nondr-citation shadow skipped: {_nondr_err}")
+
                     # Post-processing phase
                     logger.info(f"🔍🔍🔍 CRITICAL: Reached post-processing section!")
                     logger.info(f"🔍 PRE-POST-PROCESSING: email_intercepted={email_intercepted}")

@@ -173,6 +173,19 @@ optimization:
   rollout_percentage: 100.0
   detailed_logging: true
 # ============================================================
+# NON-DEEP-RESEARCH OUTPUT-SIDE CITATION GROUNDING (bots + @Ask)
+# The non-DR answer path (fastapi_server_complete.llama_stream) has no
+# output-side citation grounding like DR does. This audits the finished
+# answer for fabricated / reused / bare-homepage citations.
+# Phase 0 = SHADOW (log-only, offline, never modifies the answer).
+# See docs/RAICA_NONDR_CITATION_GROUNDING.md
+# ============================================================
+non_dr:
+  citation_grounding:
+    enabled: true      # master switch for the shadow audit
+    shadow: true       # Phase 0 — log-only; enforcement (stripping) not wired yet
+
+# ============================================================
 # DEEP RESEARCH ENGINE (Stage 0 foundations)
 # Source of truth for research depth and the LLM-driven research
 # classifier. No depth limits are hardcoded in code anymore.
