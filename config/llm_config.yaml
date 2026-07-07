@@ -364,6 +364,8 @@ deep_research:
       source_relevance:
         enabled: true
         shadow: true                     # Phase 0: judge + log only; Phase 1 will drop off-topic sources
+        domain_fit_judge: true           # Layer A: LLM routes published_papers_search to domain-appropriate
+                                         # corpora (humanities topics skip arxiv/pubmed/biorxiv). Fail-open.
       # A deep run can gather >1MB of evidence, overflowing the model context window.
       # The evidence fed to each LLM call is budgeted to this many TOKENS (measured with
       # tiktoken), shared fairly across sources (small sources kept whole, leftover given

@@ -7317,6 +7317,56 @@ def _dr_inject_research_output(value, research_output):
     return value
 
 
+async def _judge_paper_corpora(user_prompt: str, generate_stream) -> "Optional[list]":
+    """Deep Research layer A (docs/RAICA_DR_SOURCE_RELEVANCE.md): LLM domain-fit judge deciding WHICH paper
+    corpora fit this research topic, returned as a `sources` subset for published_papers_search
+    (None = search all). Humanities/history/law/arts topics SKIP the STEM-only databases (arXiv/PubMed/
+    bioRxiv — which have no humanities content and return keyword/homonym noise); STEM topics skip the
+    books/archive corpora. The broad corpora (OpenAlex/Crossref/CORE/Semantic Scholar) are kept for BOTH.
+    LLM-judged (no keyword lists — LLM-Policy Gate). Fail-open: any error / config-off → None (all corpora)."""
+    import re
+    try:
+        _sr = (config_loader.load_config().get('deep_research', {}).get('engine', {})
+               .get('synthesis', {}).get('source_relevance', {}))
+        if not _sr.get('domain_fit_judge', True):
+            return None
+    except Exception:
+        return None
+    # Broad = indexes all fields; STEM-only and BOOKS/ARCHIVE are the discriminating sets.
+    broad = ["openalex", "crossref", "core", "semantic_scholar"]
+    stem_only = ["arxiv", "pubmed", "europe_pmc", "biorxiv"]
+    humanities_only = ["doaj", "doab", "internet_archive"]
+    prompt = (
+        "A research query will be sent to academic paper databases. Some databases are STEM/biomedical ONLY "
+        "(arXiv, PubMed, bioRxiv — they contain NO history/law/arts/social-science content and return only "
+        "keyword/homonym noise for such topics); others cover the humanities and books. Classify the query's "
+        "PRIMARY field.\n\n"
+        f"Query:\n{(user_prompt or '')[:600]}\n\n"
+        "Answer with ONLY one line, exactly one of:\n"
+        "DOMAIN: STEM        (natural sciences, medicine, engineering, math, computer science)\n"
+        "DOMAIN: HUMANITIES  (history, law, arts, literature, philosophy, religion, most social science)\n"
+        "DOMAIN: BOTH        (genuinely spans technical and humanities fields)"
+    )
+    try:
+        chunks = []
+        async for ch in generate_stream(prompt, temperature=0.0, max_tokens=60, stream=False):
+            chunks.append(ch)
+        raw = "".join(chunks)
+        m = re.search(r'DOMAIN:\s*(STEM|HUMANITIES|BOTH)', raw, re.IGNORECASE)
+        verdict = m.group(1).upper() if m else "BOTH"
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🎯 paper-corpora domain judge failed ({e}) → all corpora")
+        return None
+    if verdict == "STEM":
+        sources = broad + stem_only
+    elif verdict == "HUMANITIES":
+        sources = broad + humanities_only
+    else:
+        return None  # BOTH → search all corpora (tool default)
+    logger.info(f"🎯 dr-domain-fit (layer A): {verdict} → paper sources={sources}")
+    return sources
+
+
 def _dr_dispatch_failed(result_str: str) -> bool:
     """Detect a tool failure from RAICA's OWN structured result markers (NOT NLP on tool content):
     the user-tool wrapper returns leading '❌' or \"Tool '<n>' error:\"; safe_function_call returns
@@ -9006,12 +9056,30 @@ async def llama_stream(request: Request):
                         _dr_tool_defs = []
                         _dr_tool_catalog = []
 
+                    # Layer A domain-fit routing cache (judged once per run, lazily on first paper search).
+                    _dr_paper_sources = {"v": "__unset__"}
+
                     async def _dr_dispatch(name, query):
                         fn = tool_manager.available_functions.get(name)
                         if not fn:
                             return f"[no such tool: {name}]"
+                        _arg = query
+                        # Layer A (docs/RAICA_DR_SOURCE_RELEVANCE.md): route published_papers_search to the
+                        # DOMAIN-APPROPRIATE corpora — humanities topics skip arxiv/pubmed/biorxiv (STEM-only,
+                        # source of the 'Byzantine Empire → CS Byzantine-Agreement papers' homonym). LLM-judged
+                        # once per run, cached, fail-open (→ all corpora). Passes sources via JSON args.
+                        if name == "published_papers_search":
+                            try:
+                                if _dr_paper_sources["v"] == "__unset__":
+                                    _dr_paper_sources["v"] = await _judge_paper_corpora(
+                                        actual_user_prompt, _dr_generate_stream)
+                                _srcs = _dr_paper_sources["v"]
+                                if _srcs:
+                                    _arg = json.dumps({"query": query, "sources": _srcs})
+                            except Exception as _pa_err:  # noqa: BLE001
+                                logger.warning(f"🎯 paper-corpora routing skipped ({_pa_err}) → all corpora")
                         try:
-                            return await fn(query)
+                            return await fn(_arg)
                         except Exception as _tool_err:  # one tool failing must not abort the round
                             logger.warning(f"🔬 tool '{name}' raised: {_tool_err}")
                             return f"[tool '{name}' error: {_tool_err}]"
