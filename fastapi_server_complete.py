@@ -891,15 +891,46 @@ class AsyncToolManager:
                 if page.exists():
                     # Truncate summary if too long
                     summary = page.summary[:2000] + "..." if len(page.summary) > 2000 else page.summary
-                    
-                    # Use enhanced source block formatting
+
+                    # Article BODY excerpt (after the lead) — captures in-text source attributions
+                    # (e.g. "According to al-Tabari …") the lead paragraph omits. Budgeted to avoid bloat.
+                    body_after = (page.text or "")[len(page.summary):][:5000].strip()
+
+                    # Wikipedia's OWN curated source list for the topic — the "Primary/Secondary sources",
+                    # "Bibliography", "Sources", "Further reading" sections. This is where the CANONICAL
+                    # primaries are named (al-Tabari, al-Baladhuri, Theophanes, …). The old summary-only
+                    # extraction threw this away, so the DR never saw the canonical primary sources.
+                    src_sections = []
+
+                    def _collect_sources(secs):
+                        for s in secs:
+                            t = (s.title or "").lower()
+                            if any(k in t for k in ("source", "bibliograph", "further reading")) \
+                                    and (s.text or "").strip():
+                                src_sections.append(f"— {s.title} —\n{s.text.strip()[:2500]}")
+                            _collect_sources(s.sections)
+
+                    try:
+                        _collect_sources(page.sections)
+                    except Exception:
+                        pass
+                    sources_block = ("\n\n".join(src_sections))[:5000]
+
+                    content = f"Wikipedia Summary:\n\n{summary}"
+                    if body_after:
+                        content += f"\n\nArticle body (excerpt):\n{body_after}"
+                    if sources_block:
+                        content += ("\n\nWIKIPEDIA'S CITED SOURCES FOR THIS TOPIC (the article's own curated "
+                                    "bibliography — prefer and pursue the PRIMARY sources named here):\n"
+                                    + sources_block)
+
                     formatted_result = _format_source_block(
                         source_url=page.fullurl,
                         title=page.title,
-                        content=f"Wikipedia Summary:\n\n{summary}",
+                        content=content,
                         source_num=1
                     )
-                    
+
                     return f"\nHere are the Wikipedia query results:\n{formatted_result}"
                 else:
                     return f"No Wikipedia page found for: {query}"
