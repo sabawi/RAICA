@@ -452,6 +452,7 @@ class DeepResearchEngine:
         """Ask the LLM whether coverage is sufficient and, if not, what to search next."""
         allowed = ", ".join(sorted(self._allowed_sources)) or "search_web"
         sq_list = "\n".join(f"- {sq['id']}: {sq['question']}" for sq in plan["sub_questions"])
+        _chase = bool(self._cfg.get("synthesis", {}).get("source_provenance", {}).get("chase_primary", False))
         system_prompt = (
             "You are the coverage assessor for a deep-research engine. Given the user's request, "
             "the planned sub-questions, the stop_condition, and a summary of evidence gathered so "
@@ -463,6 +464,20 @@ class DeepResearchEngine:
             '{"status": "sufficient" | "needs_more", "gaps": ["..."], '
             '"next_queries": [{"sub_question_id": "q1", "source": "search_web", "query": "..."}]}'
         )
+        if _chase:
+            # chase_primary (docs/RAICA_SOURCE_PROVENANCE.md Phase 2 / RAICA_DR_SOURCE_RELEVANCE.md): drive the
+            # gather loop to find the ORIGIN, not settle for secondary restatements. Semantic — the LLM judges
+            # primary-vs-secondary from the evidence (no hardcoded source lists).
+            system_prompt += (
+                "\n\nPRIMARY-SOURCE CHASE (priority): For EACH sub-question, judge whether the evidence already "
+                "includes a PRIMARY source (an original document/record/chronicle, first-hand account, dataset, "
+                "court ruling/legislation/filing, or peer-reviewed study) — or ONLY SECONDARY coverage "
+                "(encyclopedias, news write-ups, aggregators, explainers). For any sub-question resting ONLY on "
+                "secondary sources, set status=\"needs_more\" and add a targeted next_query aimed specifically at "
+                "locating the PRIMARY source (name the likely document/author/record/dataset where you can). "
+                "Prefer chasing the ORIGIN over adding more secondary restatements — but do NOT invent or force a "
+                "primary that does not exist; if none is plausibly findable, say so in gaps and move on."
+            )
         prompt = (
             f"USER REQUEST:\n{user_request}\n\n"
             f"STOP CONDITION:\n{plan.get('stop_condition', '')}\n\n"

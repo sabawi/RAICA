@@ -417,6 +417,19 @@ async def run_deep_research_pipeline(
             _b_off = getattr(synthesizer, "_last_off_topic_urls", None) or set()
             _sr_cfg = config.get("synthesis", {}).get("source_relevance", {}) or {}
             _b_off_arg = _b_off if (_b_off and not _sr_cfg.get("shadow", True)) else None
+            # SAFETY NET: never let B destroy an answer. If enforcing would strip an implausibly high share of
+            # the answer's citations (judge over-flagging or a junk-heavy gather), SKIP the drop and warn — a
+            # thin-but-honest answer beats a citation-stripped one. Threshold high so genuine strips proceed.
+            if _b_off_arg:
+                from research.citation_grounding import extract_cited_urls as _ecu, normalize_url as _nu
+                _cited_norm = [_nu(u) for u in _ecu(answer)]
+                _off_norm = {_nu(u) for u in _b_off_arg}
+                _would = sum(1 for u in _cited_norm if u in _off_norm)
+                if _cited_norm and _would / len(_cited_norm) > 0.75:
+                    logger.warning("🎯 Layer-B enforce SKIPPED (safety): would strip %d/%d cited (>75%%) — judge "
+                                   "likely over-flagged or gather too off-topic; keeping citations", _would,
+                                   len(_cited_norm))
+                    _b_off_arg = None
             _gr = ground_citations(answer, _ev_urls, dead_urls=_dead_urls, off_topic_urls=_b_off_arg,
                                    on_unsourced=_cg.get("on_unsourced", "flag"), shadow=_effective_shadow)
             _s = _gr["stats"]

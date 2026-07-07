@@ -353,8 +353,9 @@ deep_research:
       source_provenance:
         enabled: true
         shadow: true                     # Phase 0: compute + log only
-        prefer_primary: false            # Phase 1
-        chase_primary: false             # Phase 2
+        prefer_primary: false            # Phase 1 (delivered as policy by the synthesis PRIMARY-FIRST directive)
+        chase_primary: true              # Phase 2 ENABLED: coverage assessor chases the ORIGIN for
+                                         # secondary-only sub-questions (bounded by loop.max_rounds_ceiling)
         corroboration_elevates: false    # Phase 3
         min_independent_secondaries: 2   # the "multiple witnesses" threshold
         flag_single_secondary: false     # Phase 3

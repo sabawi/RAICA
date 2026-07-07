@@ -333,27 +333,34 @@ class ResearchSynthesizer:
                     pairs.append((t[:200], u))
         if not pairs:
             return {"off_topic": [], "checked": 0}
-        numbered = "\n".join(f"{i}. {t}" for i, (t, _) in enumerate(pairs))
+        # CONSERVATIVE + BATCHED. One big list makes the model over-flag (it once flagged on-topic Wikipedia
+        # gang articles for a gang-history query); judge in small batches and keep-when-unsure.
         system_prompt = (
-            "You audit whether gathered SOURCES are ON-TOPIC for a research request. Some sources share only "
-            "a KEYWORD or HOMONYM with the topic while being about a completely different subject — e.g. a "
-            "computer-science paper on the 'Byzantine Generals Problem' / 'Byzantine fault tolerance' is NOT "
-            "about the Byzantine Empire; a paper on 'mercury toxicity' is NOT about the planet Mercury. Given "
-            "the research request and a numbered list of source TITLES, return the indices of sources that are "
-            "OFF-TOPIC — not actually about the request's subject. Judge by MEANING, not word overlap.\n"
-            'Respond with STRICT JSON only: {"off_topic": [<indices>]}. If all are on-topic: {"off_topic": []}.'
+            "You audit whether gathered SOURCES are ON-TOPIC for a research request. A source is OFF-TOPIC "
+            "ONLY when it is about a COMPLETELY DIFFERENT SUBJECT that merely shares a keyword/homonym with the "
+            "request — e.g. a computer-science 'Byzantine Generals Problem' paper for a query on the Byzantine "
+            "EMPIRE; 'mercury toxicity' for the planet Mercury; a football match report for a query on street "
+            "gangs. Be CONSERVATIVE: KEEP anything plausibly relevant — broad, tangential, background, or "
+            "partial-overlap sources are ON-topic. Flag ONLY the clearly-unrelated. When in doubt, KEEP.\n"
+            'Respond with STRICT JSON only: {"off_topic": [<indices>]}. Empty list if all are on-topic.'
         )
-        prompt = f"RESEARCH REQUEST:\n{(user_request or '')[:600]}\n\nSOURCES:\n{numbered}"
-        try:
-            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
-                                        temperature=0.0, max_tokens=800, stream=False)
-            data = extract_json_object(raw)
-            idxs = data.get("off_topic", []) if isinstance(data, dict) else []
-            off = [(pairs[i][0], pairs[i][1]) for i in idxs
-                   if isinstance(i, int) and 0 <= i < len(pairs)]
-        except Exception as e:  # noqa: BLE001
-            logger.warning("🎯 Source-relevance grading (shadow) failed (%s) → none", e)
-            return {"off_topic": [], "checked": len(pairs)}
+        off: List[tuple] = []
+        _BATCH = 18
+        for _start in range(0, len(pairs), _BATCH):
+            chunk = pairs[_start:_start + _BATCH]
+            numbered = "\n".join(f"{i}. {t}" for i, (t, _) in enumerate(chunk))
+            prompt = f"RESEARCH REQUEST:\n{(user_request or '')[:600]}\n\nSOURCES:\n{numbered}"
+            try:
+                raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                            temperature=0.0, max_tokens=400, stream=False)
+                data = extract_json_object(raw)
+                idxs = data.get("off_topic", []) if isinstance(data, dict) else []
+                for i in idxs:
+                    if isinstance(i, int) and 0 <= i < len(chunk):
+                        off.append((chunk[i][0], chunk[i][1]))
+            except Exception as e:  # noqa: BLE001 — one batch failing must not lose the rest
+                logger.warning("🎯 Source-relevance batch failed (%s) → skip batch", e)
+                continue
         return {"off_topic": off, "checked": len(pairs)}
 
     def _log_source_relevance_shadow(self, result: Dict[str, Any]) -> None:
