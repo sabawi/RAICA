@@ -358,6 +358,12 @@ deep_research:
         corroboration_elevates: false    # Phase 3
         min_independent_secondaries: 2   # the "multiple witnesses" threshold
         flag_single_secondary: false     # Phase 3
+      # SOURCE↔TOPIC relevance gate (docs/RAICA_DR_SOURCE_RELEVANCE.md — layer B, lead).
+      # LLM flags gathered sources that are only a keyword/homonym match for the topic (e.g. a CS
+      # 'Byzantine Agreement' paper for the Byzantine Empire). Phase 0 = shadow (log-only, fail-open).
+      source_relevance:
+        enabled: true
+        shadow: true                     # Phase 0: judge + log only; Phase 1 will drop off-topic sources
       # A deep run can gather >1MB of evidence, overflowing the model context window.
       # The evidence fed to each LLM call is budgeted to this many TOKENS (measured with
       # tiktoken), shared fairly across sources (small sources kept whole, leftover given

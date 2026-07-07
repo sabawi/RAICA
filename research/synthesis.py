@@ -127,6 +127,18 @@ class ResearchSynthesizer:
         return bool(self._provenance_cfg.get("enabled", False))
 
     @property
+    def _source_relevance_cfg(self) -> Dict[str, Any]:
+        return self._cfg.get("synthesis", {}).get("source_relevance", {}) or {}
+
+    @property
+    def _source_relevance_on(self) -> bool:
+        """Master switch for the SOURCE↔TOPIC relevance gate (docs/RAICA_DR_SOURCE_RELEVANCE.md — layer B).
+        Phase 0 wires ONLY the shadow judge + logging (no answer change): flags gathered sources whose TITLE
+        is only a keyword/homonym match for the topic (e.g. a CS 'Byzantine Agreement' paper for a query about
+        the Byzantine Empire)."""
+        return bool(self._source_relevance_cfg.get("enabled", False))
+
+    @property
     def _verify_on(self) -> bool:
         return bool(self._cfg.get("verification", {}).get("enabled", True))
 
@@ -298,6 +310,62 @@ class ResearchSynthesizer:
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("🔬 Provenance shadow logging failed (%s) — ignored", e)
+
+    async def _grade_relevance_shadow(self, user_request: str,
+                                      evidence: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """SHADOW (docs/RAICA_DR_SOURCE_RELEVANCE.md — layer B): LLM judges whether each gathered SOURCE
+        (by its title) is actually ABOUT the user's research topic, or only a KEYWORD/HOMONYM match about a
+        different subject (e.g. a CS 'Byzantine Generals Problem' paper for a query on the Byzantine EMPIRE;
+        'mercury toxicity' for the planet Mercury). Log-only in Phase 0 → zero answer change. Semantic — NO
+        keyword lists (LLM-Policy Gate). Any error → no-op. Title↔URL is extracted from the evidence content
+        source blocks (works at title granularity — the homonym shares the same domain, so domain-grading
+        cannot catch it)."""
+        _TU = re.compile(r'(?:📄 SOURCE:|Title:)[ \t]*(.+?)[ \t]*\n🔗 (?:MANDATORY )?CITATION URL:\s*(\S+)')
+        pairs: List[tuple] = []
+        seen = set()
+        for e in evidence:
+            for title, url in _TU.findall(e.get("content", "") or ""):
+                u = url.rstrip('.,);]')
+                k = u.lower()
+                t = (title or "").strip()
+                if t and k not in seen:
+                    seen.add(k)
+                    pairs.append((t[:200], u))
+        if not pairs:
+            return {"off_topic": [], "checked": 0}
+        numbered = "\n".join(f"{i}. {t}" for i, (t, _) in enumerate(pairs))
+        system_prompt = (
+            "You audit whether gathered SOURCES are ON-TOPIC for a research request. Some sources share only "
+            "a KEYWORD or HOMONYM with the topic while being about a completely different subject — e.g. a "
+            "computer-science paper on the 'Byzantine Generals Problem' / 'Byzantine fault tolerance' is NOT "
+            "about the Byzantine Empire; a paper on 'mercury toxicity' is NOT about the planet Mercury. Given "
+            "the research request and a numbered list of source TITLES, return the indices of sources that are "
+            "OFF-TOPIC — not actually about the request's subject. Judge by MEANING, not word overlap.\n"
+            'Respond with STRICT JSON only: {"off_topic": [<indices>]}. If all are on-topic: {"off_topic": []}.'
+        )
+        prompt = f"RESEARCH REQUEST:\n{(user_request or '')[:600]}\n\nSOURCES:\n{numbered}"
+        try:
+            raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
+                                        temperature=0.0, max_tokens=800, stream=False)
+            data = extract_json_object(raw)
+            idxs = data.get("off_topic", []) if isinstance(data, dict) else []
+            off = [(pairs[i][0], pairs[i][1]) for i in idxs
+                   if isinstance(i, int) and 0 <= i < len(pairs)]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("🎯 Source-relevance grading (shadow) failed (%s) → none", e)
+            return {"off_topic": [], "checked": len(pairs)}
+        return {"off_topic": off, "checked": len(pairs)}
+
+    def _log_source_relevance_shadow(self, result: Dict[str, Any]) -> None:
+        """SHADOW: log how many gathered sources are OFF-TOPIC (keyword/homonym) for the request. Pure
+        logging; never raises, never alters the answer."""
+        try:
+            off = result.get("off_topic", []) or []
+            checked = result.get("checked", 0)
+            detail = ("  | " + "; ".join(f"{t[:55]!r}<-{_domain_of(u)}" for t, u in off[:6])) if off else ""
+            logger.info("🎯 dr-source-relevance [SHADOW]: off_topic=%d/%d%s", len(off), checked, detail)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("🎯 Source-relevance shadow logging failed (%s) — ignored", e)
 
     @property
     def _evidence_token_budget(self) -> int:
@@ -738,6 +806,16 @@ class ResearchSynthesizer:
         else:
             credibility = await self.grade_sources(evidence)
         timings["grade"] = round(time.monotonic() - _t, 1)
+
+        # SHADOW (docs/RAICA_DR_SOURCE_RELEVANCE.md — layer B): flag gathered sources that are only a
+        # keyword/homonym match for the topic (e.g. CS 'Byzantine Agreement' papers for the Byzantine
+        # Empire). Log-only in Phase 0 → zero answer change; fail-open.
+        if self._source_relevance_on:
+            try:
+                self._log_source_relevance_shadow(
+                    await self._grade_relevance_shadow(user_request, evidence))
+            except Exception as _sr_e:  # noqa: BLE001
+                logger.warning("🎯 Source-relevance shadow skipped (%s)", _sr_e)
 
         # Optional enumeration roster (None for non-list requests → unchanged single-pass path).
         _t = time.monotonic()
