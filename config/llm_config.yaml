@@ -366,8 +366,11 @@ deep_research:
       # 'Byzantine Agreement' paper for the Byzantine Empire). Phase 0 = shadow (log-only, fail-open).
       source_relevance:
         enabled: true
-        shadow: false                    # Phase 1 ENFORCE: drop off-topic (homonym/domain-collision) cited
-                                         # sources — strip the link, KEEP the headline text (lossless).
+        shadow: true                     # REVERTED to SHADOW v1.0.0.151: the judge OVER-FLAGS on-topic
+                                         # academic sources (e.g. "Modeling Criminal Street Gangs as
+                                         # Organizations" for a gangs query) → B-enforce wrongly stripped good
+                                         # citations → few citations + ugly "unverified" markers. Needs a more
+                                         # accurate judge (better model / per-source w/ abstract) before enforce.
         domain_fit_judge: true           # Layer A: LLM routes published_papers_search to domain-appropriate
                                          # corpora (humanities topics skip arxiv/pubmed/biorxiv). Fail-open.
       # A deep run can gather >1MB of evidence, overflowing the model context window.
