@@ -108,11 +108,14 @@ def normalize_url(url: str) -> str:
         return url.strip().lower()
 
 
-def _classify(url: str, allowed: Set[str], dead: Set[str]) -> str:
-    """Return 'valid' | 'rotted' | 'fabricated' for a cited URL."""
+def _classify(url: str, allowed: Set[str], dead: Set[str],
+              off_topic: "Set[str]" = frozenset()) -> str:
+    """Return 'valid' | 'rotted' | 'fabricated' | 'off_topic' for a cited URL."""
     n = normalize_url(url)
     if n not in allowed:
         return "fabricated"
+    if n in off_topic:          # in evidence, but judged not about the topic (homonym/domain collision)
+        return "off_topic"
     if n in dead:
         return "rotted"
     return "valid"
@@ -152,12 +155,13 @@ def _flag_block(block: str, marker: str = _FLAG_MARKER) -> str:
     return marker + block
 
 
-def _ground_block(block: str, allowed: Set[str], dead: Set[str], stats: Dict) -> Tuple[str, int, int]:
+def _ground_block(block: str, allowed: Set[str], dead: Set[str], off_topic: Set[str],
+                  stats: Dict) -> Tuple[str, int, int]:
     """Rewrite one block's links. Returns (new_block, n_links, n_valid)."""
     counts = {"links": 0, "valid": 0}
 
     def _sub_html(mo):
-        verdict = _classify(mo.group(2), allowed, dead)
+        verdict = _classify(mo.group(2), allowed, dead, off_topic)
         counts["links"] += 1
         if verdict == "valid":
             counts["valid"] += 1
@@ -168,7 +172,7 @@ def _ground_block(block: str, allowed: Set[str], dead: Set[str], stats: Dict) ->
         return mo.group(4)  # keep the anchor's visible text, drop the link
 
     def _sub_md(mo):
-        verdict = _classify(mo.group(2), allowed, dead)
+        verdict = _classify(mo.group(2), allowed, dead, off_topic)
         counts["links"] += 1
         if verdict == "valid":
             counts["valid"] += 1
@@ -187,6 +191,7 @@ def ground_citations(answer: str,
                      evidence_urls: Iterable[str],
                      *,
                      dead_urls: Optional[Iterable[str]] = None,
+                     off_topic_urls: Optional[Iterable[str]] = None,
                      on_unsourced: str = "flag",
                      shadow: bool = False) -> Dict:
     """
@@ -206,12 +211,13 @@ def ground_citations(answer: str,
     """
     allowed = {normalize_url(u) for u in (evidence_urls or []) if u}
     dead = {normalize_url(u) for u in (dead_urls or []) if u}
-    stats = {"valid": 0, "fabricated": 0, "rotted": 0, "links_total": 0,
+    off_topic = {normalize_url(u) for u in (off_topic_urls or []) if u}
+    stats = {"valid": 0, "fabricated": 0, "rotted": 0, "off_topic": 0, "links_total": 0,
              "items_total": 0, "items_unsourced": 0, "stripped_urls": []}
 
     out_blocks: List[str] = []
     for block in _split_blocks(answer):
-        new_block, n_links, n_valid = _ground_block(block, allowed, dead, stats)
+        new_block, n_links, n_valid = _ground_block(block, allowed, dead, off_topic, stats)
         stats["links_total"] += n_links
         if n_links > 0:
             stats["items_total"] += 1

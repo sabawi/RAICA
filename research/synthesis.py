@@ -822,10 +822,12 @@ class ResearchSynthesizer:
         # SHADOW (docs/RAICA_DR_SOURCE_RELEVANCE.md — layer B): flag gathered sources that are only a
         # keyword/homonym match for the topic (e.g. CS 'Byzantine Agreement' papers for the Byzantine
         # Empire). Log-only in Phase 0 → zero answer change; fail-open.
+        self._last_off_topic_urls = set()   # read by the pipeline for Layer-B enforce (drop off-topic citations)
         if self._source_relevance_on:
             try:
-                self._log_source_relevance_shadow(
-                    await self._grade_relevance_shadow(user_request, evidence))
+                _rel = await self._grade_relevance_shadow(user_request, evidence)
+                self._log_source_relevance_shadow(_rel)
+                self._last_off_topic_urls = {u for _t, u in _rel.get("off_topic", []) if u}
             except Exception as _sr_e:  # noqa: BLE001
                 logger.warning("🎯 Source-relevance shadow skipped (%s)", _sr_e)
 

@@ -410,14 +410,21 @@ async def run_deep_research_pipeline(
             # stripped — keeping the visible headline text. This also enforces fabricated-link stripping
             # (URLs no tool returned); both are lossless, link-only removals of a bad citation.
             _effective_shadow = _shadow and not _vl_enforcing
-            _gr = ground_citations(answer, _ev_urls, dead_urls=_dead_urls,
+            # Layer B ENFORCE (docs/RAICA_DR_SOURCE_RELEVANCE.md): drop OFF-TOPIC (homonym/domain-collision)
+            # citations. B judged the gathered evidence during synthesis (synthesizer._last_off_topic_urls);
+            # pass them here when B is enforcing (source_relevance.shadow=false) so ground_citations strips the
+            # link but KEEPS the headline text — lossless, exactly like fabricated/dead.
+            _b_off = getattr(synthesizer, "_last_off_topic_urls", None) or set()
+            _sr_cfg = config.get("synthesis", {}).get("source_relevance", {}) or {}
+            _b_off_arg = _b_off if (_b_off and not _sr_cfg.get("shadow", True)) else None
+            _gr = ground_citations(answer, _ev_urls, dead_urls=_dead_urls, off_topic_urls=_b_off_arg,
                                    on_unsourced=_cg.get("on_unsourced", "flag"), shadow=_effective_shadow)
             _s = _gr["stats"]
-            if _s["fabricated"] or _s["rotted"] or _s["items_unsourced"]:
-                logger.info("🔗 citation-grounding [%s]: fabricated=%d rotted=%d unsourced=%d/%d valid=%d "
-                            "stripped=%s", "SHADOW" if _effective_shadow else "ACTIVE", _s["fabricated"],
-                            _s["rotted"], _s["items_unsourced"], _s["items_total"], _s["valid"],
-                            [u for _v, u in _s["stripped_urls"][:6]])
+            if _s["fabricated"] or _s["rotted"] or _s.get("off_topic") or _s["items_unsourced"]:
+                logger.info("🔗 citation-grounding [%s]: fabricated=%d rotted=%d off_topic=%d unsourced=%d/%d "
+                            "valid=%d stripped=%s", "SHADOW" if _effective_shadow else "ACTIVE",
+                            _s["fabricated"], _s["rotted"], _s.get("off_topic", 0), _s["items_unsourced"],
+                            _s["items_total"], _s["valid"], [u for _v, u in _s["stripped_urls"][:6]])
             answer = _gr["text"]   # SHADOW → original unchanged; ACTIVE → grounded text
     except Exception as _cg_e:  # noqa: BLE001 — grounding must NEVER discard a hard-won answer
         logger.warning("🔗 citation-grounding skipped (non-fatal): %s", _cg_e)
