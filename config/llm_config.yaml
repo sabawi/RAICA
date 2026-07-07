@@ -354,8 +354,10 @@ deep_research:
         enabled: true
         shadow: true                     # Phase 0: compute + log only
         prefer_primary: false            # Phase 1 (delivered as policy by the synthesis PRIMARY-FIRST directive)
-        chase_primary: true              # Phase 2 ENABLED: coverage assessor chases the ORIGIN for
-                                         # secondary-only sub-questions (bounded by loop.max_rounds_ceiling)
+        chase_primary: false             # REVERTED v1.0.0.150: it pushed the gather toward paper corpora
+                                         # (OpenAlex/Crossref/DOAB = ABSTRACT/metadata only) → thin evidence
+                                         # (real=1/thin=9) → synthesis degraded to a "list of sources". Needs a
+                                         # full-CONTENT chase (not metadata) before re-enabling.
         corroboration_elevates: false    # Phase 3
         min_independent_secondaries: 2   # the "multiple witnesses" threshold
         flag_single_secondary: false     # Phase 3
