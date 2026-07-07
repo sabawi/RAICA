@@ -422,6 +422,24 @@ async def run_deep_research_pipeline(
     except Exception as _cg_e:  # noqa: BLE001 — grounding must NEVER discard a hard-won answer
         logger.warning("🔗 citation-grounding skipped (non-fatal): %s", _cg_e)
 
+    # ── Citation DIVERSITY (SHADOW measurement — docs/RAICA_DR_SOURCE_RELEVANCE.md §reuse) ──
+    # Baselines source diversity vs over-citation (the al-Ṭabarī ×68 case): how many DISTINCT sources back the
+    # answer and how heavily one is reused. Quality-aware — heavy reuse of a genuine PRIMARY is a 'drive MORE
+    # primaries' signal (the PRIMARY-FIRST directive), NOT a strip target. Log-only.
+    try:
+        from research.citation_grounding import extract_cited_links
+        from collections import Counter as _Counter
+        _pairs = extract_cited_links(answer)
+        if _pairs:
+            _cnt = _Counter(u for _t, u in _pairs)
+            _top_n = _cnt.most_common(1)[0][1]
+            _frac = _top_n / max(1, len(_pairs))
+            logger.info("📚 citation-diversity [SHADOW]: cited=%d distinct=%d max_reuse=%d (%.0f%% one source)%s",
+                        len(_pairs), len(_cnt), _top_n, 100.0 * _frac,
+                        " ← over-reliance; drive MORE primaries" if (_top_n >= 5 and _frac > 0.4) else "")
+    except Exception as _div_e:  # noqa: BLE001
+        logger.warning("📚 citation-diversity shadow skipped (non-fatal): %s", _div_e)
+
     # ── Retrieval-quality audit (SHADOW measurement — docs/RAICA_DR_CITATION_LIVENESS.md §groundedness) ──
     # Liveness proves a URL RESOLVES; it does NOT prove RAICA retrieved the real page BODY. For each URL the
     # (post-grounding) answer cites, classify what RAICA actually held: real body / thin (snippet-only) /
