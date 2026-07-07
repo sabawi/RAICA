@@ -6,6 +6,7 @@ Searches multiple academic databases for research papers with comprehensive erro
 import asyncio
 import aiohttp
 import json
+import re
 import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -65,7 +66,7 @@ class PublishedPapersSearchTool(BaseUserTool):
     
     @property
     def description(self) -> str:
-        return "Search multiple academic databases for published research papers. Finds papers from arXiv, PubMed, Semantic Scholar, bioRxiv, and other sources. Returns titles, authors, abstracts, publication dates, and PDF links when available. Use for literature reviews, academic research, finding citations, and exploring scientific topics."
+        return "Search academic databases for published research across ALL disciplines. STEM/biomedical: arXiv, PubMed, Europe PMC, bioRxiv. Cross-disciplinary & HUMANITIES: Semantic Scholar, OpenAlex, Crossref (incl. books), CORE, DOAJ, DOAB (open-access books), Internet Archive (digitized books & primary-source texts). Returns titles, authors, abstracts, dates, and URLs. Use for literature reviews and scholarly research in the sciences AND the humanities (history, law, arts). Pass the optional 'sources' list to restrict to domain-appropriate databases (e.g. history → openalex, crossref, doab, internet_archive; NOT arxiv/pubmed)."
     
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -87,7 +88,7 @@ class PublishedPapersSearchTool(BaseUserTool):
                 },
                 "sources": {
                     "type": "array",
-                    "description": "Optional specific sources to search (arxiv, semantic_scholar, pubmed, europe_pmc, doaj, biorxiv)",
+                    "description": "Optional specific sources to search. STEM/biomed: arxiv, pubmed, europe_pmc, biorxiv. Cross-disciplinary/humanities: semantic_scholar, openalex, crossref, core, doaj, doab, internet_archive. For non-STEM topics (history/law/arts) prefer the humanities set and OMIT arxiv/pubmed/biorxiv.",
                     "items": {"type": "string"}
                 }
             },
@@ -154,13 +155,19 @@ class PublishedPapersSearchTool(BaseUserTool):
         
         # Define all available search functions
         all_sources = [
+            # STEM / biomedical
             ("arxiv", self._search_arxiv),
-            ("semantic_scholar", self._search_semantic_scholar),
             ("pubmed", self._search_pubmed),
             ("europe_pmc", self._search_europe_pmc),
-            ("doaj", self._search_doaj),
             ("biorxiv", self._search_biorxiv),
-            ("core", self._search_core)
+            # Cross-disciplinary / humanities (balance the STEM corpora)
+            ("semantic_scholar", self._search_semantic_scholar),
+            ("openalex", self._search_openalex),
+            ("crossref", self._search_crossref),
+            ("core", self._search_core),
+            ("doaj", self._search_doaj),
+            ("doab", self._search_doab),
+            ("internet_archive", self._search_internet_archive),
         ]
         
         # Filter sources if specific ones requested
@@ -762,9 +769,147 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                 response.raise_for_status()
                 return await response.text()
     
-    async def _fetch_json_content(self, url: str) -> Dict[str, Any]:
-        """Fetch URL content as JSON"""
+    # ===== Humanities / cross-disciplinary corpora (balance the STEM-heavy sources so history/humanities
+    # queries have real coverage). See docs/RAICA_DR_SOURCE_RELEVANCE.md. =====
+
+    @staticmethod
+    def _openalex_abstract(inv: Optional[Dict[str, Any]]) -> str:
+        """Reconstruct an abstract from OpenAlex's inverted index {word: [positions]}."""
+        if not inv:
+            return ""
+        pos: Dict[int, str] = {}
+        for w, ps in inv.items():
+            for p in ps:
+                pos[p] = w
+        return " ".join(pos[i] for i in sorted(pos))[:200]
+
+    async def _search_openalex(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
+        """OpenAlex — 250M+ works across ALL disciplines (incl. humanities); robust free API."""
+        try:
+            url = f"https://api.openalex.org/works?search={quote(query)}&per-page={max_results}"
+            if year:
+                url += f"&filter=publication_year:{year}"
+            data = await self._fetch_json_content(url)
+            out = []
+            for w in (data.get("results", []) or [])[:max_results]:
+                doi = w.get("doi")
+                loc = w.get("primary_location") or {}
+                authors = [a.get("author", {}).get("display_name") for a in (w.get("authorships") or [])]
+                out.append({
+                    "source": "OpenAlex",
+                    "title": w.get("title") or w.get("display_name") or "No title",
+                    "authors": [a for a in authors if a],
+                    "year": w.get("publication_year"),
+                    "url": doi or (loc.get("landing_page_url") if isinstance(loc, dict) else None) or w.get("id"),
+                    "doi": doi,
+                    "pdf_link": (loc.get("pdf_url") if isinstance(loc, dict) else None),
+                    "abstract": self._openalex_abstract(w.get("abstract_inverted_index")) or "No abstract",
+                })
+            return out
+        except Exception as e:
+            logger.error(f"OpenAlex search error: {e}")
+            return []
+
+    async def _search_crossref(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
+        """Crossref — DOI metadata for scholarly works incl. BOOKS and humanities journals."""
+        try:
+            url = f"https://api.crossref.org/works?query={quote(query)}&rows={max_results}"
+            if year:
+                url += f"&filter=from-pub-date:{year}-01-01,until-pub-date:{year}-12-31"
+            data = await self._fetch_json_content(url)
+            out = []
+            for it in (data.get("message", {}).get("items", []) or [])[:max_results]:
+                titles = it.get("title") or []
+                authors = [f"{a.get('given', '')} {a.get('family', '')}".strip()
+                           for a in (it.get("author") or [])]
+                dp = (it.get("issued") or {}).get("date-parts") or [[None]]
+                yr = dp[0][0] if (dp and dp[0]) else None
+                out.append({
+                    "source": "Crossref",
+                    "title": (titles[0] if titles else "No title"),
+                    "authors": [a for a in authors if a],
+                    "year": yr,
+                    "url": it.get("URL") or (f"https://doi.org/{it.get('DOI')}" if it.get("DOI") else None),
+                    "doi": it.get("DOI"),
+                    "pdf_link": None,
+                    "abstract": re.sub(r"<[^>]+>", "", it.get("abstract", "") or "")[:200] or "No abstract",
+                })
+            return out
+        except Exception as e:
+            logger.error(f"Crossref search error: {e}")
+            return []
+
+    async def _search_internet_archive(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
+        """Internet Archive — digitized BOOKS / primary-source TEXTS (mediatype:texts only)."""
+        try:
+            q = f"{query} AND mediatype:texts"
+            if year:
+                q += f" AND year:{year}"
+            url = ("https://archive.org/advancedsearch.php?q=" + quote(q) +
+                   "&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=year&fl[]=description"
+                   f"&rows={max_results}&output=json")
+            data = await self._fetch_json_content(url)
+            out = []
+            for d in (data.get("response", {}).get("docs", []) or [])[:max_results]:
+                ident = d.get("identifier")
+                if not ident:
+                    continue
+                title = d.get("title")
+                title = (title[0] if isinstance(title, list) and title else title)
+                creator = d.get("creator")
+                authors = creator if isinstance(creator, list) else ([creator] if creator else [])
+                desc = d.get("description")
+                desc = (desc[0] if isinstance(desc, list) and desc else desc)
+                out.append({
+                    "source": "Internet Archive",
+                    "title": title or "No title",
+                    "authors": authors,
+                    "year": d.get("year"),
+                    "url": f"https://archive.org/details/{ident}",
+                    "doi": None,
+                    "pdf_link": None,
+                    "abstract": (str(desc)[:200] if desc else "No abstract"),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"Internet Archive search error: {e}")
+            return []
+
+    async def _search_doab(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
+        """DOAB — Directory of Open Access BOOKS (humanities-heavy). Legacy DSpace REST endpoint."""
+        try:
+            url = ("https://directory.doabooks.org/rest/search?query=" + quote(query) +
+                   f"&limit={max_results}&expand=metadata")
+            data = await self._fetch_json_content(url)
+            items = data if isinstance(data, list) else []
+            out = []
+            for it in items[:max_results]:
+                md = {m.get("key"): m.get("value") for m in (it.get("metadata") or [])}
+                handle = it.get("handle")
+                yr = md.get("dc.date.issued")
+                yr = (yr[:4] if isinstance(yr, str) and len(yr) >= 4 else yr)
+                out.append({
+                    "source": "DOAB",
+                    "title": it.get("name") or md.get("dc.title") or "No title",
+                    "authors": [md["dc.contributor.author"]] if md.get("dc.contributor.author") else [],
+                    "year": yr,
+                    "url": (f"https://directory.doabooks.org/handle/{handle}" if handle
+                            else md.get("dc.identifier.uri")),
+                    "doi": None,
+                    "pdf_link": None,
+                    "abstract": (str(md.get("dc.description.abstract", ""))[:200] or "No abstract"),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"DOAB search error: {e}")
+            return []
+
+    async def _fetch_json_content(self, url: str):
+        """Fetch URL content as JSON. Sends a UA (OpenAlex/Crossref polite pools, DOAB legacy REST) and
+        parses regardless of the server's content-type header (archive.org/DOAB return json as text)."""
+        headers = {"Accept": "application/json",
+                   "User-Agent": "RAICA-research/1.0 (academic literature search)"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
-            async with session.get(url, headers={"Accept": "application/json"}) as response:
+            async with session.get(url, headers=headers) as response:
                 response.raise_for_status()
-                return await response.json()
+                return await response.json(content_type=None)
