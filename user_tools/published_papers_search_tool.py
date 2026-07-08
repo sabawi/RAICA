@@ -794,10 +794,17 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             for w in (data.get("results", []) or [])[:max_results]:
                 doi = w.get("doi")
                 loc = w.get("primary_location") or {}
+                base_title = w.get("title") or w.get("display_name") or "No title"
+                # Carry the parent venue/book (container) so a generic chapter title keeps its topical context.
+                src = (loc.get("source") or {}) if isinstance(loc, dict) else {}
+                container = (src.get("display_name") or "") if isinstance(src, dict) else ""
+                title = (f"{base_title} — in: {container}"
+                         if container and container.strip().lower() != base_title.strip().lower()
+                         else base_title)
                 authors = [a.get("author", {}).get("display_name") for a in (w.get("authorships") or [])]
                 out.append({
                     "source": "OpenAlex",
-                    "title": w.get("title") or w.get("display_name") or "No title",
+                    "title": title,
                     "authors": [a for a in authors if a],
                     "year": w.get("publication_year"),
                     "url": doi or (loc.get("landing_page_url") if isinstance(loc, dict) else None) or w.get("id"),
@@ -820,13 +827,23 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             out = []
             for it in (data.get("message", {}).get("items", []) or [])[:max_results]:
                 titles = it.get("title") or []
+                base_title = titles[0] if titles else "No title"
+                # Carry the PARENT book/journal (container-title). A book chapter often has a GENERIC title
+                # ("Consideration of Counterarguments", "Introduction") that is topically ambiguous alone — the
+                # container reveals the real subject (e.g. that chapter is from "The Ethical Case against Animal
+                # Experiments", NOT Byzantine history). Without it, generic chapter titles get mis-cited.
+                container = (it.get("container-title") or [""])
+                container = container[0] if container else ""
+                title = (f"{base_title} — in: {container}"
+                         if container and container.strip().lower() != base_title.strip().lower()
+                         else base_title)
                 authors = [f"{a.get('given', '')} {a.get('family', '')}".strip()
                            for a in (it.get("author") or [])]
                 dp = (it.get("issued") or {}).get("date-parts") or [[None]]
                 yr = dp[0][0] if (dp and dp[0]) else None
                 out.append({
                     "source": "Crossref",
-                    "title": (titles[0] if titles else "No title"),
+                    "title": title,
                     "authors": [a for a in authors if a],
                     "year": yr,
                     "url": it.get("URL") or (f"https://doi.org/{it.get('DOI')}" if it.get("DOI") else None),
