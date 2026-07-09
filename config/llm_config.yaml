@@ -317,6 +317,14 @@ deep_research:
       # LLM decomposes a research request into sub-questions + per-question source
       # strategy. max_sub_questions caps planner breadth; the LLM proposes fewer when apt.
       max_sub_questions: 6
+      # Per-source query override (v1.0.0.157). When true, the planner MAY emit a `queries` map
+      # per sub-question so a source whose argument is NOT a natural-language search string
+      # (e.g. comprehensive_stock_analyzer wants {"ticker":"PLTR","detailed":true}; or a LIST of
+      # such args for multiple stocks PLTR/MSFT/...) receives the EXACT arg(s) it expects instead
+      # of the sub-question text. Inherently backward-safe: absent/no-entry → Round 1 uses the
+      # sub-question text exactly as before (zero change for search-style sources / non-stock
+      # queries). Set false for a one-line rollback to v1.0.0.155 behavior everywhere.
+      per_source_queries: true
     loop:
       # Iterative gather loop ceilings (LLM proposes within these; RAICA clamps).
       max_rounds_ceiling: 4
@@ -331,6 +339,11 @@ deep_research:
         - published_papers_search
         - get_sec_filings
         - document_search
+        # Structured finance/data tools — return real-time fundamentals & valuation directly
+        # (yfinance) so quantitative stock/valuation queries don't degrade to search_web scraping.
+        # Added v1.0.0.156 (DR was fanning PLTR valuation to blocked web searches instead of these).
+        - comprehensive_stock_analyzer
+        - get_stock_and_company_data
     # ---- Stage 2: synthesis, verification, arbitration ----
     synthesis:
       # Grounded draft from the evidence pool. Credibility-aware: scholarly claims must

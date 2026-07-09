@@ -220,9 +220,43 @@ class ResearchPlanner:
     def _max_rounds_ceiling(self) -> int:
         return int(self._cfg.get("loop", {}).get("max_rounds_ceiling", 4))
 
+    @property
+    def _per_source_queries(self) -> bool:
+        """v1.0.0.157: allow the planner to emit a per-source `queries` map so a source whose
+        argument is NOT a natural-language search string (e.g. comprehensive_stock_analyzer wants
+        {"ticker":"PLTR","detailed":true}) receives the EXACT arg it expects instead of the
+        sub-question text. Inherently backward-safe (absent entry → sub-question text). Default
+        true; set deep_research.engine.planner.per_source_queries=false for a one-line rollback to
+        v1.0.0.155 behavior (prompt never mentions `queries`, normalize sets {}, Round 1 uses the
+        sub-question text for every source)."""
+        return bool(self._cfg.get("planner", {}).get("per_source_queries", True))
+
     def _build_prompt(self, user_request: str) -> tuple[str, str]:
         """Returns (system_prompt, user_prompt). Instructions go in system; data in user."""
         allowed = ", ".join(self._allowed_sources) or "search_web"
+        # v1.0.0.157: optional per-source `queries` map (see _per_source_queries). Backward-safe:
+        # when disabled (or the LLM omits it) Round 1 uses the sub-question text exactly as before.
+        _psq = self._per_source_queries
+        _queries_guidance = (
+            "- PER-SOURCE QUERY (optional `queries` map per sub-question): MOST sources take a "
+            "natural-language search string as their argument — for those (search_web, "
+            "get_news_summaries, wikipedia_query, published_papers_search, get_sec_filings, "
+            "document_search) OMIT the queries entry; the sub-question text is the correct query "
+            "and is used by default. ONLY for sources whose argument is NOT a natural-language "
+            "search string, add a `queries` entry mapping that source name to the EXACT argument "
+            "string the tool expects:\n"
+            "  * comprehensive_stock_analyzer -> a JSON string {\"ticker\":\"PLTR\",\"detailed\":true} "
+            "(single ticker; detailed=true for fundamentals/DCF/ratios/projections).\n"
+            "  * get_stock_and_company_data -> \"PLTR\" (bare ticker) or {\"symbol\":\"PLTR\"}.\n"
+            "  * MULTIPLE stocks/instances under one sub-question: make the value a LIST of those "
+            "arg strings, e.g. {\"comprehensive_stock_analyzer\": "
+            "[\"{\\\"ticker\\\":\\\"PLTR\\\",\\\"detailed\\\":true}\", "
+            "\"{\\\"ticker\\\":\\\"MSFT\\\",\\\"detailed\\\":true}\"]} — each is dispatched as a "
+            "separate call. (Alternatively, split multi-stock into one sub-question per stock.)\n"
+        ) if _psq else ""
+        _queries_schema = (
+            ', "queries": {"<source_name>": "<arg_string> or [<arg_string>, ...]"}'
+        ) if _psq else ""
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
@@ -234,6 +268,15 @@ class ResearchPlanner:
             "- Prefer academic sources (published_papers_search) for scholarly/scientific claims, "
             "news for current events, wikipedia for background, search_web for general/web coverage, "
             "get_sec_filings for company filings, document_search for the user's own documents.\n"
+            "- STOCK / VALUATION / COMPANY-FINANCIALS topics (a named ticker or company whose price, "
+            "valuation multiples — P/E, P/S, EV/EBITDA, P/B, PEG — fundamentals, financial statements, "
+            "DCF, analyst targets, or prospects are wanted): route the DATA sub-questions to "
+            "comprehensive_stock_analyzer FIRST (it returns structured real-time price + fundamentals + "
+            "ratios + statements via yfinance; pass detailed=true when fundamental analysis/DCF/projections "
+            "are requested) and get_stock_and_company_data for quick quotes. Use these BEFORE search_web — "
+            "they return the exact figures search_web can only scrape for (and often can't reach). Reserve "
+            "search_web/news for QUALITATIVE context the structured tools don't cover (recent news, analyst "
+            "commentary, insider trading, product/partnership developments).\n"
             "- QUANTITATIVE / DATA-DRIVEN topics (economics, energy, markets, prices, demographics, climate, "
             "public health): the answer needs CONCRETE FIGURES and time-series (prices, production, shares, "
             "rates, before/after and by-region/by-year values), not just commentary. Add sub-questions that "
@@ -255,10 +298,11 @@ class ResearchPlanner:
             "a single round rarely surfaces the COMPLETE set of items, so enumeration must keep gathering "
             "across multiple rounds before concluding. For simple/single-fact requests, min_rounds 1 is fine. "
             "Also make the stop_condition enumeration-aware: for a list/table, research is NOT sufficient "
-            "until the full roster of qualifying items appears corroborated across sources.\n\n"
-            "Respond with STRICT JSON only, no prose, in exactly this shape:\n"
+            "until the full roster of qualifying items appears corroborated across sources.\n"
+            + _queries_guidance
+            + "\nRespond with STRICT JSON only, no prose, in exactly this shape:\n"
             '{"sub_questions": [{"id": "q1", "question": "...", "sources": ["search_web"], '
-            '"priority": 1}], "max_rounds": 3, "min_rounds": 1, "stop_condition": "..."}'
+            '"priority": 1' + _queries_schema + '}], "max_rounds": 3, "min_rounds": 1, "stop_condition": "..."}'
         )
         user = f"USER REQUEST:\n{user_request}"
         return system, user
@@ -285,11 +329,26 @@ class ResearchPlanner:
                 priority = int(sq.get("priority", idx))
             except (TypeError, ValueError):
                 priority = idx
+            # v1.0.0.157: optional per-source query override. Backward-safe: {} when disabled or
+            # absent → Round 1 uses the sub-question text for every source (v1.0.0.155 behavior).
+            # Value may be a string (one call) or a list of strings (one call per entry — e.g. one
+            # sub-question spanning PLTR+MSFT dispatches comprehensive_stock_analyzer twice). Only
+            # entries for sources actually assigned to this sub-question are kept.
+            queries: Dict[str, List[str]] = {}
+            if self._per_source_queries and isinstance(sq.get("queries"), dict):
+                for src, val in sq["queries"].items():
+                    if src not in srcs:
+                        continue
+                    vals = val if isinstance(val, list) else [val]
+                    clean = [str(v).strip() for v in vals if str(v).strip()]
+                    if clean:
+                        queries[str(src)] = clean
             normalized.append({
                 "id": str(sq.get("id") or f"q{idx}"),
                 "question": question,
                 "sources": srcs,
                 "priority": priority,
+                "queries": queries,
             })
 
         if not normalized:
@@ -528,12 +587,23 @@ class DeepResearchEngine:
         evidence: List[Dict[str, Any]] = []
         executed: set = set()
 
-        # Round 1 tasks come straight from the plan (sub-question text is the query).
-        tasks = [
-            {"sub_question_id": sq["id"], "question": sq["question"],
-             "source": src, "query": sq["question"]}
-            for sq in plan["sub_questions"] for src in sq["sources"]
-        ]
+        # Round 1 tasks come straight from the plan. v1.0.0.157: if the planner emitted a
+        # per-source `queries` override for a source, dispatch one task per provided arg string
+        # (list → multiple calls, e.g. several tickers under one sub-question); otherwise the
+        # sub-question text is the query (unchanged v1.0.0.155 behavior). _dispatch_round de-dupes
+        # by (source, query) so duplicate arg strings never run twice.
+        tasks = []
+        for sq in plan["sub_questions"]:
+            _sq_queries = sq.get("queries", {}) or {}
+            for src in sq["sources"]:
+                _arg_strings = _sq_queries.get(src)
+                if _arg_strings:
+                    for _q in _arg_strings:
+                        tasks.append({"sub_question_id": sq["id"], "question": sq["question"],
+                                      "source": src, "query": _q})
+                else:
+                    tasks.append({"sub_question_id": sq["id"], "question": sq["question"],
+                                  "source": src, "query": sq["question"]})
 
         round_num = 1
         stop_reason = "max_rounds"
