@@ -50,8 +50,18 @@ def verify_url_live(url: str, timeout: float = 6.0, reverify: bool = True) -> bo
 
     def _one_check() -> bool:
         try:
+            # Browser-like header set (v1.0.0.158). A UA-only fetch gets false-404'd by bot-guards
+            # (e.g. Yahoo Finance deep-link subpages /financials, /key-statistics, /analysis) that
+            # gate on the missing Accept / Accept-Language a real browser always sends. Sending the
+            # full browser header set flips those false-404s to the true 200 a human sees, so a
+            # genuinely-live citation is never stripped. A TRULY dead page still 404/410s regardless
+            # of headers, so the hard-dead drop rule is unaffected. No domain list / special-casing —
+            # this is a general "fetch like a browser" improvement (CLAUDE.md LLM-Policy Gate compliant).
             resp = requests_compatible_get(url, timeout=timeout, allow_redirects=True, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                               '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
             })
             status = getattr(resp, "status_code", 0)
             final_url = getattr(resp, "url", "") or url
