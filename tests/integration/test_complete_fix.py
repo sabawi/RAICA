@@ -11,7 +11,7 @@ def test_complete_workflow():
     # Create a comprehensive request that would generate HTML content
     test_request = {
         "prompt": "Create a PDF report called comprehensive_test.pdf about artificial intelligence and machine learning trends, include sections about transformers, computer vision, and natural language processing, then email it to test@example.com",
-        "model": "deepseek-v3.1:671b-cloud", 
+        "model": "deepseek-v4-flash:cloud", 
         "stream": False
     }
     
@@ -39,7 +39,7 @@ def test_complete_workflow():
             print("✅ Request successful")
             
             # Check if PDF was created
-            pdf_path = "/home/sabawi/Development/flaskserver/sandbox_workspace/comprehensive_test.pdf"
+            pdf_path = "/home/user/Development/flaskserver/sandbox_workspace/comprehensive_test.pdf"
             if os.path.exists(pdf_path):
                 print(f"✅ PDF file exists: {pdf_path}")
                 
@@ -87,7 +87,7 @@ def test_complete_workflow():
         print("⏱️ Request timed out (this might be normal for complex requests)")
         
         # Still check if files were created
-        pdf_path = "/home/sabawi/Development/flaskserver/sandbox_workspace/comprehensive_test.pdf"
+        pdf_path = "/home/user/Development/flaskserver/sandbox_workspace/comprehensive_test.pdf"
         if os.path.exists(pdf_path):
             print("✅ PDF was created despite timeout")
             result = subprocess.run(['file', pdf_path], capture_output=True, text=True)

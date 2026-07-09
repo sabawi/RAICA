@@ -4,9 +4,9 @@ Test Model Replacer - Replace Local Ollama Models with Fast Cloud Models
 =========================================================================
 
 Replaces heavy local Ollama models with fast cloud-based models for testing:
-- qwen3:8b → deepseek-v3.1:671b-cloud (Ollama cloud)
-- qwen3:4b → deepseek-v3.1:671b-cloud (Ollama cloud)
-- llama3.2:3b → deepseek-v3.1:671b-cloud (Ollama cloud)
+- qwen3:8b → deepseek-v4-flash:cloud (Ollama cloud)
+- qwen3:4b → deepseek-v4-flash:cloud (Ollama cloud)
+- llama3.2:3b → deepseek-v4-flash:cloud (Ollama cloud)
 
 Benefits:
 - Faster response times (cloud-based model)
@@ -30,13 +30,13 @@ class TestModelReplacer:
 
     # Model replacement mapping: local → cloud
     MODEL_REPLACEMENTS = {
-        'qwen3:8b': 'deepseek-v3.1:671b-cloud',
-        'qwen3:4b': 'deepseek-v3.1:671b-cloud',
-        'llama3.2:3b': 'deepseek-v3.1:671b-cloud',
-        'llama3.2:1b': 'deepseek-v3.1:671b-cloud',
+        'qwen3:8b': 'deepseek-v4-flash:cloud',
+        'qwen3:4b': 'deepseek-v4-flash:cloud',
+        'llama3.2:3b': 'deepseek-v4-flash:cloud',
+        'llama3.2:1b': 'deepseek-v4-flash:cloud',
     }
 
-    def __init__(self, tests_dir: str = '/home/sabawi/Development/flaskserver/tests'):
+    def __init__(self, tests_dir: str = '/home/user/Development/flaskserver/tests'):
         self.tests_dir = Path(tests_dir)
         self.replacements_made: List[Tuple[str, int]] = []
 
@@ -154,7 +154,7 @@ def main():
 
     if args.restore:
         print("🔄 Restoring original models...")
-        os.system('cd /home/sabawi/Development/flaskserver && git checkout tests/')
+        os.system('cd /home/user/Development/flaskserver && git checkout tests/')
         print("✅ Restored!")
     elif args.dry_run:
         test_files = replacer.find_test_files_with_models()
