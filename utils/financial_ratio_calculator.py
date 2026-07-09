@@ -110,7 +110,7 @@ class FinancialRatioCalculator:
             return None
 
     def calculate_profitability_ratios(self, income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame,
-                                       ticker_info: Dict = None, quarterly_income: pd.DataFrame = None) -> Dict[str, Any]:
+                                       ticker_info: Dict = None, quarterly_income: pd.DataFrame = None, inc_label: str = 'quarterly') -> Dict[str, Any]:
         """Calculate profitability ratios.
 
         v1.0.0.160 — ROE/ROA/ROIC freshness + NOPAT fix. Previously these used ending ANNUAL balances
@@ -153,7 +153,12 @@ class FinancialRatioCalculator:
         # and Invested Capital = Total Debt + Stockholders Equity (averaged). NOPAT (not net income)
         # is the economic return on invested capital — this is why the old net-income ROIC understated
         # vs trackers (e.g. META 20.08% vs 31.38%).
-        op_income_ttm = self._ttm_value(quarterly_income, 'Operating Income') if quarterly_income is not None else None
+        op_income_ttm = None
+        if quarterly_income is not None:
+            if inc_label == 'quarterly':
+                op_income_ttm = self._ttm_value(quarterly_income, 'Operating Income')
+            else:
+                op_income_ttm = self._get_value(quarterly_income, 'Operating Income')
         if not op_income_ttm:
             op_income_ttm = operating_income  # annual fallback
         pretax = self._get_value(income_stmt, 'Pretax Income')
@@ -207,7 +212,7 @@ class FinancialRatioCalculator:
         return ratios
 
     def calculate_leverage_ratios(self, income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame,
-                                   quarterly_income: pd.DataFrame = None) -> Dict[str, Any]:
+                                   quarterly_income: pd.DataFrame = None, inc_label: str = 'quarterly') -> Dict[str, Any]:
         """Calculate leverage ratios.
 
         v1.0.0.160 — Interest coverage now uses TTM (4-quarter sum) operating income / abs(TTM interest
@@ -238,9 +243,18 @@ class FinancialRatioCalculator:
             ratios['debt_to_assets'] = (total_debt / total_assets) * 100
 
         # Interest Coverage — TTM (4-quarter sum); annual fallback
-        op_income_ttm = self._ttm_value(quarterly_income, 'Operating Income') if quarterly_income is not None else None
-        int_exp_ttm = self._ttm_value(quarterly_income, 'Interest Expense') if quarterly_income is not None else None
+        op_income_ttm = None
+        int_exp_ttm = None
         cov_source = 'TTM (4-quarter sum)'
+        if quarterly_income is not None:
+            if inc_label == 'quarterly':
+                op_income_ttm = self._ttm_value(quarterly_income, 'Operating Income')
+                int_exp_ttm = self._ttm_value(quarterly_income, 'Interest Expense')
+            else:
+                op_income_ttm = self._get_value(quarterly_income, 'Operating Income')
+                int_exp_ttm = self._get_value(quarterly_income, 'Interest Expense')
+                cov_source = 'annual (stale)'
+        
         if op_income_ttm is None:
             op_income_ttm = self._get_value(income_stmt, 'Operating Income')
             cov_source = 'annual (stale)'
@@ -474,12 +488,12 @@ class FinancialRatioCalculator:
         # over the annual statement, which can be a full fiscal year stale. Quarterly is already fetched
         # by the extractor but was never consumed before this version.
         balance_sheet, _ = self._freshest_balance_sheet(financials)
-        quarterly_income, _ = self._freshest_income_stmt(financials)
+        quarterly_income, inc_label = self._freshest_income_stmt(financials)
 
         return {
-            'profitability': self.calculate_profitability_ratios(income_stmt, balance_sheet, ticker_info, quarterly_income),
+            'profitability': self.calculate_profitability_ratios(income_stmt, balance_sheet, ticker_info, quarterly_income, inc_label),
             'liquidity': self.calculate_liquidity_ratios(balance_sheet),
-            'leverage': self.calculate_leverage_ratios(income_stmt, balance_sheet, quarterly_income),
+            'leverage': self.calculate_leverage_ratios(income_stmt, balance_sheet, quarterly_income, inc_label),
             'efficiency': self.calculate_efficiency_ratios(income_stmt, balance_sheet),
             'valuation': self.calculate_valuation_ratios(income_stmt, balance_sheet, cash_flow, market_data, ticker_info)
         }

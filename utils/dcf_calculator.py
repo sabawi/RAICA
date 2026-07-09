@@ -172,10 +172,9 @@ class DCFCalculator:
         """
         try:
             # v1.0.0.160 — freshest balance sheet (quarterly → annual) so debt is current & consistent
-            # with the TTM FCF base; TTM interest expense (4-quarter sum) for the cost-of-debt numerator.
             balance_sheet, _ = self._freshest_balance_sheet(financials)
             income_stmt = financials.get('income_statement', {}).get('annual')
-            quarterly_income, _ = self._freshest_income_stmt(financials)
+            quarterly_income, inc_label = self._freshest_income_stmt(financials)
 
             if balance_sheet is None or income_stmt is None:
                 return None
@@ -203,7 +202,12 @@ class DCFCalculator:
                 return None
 
             # Calculate cost of debt — prefer TTM interest expense (4-quarter sum); annual fallback
-            interest_expense = self._ttm_value(quarterly_income, 'Interest Expense') if quarterly_income is not None else None
+            interest_expense = None
+            if quarterly_income is not None:
+                if inc_label == 'quarterly':
+                    interest_expense = self._ttm_value(quarterly_income, 'Interest Expense')
+                else:
+                    interest_expense = self._get_value(quarterly_income, 'Interest Expense')
             if interest_expense is None:
                 interest_expense = self._get_value(income_stmt, 'Interest Expense')
             if interest_expense and total_debt > 0:
