@@ -53,6 +53,41 @@ class DCFCalculator:
         except:
             return None
 
+    def _freshest_balance_sheet(self, financials: Dict):
+        """Return (DataFrame, label) for the most-recent balance sheet (quarterly col 0 → annual).
+
+        v1.0.0.160 — the DCF previously mixed a TTM freeCashflow base with a STALE ANNUAL balance sheet
+        (debt/equity/cash from the last fiscal year-end), making the model internally inconsistent. Prefer
+        the quarterly balance sheet so every DCF input is current and consistent with the TTM FCF base.
+        """
+        bs = financials.get('balance_sheet', {}) or {}
+        quarterly = bs.get('quarterly')
+        if quarterly is not None and not quarterly.empty:
+            return quarterly, 'quarterly'
+        return bs.get('annual'), 'annual'
+
+    def _freshest_income_stmt(self, financials: Dict):
+        """Return (DataFrame, label) for the most-recent income statement (quarterly→annual)."""
+        is_data = financials.get('income_statement', {}) or {}
+        quarterly = is_data.get('quarterly')
+        if quarterly is not None and not quarterly.empty:
+            return quarterly, 'quarterly'
+        return is_data.get('annual'), 'annual'
+
+    def _ttm_value(self, df: pd.DataFrame, key: str, n: int = 4):
+        """Sum of the n most-recent quarterly column values (TTM for flow items)."""
+        try:
+            if df is None or df.empty or key not in df.index:
+                return None
+            cols = list(df.columns)[:n]
+            vals = [df.loc[key, c] for c in cols]
+            vals = [v for v in vals if v is not None and not pd.isna(v)]
+            if not vals:
+                return None
+            return sum(vals)
+        except Exception:
+            return None
+
     def calculate_free_cash_flow(self, cash_flow: pd.DataFrame) -> Optional[float]:
         """
         Calculate Free Cash Flow.
@@ -136,8 +171,11 @@ class DCFCalculator:
         - T = Tax rate
         """
         try:
-            balance_sheet = financials.get('balance_sheet', {}).get('annual')
+            # v1.0.0.160 — freshest balance sheet (quarterly → annual) so debt is current & consistent
+            # with the TTM FCF base; TTM interest expense (4-quarter sum) for the cost-of-debt numerator.
+            balance_sheet, _ = self._freshest_balance_sheet(financials)
             income_stmt = financials.get('income_statement', {}).get('annual')
+            quarterly_income, _ = self._freshest_income_stmt(financials)
 
             if balance_sheet is None or income_stmt is None:
                 return None
@@ -164,8 +202,10 @@ class DCFCalculator:
             if not cost_of_equity:
                 return None
 
-            # Calculate cost of debt
-            interest_expense = self._get_value(income_stmt, 'Interest Expense')
+            # Calculate cost of debt — prefer TTM interest expense (4-quarter sum); annual fallback
+            interest_expense = self._ttm_value(quarterly_income, 'Interest Expense') if quarterly_income is not None else None
+            if interest_expense is None:
+                interest_expense = self._get_value(income_stmt, 'Interest Expense')
             if interest_expense and total_debt > 0:
                 cost_of_debt = abs(interest_expense) / total_debt
             else:
@@ -283,24 +323,47 @@ class DCFCalculator:
         try:
             # Extract financial statements
             cash_flow = financials.get('cash_flow', {}).get('annual')
-            balance_sheet = financials.get('balance_sheet', {}).get('annual')
+            # v1.0.0.160 — freshest balance sheet (quarterly → annual) so debt/equity/cash are current
+            # and consistent with the TTM FCF base above.
+            balance_sheet, _ = self._freshest_balance_sheet(financials)
             income_stmt = financials.get('income_statement', {}).get('annual')
-
-            if cash_flow is None or cash_flow.empty:
-                result['error'] = 'Cash flow data not available'
-                return result
+            ticker_info = financials.get('ticker_info', {}) or {}
 
             # Use ticker_info as market_data if not provided separately
             if market_data is None:
-                market_data = financials.get('ticker_info', {})
+                market_data = ticker_info
 
-            # Step 1: Calculate current FCF
-            current_fcf = self.calculate_free_cash_flow(cash_flow)
+            # Step 1: Current FCF — TTM-first (v1.0.0.159).
+            # yfinance ``info['freeCashflow']`` is the trailing-twelve-month free cash flow,
+            # internally consistent with the live price. The annual cash-flow statement can be
+            # months stale (e.g. MU: annual FCF $1.67B vs TTM FCF $7.64B). Discounting a stale
+            # FCF against the live price produces an absurd intrinsic value (MU $2.37, "99.8%
+            # downside"). Prefer TTM; fall back to annual only when TTM is absent, and emit a
+            # staleness note so the synthesis never presents a stale-FCF DCF as "current".
+            ttm_fcf = ticker_info.get('freeCashflow')
+            fcf_source = None
+            if ttm_fcf is not None:
+                current_fcf = float(ttm_fcf)
+                fcf_source = 'TTM (info.freeCashflow)'
+            else:
+                if cash_flow is None or cash_flow.empty:
+                    result['error'] = 'Cash flow data not available'
+                    return result
+                current_fcf = self.calculate_free_cash_flow(cash_flow)
+                fcf_source = 'annual cash-flow statement (stale)'
+
             if not current_fcf:
                 result['error'] = 'Unable to calculate Free Cash Flow'
                 return result
 
             result['calculations']['current_fcf'] = current_fcf
+            result['calculations']['fcf_source'] = fcf_source
+            if fcf_source and 'stale' in fcf_source:
+                result['assumptions']['fcf_note'] = (
+                    "⚠️ DCF based on last fiscal-year FCF (stale); TTM freeCashflow unavailable. "
+                    "The live price is being compared against a stale FCF base — treat the "
+                    "intrinsic value as directional only."
+                )
 
             # Step 2: Calculate historical growth rate
             historical_growth = self.calculate_historical_growth_rate(cash_flow, periods=3)
@@ -366,6 +429,9 @@ class DCFCalculator:
 
             # Step 8: Calculate equity value
             # EV - Net Debt = Equity Value
+            # v1.0.0.160 — net cash includes marketable securities (short- + long-term investments),
+            # not just Cash & Equivalents. Large-cap tech (META/GOOGL/AMZN) holds tens of billions in
+            # marketable securities; omitting them understates net cash and depresses intrinsic value.
             total_debt = self._get_value(balance_sheet, 'Total Debt')
             if not total_debt:
                 long_term_debt = self._get_value(balance_sheet, 'Long Term Debt') or 0
@@ -373,7 +439,13 @@ class DCFCalculator:
                 total_debt = long_term_debt + current_debt
 
             cash = self._get_value(balance_sheet, 'Cash And Cash Equivalents') or 0
-            net_debt = (total_debt or 0) - cash
+            short_term_inv = self._get_value(balance_sheet, 'Short Term Investments') or 0
+            long_term_inv = self._get_value(balance_sheet, 'Long Term Investments') or 0
+            investments = self._get_value(balance_sheet, 'Investments') or 0  # catch-all some issuers use
+            cash_and_securities = cash + short_term_inv + long_term_inv + investments
+            net_debt = (total_debt or 0) - cash_and_securities
+            result['calculations']['net_debt'] = net_debt
+            result['calculations']['cash_and_securities'] = cash_and_securities
 
             equity_value = enterprise_value - net_debt
             result['calculations']['equity_value'] = equity_value
@@ -389,14 +461,32 @@ class DCFCalculator:
 
             if shares_outstanding and shares_outstanding > 0:
                 intrinsic_value_per_share = equity_value / shares_outstanding
-                result['intrinsic_value'] = intrinsic_value_per_share
-
-                # Step 10: Calculate upside/downside
                 current_price = market_data.get('current_price') or market_data.get('currentPrice')
                 if current_price:
                     result['current_price'] = current_price
-                    upside_downside = ((intrinsic_value_per_share - current_price) / current_price) * 100
-                    result['upside_downside'] = upside_downside
+
+                # v1.0.0.160 — Negative-intrinsic guard. When debt > enterprise value (deeply distressed
+                # or high-debt names like ORCL in a low-FCF base period), equity_value goes negative and
+                # the upside/downside formula yields a magnitude > 100% (e.g. "137% downside") — which is
+                # nonsensical (a long cannot lose more than 100%). Flag it and refuse to emit a misleading
+                # multiple instead of printing abs(>100%) as "downside".
+                if intrinsic_value_per_share <= 0 or equity_value <= 0:
+                    result['negative_equity'] = True
+                    result['intrinsic_value'] = None
+                    result['upside_downside'] = None  # explicitly none — no misleading >100% downside
+                    result['calculations']['intrinsic_value_per_share'] = intrinsic_value_per_share
+                    result['assumptions']['negative_equity_note'] = (
+                        "⚠️ DCF not meaningful: model estimates NEGATIVE equity value (net debt exceeds "
+                        "enterprise value). This signals the FCF base / growth assumptions cannot support "
+                        "the current debt load under this model — do NOT interpret as a >100% downside."
+                    )
+                else:
+                    result['intrinsic_value'] = intrinsic_value_per_share
+
+                    # Step 10: Calculate upside/downside
+                    if current_price:
+                        upside_downside = ((intrinsic_value_per_share - current_price) / current_price) * 100
+                        result['upside_downside'] = upside_downside
             else:
                 result['error'] = 'Shares outstanding data not available'
 
@@ -423,9 +513,12 @@ class DCFCalculator:
         Returns:
             Formatted SOURCE block string
         """
-        # Truncate content to 500 characters max (Context Engineering standard)
-        if len(content) > 500:
-            content = content[:497] + "..."
+        # Truncate content to keep LLM context bounded. The DCF MODEL ESTIMATE block carries the
+        # intrinsic-value result and freshness/notes that must not be cut off, so it gets a larger cap
+        # than the ratio blocks.
+        DCF_CONTENT_CAP = 1000
+        if len(content) > DCF_CONTENT_CAP:
+            content = content[:DCF_CONTENT_CAP - 3] + "..."
 
         return f"""SOURCE {source_num}:
 Title: {title}
@@ -455,12 +548,18 @@ Date: {date}
         current_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 
         # Format DCF summary
-        content_lines = ["DCF VALUATION MODEL RESULTS:"]
+        content_lines = [
+            "DCF VALUATION MODEL RESULTS (RAICA MODEL ESTIMATE — not sourced from the URL; "
+            "the URL is the stock's Yahoo page only):"
+        ]
 
         # Current metrics
-        if 'current_fcf' in dcf_result.get('calculations', {}):
-            fcf = dcf_result['calculations']['current_fcf']
-            content_lines.append(f"  Current Free Cash Flow: ${fcf/1e9:.2f}B")
+        calc = dcf_result.get('calculations', {})
+        if 'current_fcf' in calc:
+            fcf = calc['current_fcf']
+            src = calc.get('fcf_source')
+            src_tag = f"  [{src}]" if src else ""
+            content_lines.append(f"  Current Free Cash Flow: ${fcf/1e9:.2f}B{src_tag}")
 
         # Assumptions
         if dcf_result.get('assumptions'):
@@ -475,12 +574,25 @@ Date: {date}
             if 'terminal_growth' in assumptions:
                 content_lines.append(f"  Terminal Growth Rate: {assumptions['terminal_growth']*100:.1f}%")
 
-            # Add sensitivity warning
+            # Add sensitivity warnings
             if 'wacc_adjustment' in assumptions:
                 content_lines.append(f"\nNOTE: {assumptions['wacc_adjustment']}")
+            if 'fcf_note' in assumptions:
+                content_lines.append(f"\nNOTE: {assumptions['fcf_note']}")
+            if 'negative_equity_note' in assumptions:
+                content_lines.append(f"\nNOTE: {assumptions['negative_equity_note']}")
 
         # Valuation results
-        if dcf_result.get('intrinsic_value'):
+        if dcf_result.get('negative_equity'):
+            # Negative equity value — DCF not meaningful; do NOT print a >100% "downside"
+            content_lines.append(
+                "\nINTRINSIC VALUE PER SHARE: N/M — model estimates negative equity value "
+                "(net debt > enterprise value); DCF not meaningful for this name."
+            )
+            if dcf_result.get('current_price'):
+                cp = dcf_result['current_price']
+                content_lines.append(f"  Current Market Price: ${cp:.2f}")
+        elif dcf_result.get('intrinsic_value'):
             iv = dcf_result['intrinsic_value']
             content_lines.append(f"\nINTRINSIC VALUE PER SHARE: ${iv:.2f}")
 
@@ -498,7 +610,7 @@ Date: {date}
         # Create SOURCE block
         source_block = self._format_source_block(
             source_num=1,
-            title=f"{ticker} DCF Valuation Analysis",
+            title=f"{ticker} DCF Valuation Analysis (RAICA MODEL ESTIMATE)",
             url=f"https://finance.yahoo.com/quote/{ticker}/analysis",
             date=current_date,
             content=content

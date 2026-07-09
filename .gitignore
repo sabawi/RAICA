@@ -97,6 +97,9 @@ token.json
 token.pickle
 *.key
 *.pem
+*.crt
+*.p12
+*.pid
 secrets/
 server_complete.pid
 *.log

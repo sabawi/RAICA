@@ -211,8 +211,15 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             change = current_price - previous_close if current_price and previous_close else None
             
             return {
+                # v1.0.0.159: merge the raw yfinance info dict so the real-time display block
+                # (which .get()s camelCase keys like forwardPE, totalRevenue, profitMargins,
+                # returnOnEquity, debtToEquity, bookValue, priceToBook, revenueGrowth) actually
+                # resolves them instead of showing N/A for every fundamental. The explicit
+                # snake_case keys below are kept for the lines that use them; names don't clash
+                # (info is camelCase), so the merge is non-destructive.
+                **info,
                 "current_price": round(current_price, 2) if current_price else "N/A",
-                "previous_close": round(previous_close, 2) if previous_close else "N/A", 
+                "previous_close": round(previous_close, 2) if previous_close else "N/A",
                 "change": round(change, 2) if change else "N/A",
                 "change_percent": round((change / previous_close * 100), 2) if change and previous_close else "N/A",
                 "volume": info.get('volume', "N/A"),
@@ -221,6 +228,7 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                 "sector": info.get('sector', "N/A"),
                 "industry": info.get('industry', "N/A"),
                 "pe_ratio": info.get('trailingPE', "N/A"),
+                "forward_pe": info.get('forwardPE', "N/A"),
                 "dividend_yield": info.get('dividendYield', "N/A"),
                 "52_week_high": info.get('fiftyTwoWeekHigh', "N/A"),
                 "52_week_low": info.get('fiftyTwoWeekLow', "N/A"),
@@ -241,26 +249,54 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             logger.info(f"👀 Restored PYTHONTZPATH to: {os.environ.get('PYTHONTZPATH')}")
             logger.info(f"👀 Restored zoneinfo.TZPATH: {zoneinfo.TZPATH}")
     
-    def _format_dividend_yield(self, dividend_yield) -> str:
-        """Format dividend yield safely"""
-        if dividend_yield is None or dividend_yield == "N/A":
-            return "N/A"
-        try:
-            if isinstance(dividend_yield, (int, float)) and dividend_yield > 0:
-                # Handle inconsistent yfinance data formats
-                # Dividend yields are typically < 10%, so if value > 0.1 (10%),
-                # it's likely already in percentage form and needs conversion
-                if dividend_yield > 0.1:
-                    # Value is likely already a percentage (e.g., 0.38 = 38%)
-                    # Convert back to decimal and format
-                    return f"{dividend_yield / 100:.2%}"
-                else:
-                    # Value is in decimal form (e.g., 0.0038 = 0.38%)
-                    return f"{dividend_yield:.2%}"
-            else:
+    def _format_dividend_yield(self, data) -> str:
+        """Format dividend yield authoritatively.
+
+        v1.0.0.160 — yfinance's ``dividendYield`` is inconsistently populated: for MU it carried ~0.06
+        (the payout ratio, not the true ~0.0006 yield), and the old 0.1-threshold heuristic could not
+        tell a 6% decimal yield from a mis-populated 0.06, so it printed "6.00%" for MU. Compute the
+        yield authoritatively as ``dividendRate / current_price`` when both are available; fall back to
+        ``dividendYield`` as a decimal fraction (NEVER divide by 100 — it is already a fraction). Emit a
+        note stating the source so the synthesis never cites a mis-formatted yield as current.
+        """
+        # Backward-compatible path: a bare value was passed (pre-v1.0.0.160 call sites)
+        if not isinstance(data, dict):
+            dy = data
+            if dy is None or dy == "N/A":
                 return "N/A"
-        except:
-            return str(dividend_yield)
+            try:
+                if isinstance(dy, (int, float)) and dy > 0:
+                    return f"{dy:.2%}"
+            except Exception:
+                return str(dy)
+            return "N/A"
+
+        dividend_rate = data.get('dividendRate')
+        price = data.get('currentPrice') or data.get('current_price')
+        yf_yield = data.get('dividendYield')
+
+        # Authoritative: annualized dividend rate / current price
+        if dividend_rate and price and price not in ("N/A", None):
+            try:
+                if float(price) > 0:
+                    yield_pct = float(dividend_rate) / float(price)
+                    note = "  [computed: dividendRate / price]"
+                    # Sanity: a yield > 10% is unusual (often a special/one-off dividend) — flag it
+                    if yield_pct > 0.10:
+                        note = "  [computed: dividendRate / price — ⚠️ yield >10%, verify it is not a special/one-off dividend]"
+                    return f"{yield_pct:.2%}{note}"
+            except Exception:
+                pass
+
+        # Fallback: yfinance dividendYield (already a decimal fraction — do NOT divide by 100)
+        if yf_yield is not None and yf_yield != "N/A":
+            try:
+                if isinstance(yf_yield, (int, float)) and yf_yield > 0:
+                    return f"{yf_yield:.2%}  [yfinance dividendYield — verify, field is inconsistently populated]"
+            except Exception:
+                return str(yf_yield)
+
+        return "N/A"
 
     def _format_large_number(self, number) -> str:
         """Format large numbers safely with commas"""
@@ -548,8 +584,8 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
 
 📋 **FUNDAMENTAL DATA**
 📊 **P/E Ratio (Trailing)**: {pe_ratio}
-📊 **Forward P/E**: {data.get('forwardPE', 'N/A')}
-💵 **Dividend Yield**: {self._format_dividend_yield(data.get('dividend_yield'))}
+📊 **Forward P/E**: {data.get('forwardPE', 'N/A')} (yfinance next-fiscal-year EPS — may understate true NTM forward P/E for non-calendar fiscal-year stocks)
+💵 **Dividend Yield**: {self._format_dividend_yield(data)}
 📊 **Beta**: {data.get('beta', 'N/A')}
 💰 **Revenue (TTM)**: ${self._format_large_number(data.get('totalRevenue', 'N/A'))}
 📈 **Revenue Growth**: {self._format_change(data.get('revenueGrowth', 'N/A'))}%

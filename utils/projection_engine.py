@@ -89,25 +89,39 @@ class ProjectionEngine:
 
         return projections
 
-    def generate_revenue_projections(self, income_stmt: pd.DataFrame) -> Dict[str, Any]:
+    def generate_revenue_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
         """Generate revenue projections with base/best/worst scenarios."""
         try:
-            if income_stmt is None or income_stmt.empty:
+            ticker_info = ticker_info or {}
+            if (income_stmt is None or income_stmt.empty) and not ticker_info.get('totalRevenue'):
                 return {}
 
-            # Get historical revenue
+            # Get historical revenue (annual — used for the growth-rate calc)
             revenue_values = []
-            for i in range(min(4, len(income_stmt.columns))):
-                rev = self._get_value(income_stmt, 'Total Revenue', i)
-                if rev:
-                    revenue_values.append(rev)
+            if income_stmt is not None and not income_stmt.empty:
+                for i in range(min(4, len(income_stmt.columns))):
+                    rev = self._get_value(income_stmt, 'Total Revenue', i)
+                    if rev:
+                        revenue_values.append(rev)
 
-            if not revenue_values:
+            # Current revenue base: TTM-first (v1.0.0.159). yfinance info['totalRevenue'] is the
+            # trailing-twelve-month revenue, consistent with the live price; the last annual
+            # statement can be months stale (e.g. MU annual rev $37.38B vs TTM $90.27B). Projecting
+            # from a stale base against current context distorts the whole 3-year path.
+            ttm_revenue = ticker_info.get('totalRevenue')
+            current_revenue = None
+            current_source = None
+            if ttm_revenue and ttm_revenue > 0:
+                current_revenue = float(ttm_revenue)
+                current_source = 'TTM (info.totalRevenue)'
+            elif revenue_values:
+                current_revenue = revenue_values[0]
+                current_source = 'annual statement (stale)'
+
+            if current_revenue is None:
                 return {}
 
-            current_revenue = revenue_values[0]
-
-            # Calculate historical growth rate
+            # Calculate historical growth rate (from the multi-year annual series — still legit)
             historical_growth = self.calculate_historical_cagr(revenue_values)
 
             if historical_growth is None:
@@ -127,6 +141,7 @@ class ProjectionEngine:
 
             return {
                 'current': current_revenue,
+                'current_source': current_source,
                 'historical_growth': historical_growth,
                 'base_case': {
                     'growth_rate': base_growth,
@@ -146,23 +161,33 @@ class ProjectionEngine:
             logger.error(f"Error generating revenue projections: {e}")
             return {}
 
-    def generate_earnings_projections(self, income_stmt: pd.DataFrame) -> Dict[str, Any]:
+    def generate_earnings_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
         """Generate earnings projections."""
         try:
-            if income_stmt is None or income_stmt.empty:
-                return {}
+            ticker_info = ticker_info or {}
 
-            # Get historical net income
+            # Get historical net income (annual — for the growth-rate calc)
             earnings_values = []
-            for i in range(min(4, len(income_stmt.columns))):
-                earnings = self._get_value(income_stmt, 'Net Income', i)
-                if earnings:
-                    earnings_values.append(earnings)
+            if income_stmt is not None and not income_stmt.empty:
+                for i in range(min(4, len(income_stmt.columns))):
+                    earnings = self._get_value(income_stmt, 'Net Income', i)
+                    if earnings:
+                        earnings_values.append(earnings)
 
-            if not earnings_values:
+            # Current earnings base: TTM-first (v1.0.0.159). info['netIncomeToCommon'] is TTM
+            # net income; the annual statement can be stale (MU annual NI $8.54B vs TTM $50.47B).
+            ttm_ni = ticker_info.get('netIncomeToCommon')
+            current_earnings = None
+            current_source = None
+            if ttm_ni and ttm_ni > 0:
+                current_earnings = float(ttm_ni)
+                current_source = 'TTM (info.netIncomeToCommon)'
+            elif earnings_values:
+                current_earnings = earnings_values[0]
+                current_source = 'annual statement (stale)'
+
+            if current_earnings is None:
                 return {}
-
-            current_earnings = earnings_values[0]
 
             # Calculate historical growth rate
             historical_growth = self.calculate_historical_cagr([e for e in earnings_values if e > 0])
@@ -179,6 +204,7 @@ class ProjectionEngine:
 
             return {
                 'current': current_earnings,
+                'current_source': current_source,
                 'historical_growth': historical_growth,
                 'base_case': {
                     'growth_rate': base_growth,
@@ -190,25 +216,36 @@ class ProjectionEngine:
             logger.error(f"Error generating earnings projections: {e}")
             return {}
 
-    def generate_fcf_projections(self, cash_flow: pd.DataFrame) -> Dict[str, Any]:
+    def generate_fcf_projections(self, cash_flow: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
         """Generate free cash flow projections."""
         try:
-            if cash_flow is None or cash_flow.empty:
-                return {}
+            ticker_info = ticker_info or {}
 
-            # Get historical FCF
+            # Get historical FCF (annual — for the growth-rate calc)
             fcf_values = []
-            for i in range(min(4, len(cash_flow.columns))):
-                ocf = self._get_value(cash_flow, 'Operating Cash Flow', i)
-                capex = self._get_value(cash_flow, 'Capital Expenditure', i)
-                if ocf is not None and capex is not None:
-                    fcf = ocf + capex  # capex is negative
-                    fcf_values.append(fcf)
+            if cash_flow is not None and not cash_flow.empty:
+                for i in range(min(4, len(cash_flow.columns))):
+                    ocf = self._get_value(cash_flow, 'Operating Cash Flow', i)
+                    capex = self._get_value(cash_flow, 'Capital Expenditure', i)
+                    if ocf is not None and capex is not None:
+                        fcf = ocf + capex  # capex is negative
+                        fcf_values.append(fcf)
 
-            if not fcf_values:
+            # Current FCF base: TTM-first (v1.0.0.159). info['freeCashflow'] is TTM FCF, consistent
+            # with the live price; annual can be stale (MU annual FCF $1.67B vs TTM $7.64B).
+            # Negative TTM FCF is valid (e.g. ORCL) — keep it so the projection shows the truth.
+            ttm_fcf = ticker_info.get('freeCashflow')
+            current_fcf = None
+            current_source = None
+            if ttm_fcf is not None:
+                current_fcf = float(ttm_fcf)
+                current_source = 'TTM (info.freeCashflow)'
+            elif fcf_values:
+                current_fcf = fcf_values[0]
+                current_source = 'annual statement (stale)'
+
+            if current_fcf is None:
                 return {}
-
-            current_fcf = fcf_values[0]
 
             # Calculate historical growth rate
             historical_growth = self.calculate_historical_cagr([f for f in fcf_values if f > 0])
@@ -224,6 +261,7 @@ class ProjectionEngine:
 
             return {
                 'current': current_fcf,
+                'current_source': current_source,
                 'historical_growth': historical_growth,
                 'base_case': {
                     'growth_rate': base_growth,
@@ -251,11 +289,12 @@ class ProjectionEngine:
         # Extract financial statements
         income_stmt = financials.get('income_statement', {}).get('annual')
         cash_flow = financials.get('cash_flow', {}).get('annual')
+        ticker_info = financials.get('ticker_info', {}) or {}
 
         return {
-            'revenue_projections': self.generate_revenue_projections(income_stmt),
-            'earnings_projections': self.generate_earnings_projections(income_stmt),
-            'fcf_projections': self.generate_fcf_projections(cash_flow)
+            'revenue_projections': self.generate_revenue_projections(income_stmt, ticker_info),
+            'earnings_projections': self.generate_earnings_projections(income_stmt, ticker_info),
+            'fcf_projections': self.generate_fcf_projections(cash_flow, ticker_info)
         }
 
     def _format_source_block(self, source_num: int, title: str, url: str, date: str, content: str) -> str:
@@ -319,7 +358,7 @@ Date: {date}
             if content:
                 source_block = self._format_source_block(
                     source_num=source_num,
-                    title=f"{ticker} Revenue Projections (3-Year Forward)",
+                    title=f"{ticker} Revenue Projections (3-Year, Historical-CAGR Extrapolation — not analyst consensus)",
                     url=f"https://finance.yahoo.com/quote/{ticker}/analysis",
                     date=current_date,
                     content=content
@@ -334,7 +373,7 @@ Date: {date}
             if content:
                 source_block = self._format_source_block(
                     source_num=source_num,
-                    title=f"{ticker} Earnings Projections (3-Year Forward)",
+                    title=f"{ticker} Earnings Projections (3-Year, Historical-CAGR Extrapolation — not analyst consensus)",
                     url=f"https://finance.yahoo.com/quote/{ticker}/analysis",
                     date=current_date,
                     content=content
@@ -349,7 +388,7 @@ Date: {date}
             if content:
                 source_block = self._format_source_block(
                     source_num=source_num,
-                    title=f"{ticker} Free Cash Flow Projections (3-Year Forward)",
+                    title=f"{ticker} Free Cash Flow Projections (3-Year, Historical-CAGR Extrapolation — not analyst consensus)",
                     url=f"https://finance.yahoo.com/quote/{ticker}/analysis",
                     date=current_date,
                     content=content
@@ -367,13 +406,21 @@ Date: {date}
         lines = ["REVENUE PROJECTIONS:"]
 
         if 'current' in rev_proj:
-            lines.append(f"  Current Revenue: ${rev_proj['current']/1e9:.2f}B")
+            src = rev_proj.get('current_source')
+            src_tag = f"  [{src}]" if src else ""
+            lines.append(f"  Current Revenue: ${rev_proj['current']/1e9:.2f}B{src_tag}")
 
+        if 'historical_growth' in rev_proj and rev_proj['historical_growth'] is not None:
+            lines.append(f"  Historical CAGR (raw, uncapped): {rev_proj['historical_growth']*100:.1f}%")
         if 'base_case' in rev_proj:
             base = rev_proj['base_case']
-            lines.append(f"\nBase Case (Growth: {base['growth_rate']*100:.1f}%):")
+            lines.append(f"\nBase Case (Projected growth, capped: {base['growth_rate']*100:.1f}%):")
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
+        lines.append(
+            "  NOTE: These projections extrapolate the historical CAGR forward; "
+            "they are NOT analyst consensus estimates."
+        )
 
         return "\n".join(lines)
 
@@ -385,13 +432,21 @@ Date: {date}
         lines = ["EARNINGS PROJECTIONS:"]
 
         if 'current' in earn_proj:
-            lines.append(f"  Current Net Income: ${earn_proj['current']/1e9:.2f}B")
+            src = earn_proj.get('current_source')
+            src_tag = f"  [{src}]" if src else ""
+            lines.append(f"  Current Net Income: ${earn_proj['current']/1e9:.2f}B{src_tag}")
 
+        if 'historical_growth' in earn_proj and earn_proj['historical_growth'] is not None:
+            lines.append(f"  Historical CAGR (raw, uncapped): {earn_proj['historical_growth']*100:.1f}%")
         if 'base_case' in earn_proj:
             base = earn_proj['base_case']
-            lines.append(f"\nProjected Growth: {base['growth_rate']*100:.1f}%")
+            lines.append(f"\nProjected Growth (capped at 20%): {base['growth_rate']*100:.1f}%")
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
+        lines.append(
+            "  NOTE: These projections extrapolate the historical CAGR forward; "
+            "they are NOT analyst consensus estimates."
+        )
 
         return "\n".join(lines)
 
@@ -403,12 +458,20 @@ Date: {date}
         lines = ["FREE CASH FLOW PROJECTIONS:"]
 
         if 'current' in fcf_proj:
-            lines.append(f"  Current FCF: ${fcf_proj['current']/1e9:.2f}B")
+            src = fcf_proj.get('current_source')
+            src_tag = f"  [{src}]" if src else ""
+            lines.append(f"  Current FCF: ${fcf_proj['current']/1e9:.2f}B{src_tag}")
 
+        if 'historical_growth' in fcf_proj and fcf_proj['historical_growth'] is not None:
+            lines.append(f"  Historical CAGR (raw, uncapped): {fcf_proj['historical_growth']*100:.1f}%")
         if 'base_case' in fcf_proj:
             base = fcf_proj['base_case']
-            lines.append(f"\nProjected Growth: {base['growth_rate']*100:.1f}%")
+            lines.append(f"\nProjected Growth (capped at 15%): {base['growth_rate']*100:.1f}%")
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
+        lines.append(
+            "  NOTE: These projections extrapolate the historical CAGR forward; "
+            "they are NOT analyst consensus estimates."
+        )
 
         return "\n".join(lines)
