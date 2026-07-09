@@ -326,4 +326,17 @@ Ask yourself: "Does this code path change based on magic keywords in user's prom
 - KEEP INVESTIGATING THE ROOT CAUSE OF A BUG/ISSUE UNTIL YOU HAVE NEAR ~100% OF THE CORRECT AND FULL ROOT CAUSE THEN REPORT IT TO USER
 - NEVER ATTEMPT A CODE FIX UNTIL (1) YOU HAVE SATISFIED THE REQUIREMENTS OF INVESTIGATING THE ROOT CAUSE (2) YOU HAVE PLANNED/ANALYZED/RESEARCH/EXPERIMENTED WITH AND VERIFIED THAT THE FIX WILL WORK WITH HIGH CONFIDENCE (NEAR ~100%)
 - CHECKPOINT PROTOCOL: FOLLOW A STRICT PLAN TO STAGE AND COMMIT FILES TO REPO: review all the code change in this current project diectory and list all changed files tracked and untracked. Examine all current documentations for requiring updates/correction and update them as result of changes (README.md, ./docs/production, other files in ./docs etc). Ensure the directory organization is strictly followed. Ensure security issues are resolved 100% (no passwords/keys/credintials etc). Update the version numbers to be consistant across ALL files and gitbuh README.md, as well as the 'About' box version number on github site. **MANDATORY: Create version-specific changelog at docs/housekeeping/status-tracking/CHANGELOG_vX.X.X.XX.md documenting all changes, new features, fixes, dependencies, breaking changes, and migration guide.** Add core/required files (tracked and new if required only) and stage them for check-in. Ensure the dependencies (./requirements.txt) is uptodate for any new imports. Commit and Push changes.
+- DEPLOYMENT PROTOCOL: FOLLOW A STRICT SEQUENTIAL WORKFLOW FOR TESTING AND PRODUCING RELEASES:
+  1. Commit the code fixes or upgrades locally.
+  2. Apply the changes to the local development server.
+  3. Restart the local server (`./stop_complete.sh && sleep 10 && ./start_complete.sh` or local foreground runner).
+  4. Verify local health status (`/health` endpoint on localhost:5000).
+  5. Review local startup logs (`logs/server_complete.log`) for any warnings or errors.
+  6. Run regression tests and E2E verification locally (`pytest` + `run_mu_e2e_verify.py`).
+  7. Once fully clean and problem-free, push the changes to GitHub.
+  8. Deploy to the live remote server (`sabawi.net`) by pulling the repository changes.
+  9. Restart the remote production server.
+  10. Verify remote health status (`/health` on remote host).
+  11. Review remote startup logs carefully to ensure no runtime warnings or errors.
+  12. Ensure both local and remote environments are byte-identical and running exactly as expected.
 - NO FULL CONTENT OF BINARY FILE SHOULD BE DUMPED IN THE LOGS. ONLY FIRST 100 BYTES e.g."/HmfPngUAfPjhh1i6dGmx/Rw+fBiTJk1Cu3bt0KBBA9So ..."
