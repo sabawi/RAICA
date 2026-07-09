@@ -443,9 +443,20 @@ class DCFCalculator:
                 total_debt = long_term_debt + current_debt
 
             cash = self._get_value(balance_sheet, 'Cash And Cash Equivalents') or 0
-            short_term_inv = self._get_value(balance_sheet, 'Short Term Investments') or 0
+            # v1.0.0.162 — _get_value is an EXACT index match, and yfinance's short-term line is often
+            # named 'Other Short Term Investments', so the plain 'Short Term Investments' lookup silently
+            # returned None for many issuers (marketable securities dropped → net cash understated). Try
+            # both label variants.
+            short_term_inv = (self._get_value(balance_sheet, 'Short Term Investments')
+                              or self._get_value(balance_sheet, 'Other Short Term Investments') or 0)
             long_term_inv = self._get_value(balance_sheet, 'Long Term Investments') or 0
-            investments = self._get_value(balance_sheet, 'Investments') or 0  # catch-all some issuers use
+            # 'Investments' is a catch-all SOME issuers use IN PLACE OF the specific rows above. Only fall
+            # back to it when neither specific investment row resolved, so it can NEVER double-count
+            # holdings already in short_term_inv/long_term_inv (double-counting would overstate net cash
+            # → overstate intrinsic value).
+            investments = 0
+            if not short_term_inv and not long_term_inv:
+                investments = self._get_value(balance_sheet, 'Investments') or 0
             cash_and_securities = cash + short_term_inv + long_term_inv + investments
             net_debt = (total_debt or 0) - cash_and_securities
             result['calculations']['net_debt'] = net_debt

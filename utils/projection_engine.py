@@ -130,6 +130,15 @@ class ProjectionEngine:
             else:
                 base_growth = historical_growth
 
+            # v1.0.0.163 — cap the revenue base-case growth (parallels the earnings 20% / FCF 15%
+            # caps below). Previously revenue base_growth used the RAW historical CAGR uncapped, so a
+            # hyper-growth name (e.g. NVDA, clamped at the 100% CAGR ceiling) projected revenue
+            # DOUBLING every year (→ ~$2.03T in 3 years) — facially absurd, AND internally
+            # inconsistent with the 20%-capped earnings (implied net margin collapsing 63% → 14%).
+            # Cap at 20% (matching the earnings cap → flat-margin base case, and below the 25%
+            # best-case ceiling so the base case can never exceed the optimistic case).
+            base_growth = min(base_growth, 0.20)
+
             # Create scenarios
             # Best case: 1.5x historical or +5%, whichever is higher
             best_growth = max(base_growth * 1.5, base_growth + 0.05)
@@ -414,7 +423,7 @@ Date: {date}
             lines.append(f"  Historical CAGR (raw, uncapped): {rev_proj['historical_growth']*100:.1f}%")
         if 'base_case' in rev_proj:
             base = rev_proj['base_case']
-            lines.append(f"\nBase Case (Projected growth, capped: {base['growth_rate']*100:.1f}%):")
+            lines.append(f"\nBase Case (Projected growth, capped at 20%: {base['growth_rate']*100:.1f}%):")
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
         lines.append(

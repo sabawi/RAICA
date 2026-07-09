@@ -255,18 +255,23 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
         v1.0.0.160 — yfinance's ``dividendYield`` is inconsistently populated: for MU it carried ~0.06
         (the payout ratio, not the true ~0.0006 yield), and the old 0.1-threshold heuristic could not
         tell a 6% decimal yield from a mis-populated 0.06, so it printed "6.00%" for MU. Compute the
-        yield authoritatively as ``dividendRate / current_price`` when both are available; fall back to
-        ``dividendYield`` as a decimal fraction (NEVER divide by 100 — it is already a fraction). Emit a
-        note stating the source so the synthesis never cites a mis-formatted yield as current.
+        yield authoritatively as ``dividendRate / current_price`` when both are available.
+
+        v1.0.0.162 — CORRECT the fallback scale. Verified empirically against the PINNED yfinance
+        0.2.65: ``dividendYield`` is a PERCENTAGE NUMBER (AAPL 0.34 → 0.34%, KO 2.54 → 2.54%,
+        VZ 6.67 → 6.67%), NOT a 0..1 fraction. The prior code applied ``:.2%`` to it (which ×100),
+        so the fallback printed AAPL as "34.00%" and VZ as "667.00%" — 100× too high. Render
+        dividendYield as a percent DIRECTLY. Re-verify this contract if yfinance is upgraded off 0.2.65.
         """
-        # Backward-compatible path: a bare value was passed (pre-v1.0.0.160 call sites)
+        # Backward-compatible path: a bare dividendYield value was passed (pre-v1.0.0.160 call sites).
+        # A bare value is the raw yfinance dividendYield → a PERCENTAGE NUMBER (see v1.0.0.162 note).
         if not isinstance(data, dict):
             dy = data
             if dy is None or dy == "N/A":
                 return "N/A"
             try:
                 if isinstance(dy, (int, float)) and dy > 0:
-                    return f"{dy:.2%}"
+                    return f"{dy:.2f}%"
             except Exception:
                 return str(dy)
             return "N/A"
@@ -288,11 +293,13 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             except Exception:
                 pass
 
-        # Fallback: yfinance dividendYield (already a decimal fraction — do NOT divide by 100)
+        # Fallback: yfinance dividendYield. As of the PINNED yfinance 0.2.65 this is a PERCENTAGE
+        # NUMBER (e.g. VZ 6.67 → 6.67%), NOT a 0..1 fraction — render it as a percent DIRECTLY; do NOT
+        # apply :.2% (that would ×100 and print "667.00%"). Re-verify if yfinance is upgraded off 0.2.65.
         if yf_yield is not None and yf_yield != "N/A":
             try:
                 if isinstance(yf_yield, (int, float)) and yf_yield > 0:
-                    return f"{yf_yield:.2%}  [yfinance dividendYield — verify, field is inconsistently populated]"
+                    return f"{yf_yield:.2f}%  [yfinance dividendYield — verify, field is inconsistently populated]"
             except Exception:
                 return str(yf_yield)
 

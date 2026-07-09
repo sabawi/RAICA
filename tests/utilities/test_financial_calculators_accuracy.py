@@ -80,22 +80,30 @@ def test_pb_fallback_equity_with_note():
 # ---------------------------------------------------------------------------
 def test_dividend_yield_authoritative_from_rate():
     ana = ComprehensiveStockAnalyzerTool()
-    # MU: dividendRate 0.56, price 948.80 → 0.000590 → "0.06%"
+    # MU: dividendRate 0.56, price 948.80 → 0.000590 → "0.06%". The authoritative rate/price path must
+    # win regardless of dividendYield. (Under yfinance 0.2.65, dividendYield 0.06 also = 0.06% — a
+    # percentage number — but this test pins the rate/price computation, not the fallback.)
     out = ana._format_dividend_yield({"dividendRate": 0.56, "currentPrice": 948.80,
-                                      "dividendYield": 0.06})  # yf field mis-populated as 0.06
+                                      "dividendYield": 0.06})
     assert "0.06%" in out, out
     assert "6.00%" not in out, out             # the old heuristic's wrong output
     assert "dividendRate / price" in out, out
     print("PASS test_dividend_yield_authoritative_from_rate")
 
 
-def test_dividend_yield_fallback_yfinance_decimal():
+def test_dividend_yield_fallback_yfinance_percent_number():
     ana = ComprehensiveStockAnalyzerTool()
-    # No dividendRate; yfinance dividendYield is a true decimal fraction (0.0006) — must NOT /100
-    out = ana._format_dividend_yield({"dividendYield": 0.0006})
+    # No dividendRate → fall back to yfinance's dividendYield. Verified empirically against the PINNED
+    # yfinance 0.2.65: dividendYield is a PERCENTAGE NUMBER (MU 0.06 → 0.06%, VZ 6.67 → 6.67%), NOT a
+    # 0..1 fraction. The fallback must render it DIRECTLY as a percent, never apply :.2% (which ×100
+    # and printed "6.00%"/"667.00%"). See v1.0.0.162.
+    out = ana._format_dividend_yield({"dividendYield": 0.06})    # MU-style 0.06% yield
     assert "0.06%" in out, out
-    assert "6.00%" not in out, out
-    print("PASS test_dividend_yield_fallback_yfinance_decimal")
+    assert "6.00%" not in out, out                               # the ×100 bug's wrong output
+    out2 = ana._format_dividend_yield({"dividendYield": 6.67})   # VZ-style 6.67% yield
+    assert "6.67%" in out2, out2
+    assert "667" not in out2, out2                               # the ×100 bug would print 667.00%
+    print("PASS test_dividend_yield_fallback_yfinance_percent_number")
 
 
 def test_dividend_yield_high_yield_sanity_note():
@@ -237,11 +245,31 @@ def test_interest_coverage_ttm_and_note():
     print("PASS test_interest_coverage_ttm_and_note")
 
 
+# ---------------------------------------------------------------------------
+# 8. Revenue base-case growth is CAPPED (v1.0.0.163) — no absurd doubling for hyper-growth names
+# ---------------------------------------------------------------------------
+def test_revenue_base_growth_capped():
+    pe = ProjectionEngine()
+    # 100% historical revenue CAGR (NVDA-like): [200, 100] → CAGR 1.0 (clamped). Pre-v1.0.0.163 the
+    # base case used the RAW 100% → revenue DOUBLED every year (the absurd ~$2T 3-year path). It must
+    # now be capped at 20%, stay below the 25% best case, and still surface the raw CAGR separately.
+    inc = _annual_df({"Total Revenue": [200e9, 100e9]}, periods=2)
+    proj = pe.generate_revenue_projections(inc, {"totalRevenue": 250e9})
+    assert proj, proj
+    assert proj["historical_growth"] == 1.0, proj                     # raw CAGR preserved (clamp)
+    assert proj["base_case"]["growth_rate"] <= 0.20 + 1e-9, proj      # base capped at 20%
+    assert proj["best_case"]["growth_rate"] >= proj["base_case"]["growth_rate"], proj  # best ≥ base
+    year1 = proj["base_case"]["projections"][0]
+    assert year1 < 2 * 250e9, proj                                    # NOT doubling
+    assert abs(year1 - 250e9 * 1.20) < 1e6, proj                      # exactly +20% off the TTM base
+    print("PASS test_revenue_base_growth_capped")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
     test_dividend_yield_authoritative_from_rate()
-    test_dividend_yield_fallback_yfinance_decimal()
+    test_dividend_yield_fallback_yfinance_percent_number()
     test_dividend_yield_high_yield_sanity_note()
     test_dcf_negative_equity_guard()
     test_dcf_marketable_securities_netted()
@@ -249,4 +277,5 @@ if __name__ == "__main__":
     test_roic_uses_nopat_not_net_income()
     test_calculate_all_ratios_uses_quarterly_balance()
     test_interest_coverage_ttm_and_note()
-    print("\n✅ All v1.0.0.160 financial-calculator accuracy tests passed")
+    test_revenue_base_growth_capped()
+    print("\n✅ All financial-calculator accuracy tests passed")

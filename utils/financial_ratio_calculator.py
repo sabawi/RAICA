@@ -146,8 +146,17 @@ class FinancialRatioCalculator:
 
         if avg_assets and ni_for_return:
             ratios['roa'] = (ni_for_return / avg_assets) * 100
+        # v1.0.0.162 — ROE is not meaningful when book equity is negative (buyback-heavy names like
+        # HD/MCD/SBUX can carry negative Stockholders Equity): ni/negative-equity prints a negative ROE
+        # for a profitable company, which misleads. Emit only for positive equity; flag the negative case.
         if avg_equity and ni_for_return:
-            ratios['roe'] = (ni_for_return / avg_equity) * 100
+            if avg_equity > 0:
+                ratios['roe'] = (ni_for_return / avg_equity) * 100
+            else:
+                ratios['roe_note'] = (
+                    "⚠️ ROE not meaningful: book equity is negative (often from large buybacks); "
+                    "a negative ROE here does NOT indicate losses."
+                )
 
         # ROIC = NOPAT / Invested Capital, where NOPAT = Operating Income × (1 − tax rate)
         # and Invested Capital = Total Debt + Stockholders Equity (averaged). NOPAT (not net income)
@@ -164,6 +173,10 @@ class FinancialRatioCalculator:
         pretax = self._get_value(income_stmt, 'Pretax Income')
         tax_prov = self._get_value(income_stmt, 'Tax Provision')
         tax_rate = (tax_prov / pretax) if (pretax and tax_prov and pretax > 0) else 0.21
+        # v1.0.0.162 — clamp to a sane statutory band. A one-time tax charge can push tax_prov/pretax
+        # outside [0, 1] (even > 1), which would flip NOPAT negative and misreport ROIC as negative for
+        # a profitable company. 0.5 is a generous ceiling above any real effective corporate rate.
+        tax_rate = max(0.0, min(tax_rate, 0.5))
 
         total_debt = self._avg_value(balance_sheet, 'Total Debt')
         if not total_debt:
@@ -632,6 +645,8 @@ Date: {date}
             lines.append(f"  Return on Assets (ROA): {ratios['roa']:.2f}%")
         if 'roe' in ratios:
             lines.append(f"  Return on Equity (ROE): {ratios['roe']:.2f}%")
+        if 'roe_note' in ratios:
+            lines.append(f"  {ratios['roe_note']}")
         if 'roic' in ratios:
             lines.append(f"  Return on Invested Capital (ROIC): {ratios['roic']:.2f}%")
         if 'roic_basis' in ratios:
