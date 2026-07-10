@@ -379,6 +379,27 @@ def test_technical_indicators_states_and_guards():
     print("PASS test_technical_indicators_states_and_guards")
 
 
+# ---------------------------------------------------------------------------
+# 14. Reverse-DCF implied growth (v1.0.0.169): solver reproduces the price; monotonic; bounded
+# ---------------------------------------------------------------------------
+def test_dcf_reverse_implied_growth():
+    dcf = DCFCalculator()
+    fcf, wacc, tg, net_debt, shares, years = 30e9, 0.10, 0.025, 20e9, 1e9, 5
+    # The implied growth, plugged back into the SAME model, must reproduce the target price.
+    target = 200.0
+    g, bound = dcf._implied_growth(target, fcf, wacc, tg, net_debt, shares, years)
+    assert bound is None, (g, bound)
+    iv = dcf._intrinsic_at_growth(fcf, g, wacc, tg, net_debt, shares, years)
+    assert abs(iv - target) < 0.5, (iv, target, g)          # solved
+    # Monotonic: a higher price implies a higher required growth.
+    g_hi, _ = dcf._implied_growth(target * 1.5, fcf, wacc, tg, net_debt, shares, years)
+    assert g_hi > g, (g_hi, g)
+    # Out-of-band: an absurd price → 'above' bound (beyond the solvable growth ceiling).
+    _, b_ab = dcf._implied_growth(1e6, fcf, wacc, tg, net_debt, shares, years)
+    assert b_ab == "above", b_ab
+    print("PASS test_dcf_reverse_implied_growth")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -397,4 +418,5 @@ if __name__ == "__main__":
     test_analyst_estimates_scale_and_guards()
     test_dcf_blume_beta_ttm_fcf_and_sensitivity()
     test_technical_indicators_states_and_guards()
+    test_dcf_reverse_implied_growth()
     print("\n✅ All financial-calculator accuracy tests passed")

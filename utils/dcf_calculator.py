@@ -333,6 +333,53 @@ class DCFCalculator:
         except Exception:
             return None
 
+    def _intrinsic_at_growth(self, current_fcf, growth, wacc, terminal_growth, net_debt, shares, years) -> Optional[float]:
+        """v1.0.0.169 — intrinsic value/share for a given explicit-phase FCF growth rate. Same model as
+        the forward DCF; only the explicit-stage growth varies (used by the reverse-DCF solver)."""
+        try:
+            if wacc is None or not shares or shares <= 0 or current_fcf is None:
+                return None
+            proj = self.project_cash_flows(current_fcf, growth, years)
+            if not proj:
+                return None
+            tv = self.calculate_terminal_value(proj[-1], wacc, terminal_growth)
+            pv_fcf = self.calculate_present_value(proj, wacc)
+            pv_tv = tv / ((1 + wacc) ** years)
+            return ((pv_fcf + pv_tv) - net_debt) / shares
+        except Exception:
+            return None
+
+    def _implied_growth(self, current_price, current_fcf, wacc, terminal_growth, net_debt, shares, years,
+                        lo=-0.50, hi=1.50):
+        """v1.0.0.169 — REVERSE-DCF: the explicit-phase FCF growth rate that makes THIS model's intrinsic
+        value equal the current market price, holding every other input at the forward base case. Answers
+        "what growth is the market pricing in?" — the honest way to temper a uniform DCF across growth-vs-
+        value names WITHOUT a hardcoded sector factor (the LLM judges whether the implied growth fits the
+        company's sector/cycle). Intrinsic value is monotonic increasing in growth, so bisection is exact.
+        Returns (growth, bound) where bound is 'above'/'below' when the price falls outside the [lo, hi]
+        solvable band, else None."""
+        def f(g):
+            return self._intrinsic_at_growth(current_fcf, g, wacc, terminal_growth, net_debt, shares, years)
+        lo_v, hi_v = f(lo), f(hi)
+        if lo_v is None or hi_v is None or not current_price or current_price <= 0:
+            return None, None
+        if current_price <= lo_v:
+            return lo, 'below'
+        if current_price >= hi_v:
+            return hi, 'above'
+        for _ in range(64):
+            mid = (lo + hi) / 2.0
+            v = f(mid)
+            if v is None:
+                return None, None
+            if abs(v - current_price) <= 0.001 * current_price:
+                return mid, None
+            if v < current_price:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2.0, None
+
     def calculate_intrinsic_value(self, ticker: str, financials: Dict, market_data: Dict = None) -> Dict[str, Any]:
         """
         Calculate intrinsic value using DCF model.
@@ -548,6 +595,19 @@ class DCFCalculator:
                         result['intrinsic_value_low'] = min(iv_bull, iv_bear)
                         result['intrinsic_value_high'] = max(iv_bull, iv_bear)
 
+                    # v1.0.0.169 — REVERSE-DCF (implied expectations): solve the SAME model for the FCF
+                    # growth the CURRENT PRICE implies, to contrast with the base-case + historical growth.
+                    # Reframes the DCF from a single "fair value / % downside" verdict into "what growth is
+                    # priced in" — the honest, sector-neutral way to temper a uniform DCF (no hardcoded
+                    # sector factor; the LLM judges whether the implied growth fits the sector/cycle).
+                    if current_price and current_price > 0:
+                        _ig, _ig_bound = self._implied_growth(
+                            current_price, current_fcf, wacc, self.terminal_growth_rate,
+                            net_debt, shares_outstanding, self.projection_years)
+                        if _ig is not None:
+                            result['implied_growth'] = _ig
+                            result['implied_growth_bound'] = _ig_bound
+
                     # Step 10: Calculate upside/downside
                     if current_price:
                         upside_downside = ((intrinsic_value_per_share - current_price) / current_price) * 100
@@ -581,7 +641,7 @@ class DCFCalculator:
         # Truncate content to keep LLM context bounded. The DCF MODEL ESTIMATE block carries the
         # intrinsic-value result and freshness/notes that must not be cut off, so it gets a larger cap
         # than the ratio blocks.
-        DCF_CONTENT_CAP = 1000
+        DCF_CONTENT_CAP = 1600  # v1.0.0.169 — raised to fit the reverse-DCF implied-growth readout
         if len(content) > DCF_CONTENT_CAP:
             content = content[:DCF_CONTENT_CAP - 3] + "..."
 
@@ -679,6 +739,38 @@ Date: {date}
                 upside = dcf_result['upside_downside']
                 direction = "upside" if upside > 0 else "downside"
                 content_lines.append(f"  Potential {direction.upper()}: {abs(upside):.1f}%")
+
+            # v1.0.0.169 — REVERSE-DCF implied-growth readout (internal model methodology). Reframes the
+            # single fair-value/%-downside verdict into "what FCF growth is the market pricing in?", so a
+            # conservative DCF no longer looks like it brands every durable-growth name as overvalued.
+            ig = dcf_result.get('implied_growth')
+            if ig is not None:
+                bound = dcf_result.get('implied_growth_bound')
+                _igp = ig * 100.0
+                if abs(_igp) < 0.5:
+                    _igp = 0.0  # avoid rendering "-0%"
+                ig_txt = (f"≥{_igp:.0f}%" if bound == 'above'
+                          else f"≤{_igp:.0f}%" if bound == 'below' else f"~{_igp:.0f}%")
+                base_g = (dcf_result.get('assumptions', {}) or {}).get('projection_growth')
+                hist_g = (dcf_result.get('calculations', {}) or {}).get('historical_growth')
+                wacc_a = (dcf_result.get('assumptions', {}) or {}).get('wacc')
+                ctx = []
+                if base_g is not None:
+                    ctx.append(f"base-case model {base_g*100:.1f}%")
+                if hist_g is not None:
+                    ctx.append(f"historical FCF CAGR {hist_g*100:.1f}%")
+                ctx_txt = f"  [context: {'; '.join(ctx)}]" if ctx else ""
+                wacc_txt = f"WACC {wacc_a*100:.1f}%, " if wacc_a is not None else ""
+                content_lines.append(
+                    f"\nREVERSE-DCF — IMPLIED GROWTH (RAICA MODEL METHODOLOGY): solving this SAME "
+                    f"{self.projection_years}-yr DCF ({wacc_txt}terminal {self.terminal_growth_rate*100:.1f}%) "
+                    f"for the FCF growth rate that makes intrinsic value equal the current price → the market "
+                    f"is pricing in {ig_txt}/yr FCF growth for {self.projection_years} years, then fading to "
+                    f"terminal.{ctx_txt}")
+                content_lines.append(
+                    "  Interpret vs the company's growth durability / sector / cycle (a conservative DCF "
+                    "alone overstates 'overvaluation' for durable high-growth names; compare the implied "
+                    "growth to analyst forward estimates).")
 
         content = "\n".join(content_lines)
 
