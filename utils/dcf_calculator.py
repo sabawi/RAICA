@@ -240,22 +240,27 @@ class DCFCalculator:
 
     def calculate_cost_of_equity(self, market_data: Dict) -> Optional[float]:
         """
-        Calculate cost of equity using CAPM.
+        Calculate cost of equity using CAPM with a Blume-adjusted beta.
 
-        Re = Rf + β × (Rm - Rf)
+        Re = Rf + β_adj × (Rm - Rf),  where  β_adj = 0.67·β_raw + 0.33·1.0
 
-        Where:
-        - Rf = Risk-free rate
-        - β = Beta
-        - Rm - Rf = Market risk premium
+        v1.0.0.167 — RAW CAPM beta over-penalizes high-beta names (AMD β2.47 → 21.3% cost of equity,
+        NVDA β2.21 → 19.5%), which drove DCF WACCs far above the 8–12% typical for large-cap tech and
+        made the model flag EVERY stock in a growth cohort as ~80–94% overvalued with no ability to
+        discriminate quality. The Blume (1971) adjustment regresses beta toward the market mean of 1.0
+        — standard practice because betas mean-revert — bringing the discount rate into a defensible
+        band while PRESERVING relative ordering (higher-beta names keep a higher cost of equity):
+        NVDA 2.21→1.81, AMD 2.47→1.99, AMAT 1.57→1.38, AVGO 1.46→1.31.
         """
         beta = market_data.get('beta')
-
         if not beta:
             # Use market average beta
             beta = 1.0
-
-        cost_of_equity = self.risk_free_rate + (beta * self.market_risk_premium)
+        try:
+            adj_beta = 0.67 * float(beta) + 0.33
+        except (TypeError, ValueError):
+            adj_beta = 1.0
+        cost_of_equity = self.risk_free_rate + (adj_beta * self.market_risk_premium)
         return cost_of_equity
 
     def project_cash_flows(self, current_fcf: float, growth_rate: float, years: int) -> List[float]:
@@ -300,6 +305,34 @@ class DCFCalculator:
             pv += cf / ((1 + discount_rate) ** t)
         return pv
 
+    def _ttm_fcf_from_quarterly(self, q_cash_flow) -> Optional[float]:
+        """v1.0.0.167 — TTM free cash flow = sum of the 4 most-recent quarters of
+        (Operating Cash Flow + CapEx), computed from the QUARTERLY cash-flow statement. This is BOTH
+        current (trailing-twelve-month) AND auditable — unlike yfinance's ``info['freeCashflow']``, which
+        systematically understates (verified: NVDA $46.3B vs $119B TTM; AMAT $3.0B vs $5.3B; QCOM $9.6B
+        vs $12.5B). CapEx is stored negative, so FCF = OCF + CapEx."""
+        ocf = self._ttm_value(q_cash_flow, 'Operating Cash Flow') if q_cash_flow is not None else None
+        capex = self._ttm_value(q_cash_flow, 'Capital Expenditure') if q_cash_flow is not None else None
+        if ocf is not None and capex is not None:
+            return ocf + capex
+        return None
+
+    def _intrinsic_at_wacc(self, projected_fcf, wacc, terminal_growth, net_debt, shares) -> Optional[float]:
+        """v1.0.0.167 — intrinsic value/share at a given WACC, for the sensitivity band. Reuses the
+        base-case projected FCFs, net debt, and share count; only the discount rate + terminal value
+        change (intrinsic value is far more sensitive to WACC than to any other single input). Returns
+        None for a non-positive equity value (a bear WACC can push a thin-FCF name negative)."""
+        try:
+            if wacc is None or not shares or shares <= 0 or not projected_fcf:
+                return None
+            tv = self.calculate_terminal_value(projected_fcf[-1], wacc, terminal_growth)
+            pv_fcf = self.calculate_present_value(projected_fcf, wacc)
+            pv_tv = tv / ((1 + wacc) ** len(projected_fcf))
+            equity = (pv_fcf + pv_tv) - net_debt
+            return equity / shares if equity > 0 else None
+        except Exception:
+            return None
+
     def calculate_intrinsic_value(self, ticker: str, financials: Dict, market_data: Dict = None) -> Dict[str, Any]:
         """
         Calculate intrinsic value using DCF model.
@@ -337,24 +370,29 @@ class DCFCalculator:
             if market_data is None:
                 market_data = ticker_info
 
-            # Step 1: Current FCF — TTM-first (v1.0.0.159).
-            # yfinance ``info['freeCashflow']`` is the trailing-twelve-month free cash flow,
-            # internally consistent with the live price. The annual cash-flow statement can be
-            # months stale (e.g. MU: annual FCF $1.67B vs TTM FCF $7.64B). Discounting a stale
-            # FCF against the live price produces an absurd intrinsic value (MU $2.37, "99.8%
-            # downside"). Prefer TTM; fall back to annual only when TTM is absent, and emit a
-            # staleness note so the synthesis never presents a stale-FCF DCF as "current".
-            ttm_fcf = ticker_info.get('freeCashflow')
-            fcf_source = None
-            if ttm_fcf is not None:
-                current_fcf = float(ttm_fcf)
-                fcf_source = 'TTM (info.freeCashflow)'
-            else:
-                if cash_flow is None or cash_flow.empty:
-                    result['error'] = 'Cash flow data not available'
-                    return result
+            # Step 1: Current FCF — computed TTM-first (v1.0.0.167, supersedes the v1.0.0.159
+            # info.freeCashflow approach). Prefer the TTM sum of the 4 most-recent quarters of
+            # (OCF + CapEx) from the QUARTERLY cash-flow statement: it is BOTH current (TTM) AND
+            # auditable. Fall back to the annual statement, then — LAST resort — yfinance's
+            # info.freeCashflow. That field was the v1.0.0.159 primary but SYSTEMATICALLY understates
+            # (verified: NVDA $46.34B vs $119B TTM; AMAT $3.04B vs $5.34B; QCOM $9.59B vs $12.50B),
+            # which roughly halved the DCF intrinsic value for those names and fed the "everything is
+            # ~90% overvalued" problem. The quarterly-TTM base also solves the original v1.0.0.159
+            # staleness concern (e.g. MU's recent quarters) without trusting the unreliable field.
+            q_cash_flow = financials.get('cash_flow', {}).get('quarterly')
+            current_fcf, fcf_source = None, None
+            _ttm_fcf = self._ttm_fcf_from_quarterly(q_cash_flow)
+            if _ttm_fcf is not None:
+                current_fcf = _ttm_fcf
+                fcf_source = 'TTM (4-quarter sum, cash-flow statement)'
+            elif cash_flow is not None and not cash_flow.empty:
                 current_fcf = self.calculate_free_cash_flow(cash_flow)
-                fcf_source = 'annual cash-flow statement (stale)'
+                fcf_source = 'annual cash-flow statement'
+            else:
+                _ifcf = ticker_info.get('freeCashflow')
+                if _ifcf is not None:
+                    current_fcf = float(_ifcf)
+                    fcf_source = 'info.freeCashflow (fallback — yfinance field, may understate)'
 
             if not current_fcf:
                 result['error'] = 'Unable to calculate Free Cash Flow'
@@ -362,11 +400,10 @@ class DCFCalculator:
 
             result['calculations']['current_fcf'] = current_fcf
             result['calculations']['fcf_source'] = fcf_source
-            if fcf_source and 'stale' in fcf_source:
+            if fcf_source and ('fallback' in fcf_source or 'annual' in fcf_source):
                 result['assumptions']['fcf_note'] = (
-                    "⚠️ DCF based on last fiscal-year FCF (stale); TTM freeCashflow unavailable. "
-                    "The live price is being compared against a stale FCF base — treat the "
-                    "intrinsic value as directional only."
+                    f"⚠️ DCF FCF base uses the {fcf_source}; quarterly-TTM cash-flow data was "
+                    "unavailable, so treat the intrinsic value as directional."
                 )
 
             # Step 2: Calculate historical growth rate
@@ -498,6 +535,19 @@ class DCFCalculator:
                 else:
                     result['intrinsic_value'] = intrinsic_value_per_share
 
+                    # v1.0.0.167 — WACC-sensitivity band. Intrinsic value is far more sensitive to the
+                    # discount rate than to any other single input, so a lone point estimate implies false
+                    # precision. Flex WACC ±1.5% (lower WACC → higher value = bull; higher → bear) and
+                    # report a range instead. Terminal growth and the projected FCFs are held at base.
+                    iv_bull = self._intrinsic_at_wacc(
+                        projected_fcf, max(wacc - 0.015, self.terminal_growth_rate + 0.01),
+                        self.terminal_growth_rate, net_debt, shares_outstanding)
+                    iv_bear = self._intrinsic_at_wacc(
+                        projected_fcf, wacc + 0.015, self.terminal_growth_rate, net_debt, shares_outstanding)
+                    if iv_bull is not None and iv_bear is not None:
+                        result['intrinsic_value_low'] = min(iv_bull, iv_bear)
+                        result['intrinsic_value_high'] = max(iv_bull, iv_bear)
+
                     # Step 10: Calculate upside/downside
                     if current_price:
                         upside_downside = ((intrinsic_value_per_share - current_price) / current_price) * 100
@@ -583,11 +633,15 @@ Date: {date}
                 content_lines.append(f"  Projected FCF Growth Rate: {assumptions['projection_growth']*100:.1f}%")
             if 'wacc' in assumptions:
                 wacc_line = f"  Discount Rate (WACC): {assumptions['wacc']*100:.1f}%"
-                if 'wacc_unadjusted' in assumptions:
-                    wacc_line += f" (adjusted from {assumptions['wacc_unadjusted']*100:.1f}%)"
+                _wu = assumptions.get('wacc_unadjusted')
+                if _wu is not None and abs(_wu - assumptions['wacc']) > 1e-6:
+                    wacc_line += f" (blue-chip adjusted from {_wu*100:.1f}%)"
                 content_lines.append(wacc_line)
             if 'terminal_growth' in assumptions:
                 content_lines.append(f"  Terminal Growth Rate: {assumptions['terminal_growth']*100:.1f}%")
+            if 'wacc' in assumptions:
+                content_lines.append("  [Method: 5-yr FCF DCF; cost of equity via CAPM with a "
+                                     "Blume-adjusted beta (0.67·β+0.33) so high-beta names are not over-discounted]")
 
             # Add sensitivity warnings
             if 'wacc_adjustment' in assumptions:
@@ -609,7 +663,13 @@ Date: {date}
                 content_lines.append(f"  Current Market Price: ${cp:.2f}")
         elif dcf_result.get('intrinsic_value'):
             iv = dcf_result['intrinsic_value']
-            content_lines.append(f"\nINTRINSIC VALUE PER SHARE: ${iv:.2f}")
+            lo, hi = dcf_result.get('intrinsic_value_low'), dcf_result.get('intrinsic_value_high')
+            if lo is not None and hi is not None:
+                content_lines.append(
+                    f"\nINTRINSIC VALUE PER SHARE: ${iv:.2f}  (WACC-sensitivity range "
+                    f"${lo:.2f}–${hi:.2f} at WACC ±1.5%)")
+            else:
+                content_lines.append(f"\nINTRINSIC VALUE PER SHARE: ${iv:.2f}")
 
             if dcf_result.get('current_price'):
                 cp = dcf_result['current_price']

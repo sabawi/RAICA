@@ -7,8 +7,10 @@ Proves WITHOUT hitting the network (mocked financials + ticker_info):
   1. Ratios: P/E prefers yfinance trailingPE (TTM) over the stale annual-figure P/E; forward_pe
      is passed through; a staleness note fires when the live-price-vs-annual P/E diverges >20%
      from TTM (the MU case: annual 125.5 vs TTM 21.2 → note emitted).
-  2. DCF: current FCF prefers info.freeCashflow (TTM) over the annual cash-flow statement;
-     fcf_source is tagged; an fcf_note is emitted when falling back to the annual statement.
+  2. DCF (updated v1.0.0.167): current FCF prefers the auditable TTM sum of the 4 most-recent quarters
+     (OCF+CapEx) from the QUARTERLY cash-flow statement over both the stale annual statement AND
+     yfinance's info.freeCashflow (which systematically understates); fcf_source is tagged and a
+     directional fcf_note fires when falling back to the annual statement.
   3. Projections: revenue / net income / FCF "current" base prefers TTM (totalRevenue /
      netIncomeToCommon / freeCashflow) and tags current_source.
 
@@ -31,6 +33,12 @@ def _annual_df(rows: dict, periods=3):
     return pd.DataFrame(rows, index=cols).T
 
 
+def _quarterly_df(rows: dict, n=4):
+    """Build a yfinance-style QUARTERLY statement: index=line items, cols=n most-recent quarters."""
+    cols = [pd.Timestamp("2026-03-31") - pd.Timedelta(days=91 * i) for i in range(n)]
+    return pd.DataFrame(rows, index=cols).T
+
+
 # --- Shared mock: the MU case (annual NI $8.54B vs TTM NI $50.47B) ---
 INCOME = _annual_df({
     "Net Income":      [8.54e9, 6.0e9, 4.5e9],
@@ -45,6 +53,13 @@ BALANCE = _annual_df({
 CASHFLOW = _annual_df({
     "Operating Cash Flow":  [17.52e9, 14.0e9, 11.0e9],
     "Capital Expenditure":  [-15.86e9, -12.0e9, -9.0e9],
+})
+# v1.0.0.167 — QUARTERLY cash flow: the 4 recent quarters sum to a TTM FCF (~$7.64B) far above the
+# stale annual FCF ($1.66B) — MU's recent quarters are much stronger than its last full fiscal year.
+# This is the auditable TTM base the DCF now prefers (over the unreliable info.freeCashflow field).
+QUARTERLY_CASHFLOW = _quarterly_df({
+    "Operating Cash Flow":  [13.0e9, 12.5e9, 13.0e9, 12.93e9],    # ΣOCF ≈ 51.43e9 (matches info TTM OCF)
+    "Capital Expenditure":  [-11.0e9, -11.0e9, -11.0e9, -10.79e9],  # ΣCapEx ≈ -43.79e9
 })
 
 # Live market data + yfinance info TTM fields (MU, 2026-07-08)
@@ -106,34 +121,39 @@ def test_ratios_fallback_when_no_ttm():
 # 2. DCF — TTM FCF preferred + source tag + stale note on fallback
 # ---------------------------------------------------------------------------
 def test_dcf_ttm_fcf_preferred():
+    # v1.0.0.167 — current FCF is the auditable TTM sum from the QUARTERLY cash-flow statement,
+    # NOT yfinance's info.freeCashflow (which systematically understates). Quarterly-TTM here (~$7.64B)
+    # correctly beats the stale annual FCF ($1.66B).
     dcf = DCFCalculator()
     financials = {
-        "cash_flow": {"annual": CASHFLOW},
+        "cash_flow": {"annual": CASHFLOW, "quarterly": QUARTERLY_CASHFLOW},
         "balance_sheet": {"annual": BALANCE},
         "income_statement": {"annual": INCOME},
         "ticker_info": TICKER_INFO,
     }
     res = dcf.calculate_intrinsic_value("MU", financials, MARKET)
     calc = res.get("calculations", {})
-    assert abs(calc["current_fcf"] - 7.639499776e9) < 1e6, calc  # TTM freeCashflow, NOT 1.67e9
-    assert calc.get("fcf_source") == "TTM (info.freeCashflow)", calc
-    assert "fcf_note" not in res.get("assumptions", {}), "no stale note when TTM available"
+    assert abs(calc["current_fcf"] - 7.64e9) < 5e7, calc  # quarterly-TTM (ΣOCF+ΣCapEx), NOT annual 1.66e9
+    assert calc.get("fcf_source") == "TTM (4-quarter sum, cash-flow statement)", calc
+    assert "fcf_note" not in res.get("assumptions", {}), "no directional note when quarterly-TTM available"
     print("PASS test_dcf_ttm_fcf_preferred")
 
 
 def test_dcf_stale_note_on_annual_fallback():
+    # v1.0.0.167 — with NO quarterly cash flow, fall back to the annual statement and flag the
+    # intrinsic value as directional (a note fires). info.freeCashflow is only a last resort.
     dcf = DCFCalculator()
-    info_no_fcf = {k: v for k, v in TICKER_INFO.items() if k != "freeCashflow"}
     financials = {
-        "cash_flow": {"annual": CASHFLOW},
+        "cash_flow": {"annual": CASHFLOW},  # no quarterly
         "balance_sheet": {"annual": BALANCE},
         "income_statement": {"annual": INCOME},
-        "ticker_info": info_no_fcf,
+        "ticker_info": TICKER_INFO,
     }
     res = dcf.calculate_intrinsic_value("MU", financials, MARKET)
     calc = res.get("calculations", {})
-    assert "stale" in calc.get("fcf_source", ""), calc
-    assert "fcf_note" in res.get("assumptions", {}), "stale note must fire on annual fallback"
+    assert "annual" in calc.get("fcf_source", ""), calc
+    assert abs(calc["current_fcf"] - 1.66e9) < 5e7, calc  # annual OCF-CapEx = 17.52 - 15.86
+    assert "fcf_note" in res.get("assumptions", {}), "directional note must fire on annual fallback"
     print("PASS test_dcf_stale_note_on_annual_fallback")
 
 

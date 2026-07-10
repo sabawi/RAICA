@@ -322,6 +322,30 @@ def test_analyst_estimates_scale_and_guards():
     print("PASS test_analyst_estimates_scale_and_guards")
 
 
+# ---------------------------------------------------------------------------
+# 12. DCF v1.0.0.167: Blume-adjusted beta + quarterly-TTM FCF base + WACC sensitivity band
+# ---------------------------------------------------------------------------
+def test_dcf_blume_beta_ttm_fcf_and_sensitivity():
+    dcf = DCFCalculator()
+    # (2a) Blume-adjusted CAPM regresses high beta toward 1.0 → lower cost of equity than raw CAPM
+    raw = 0.04 + 2.47 * 0.07                       # raw-beta cost of equity = 21.29%
+    blume = dcf.calculate_cost_of_equity({"beta": 2.47})
+    assert abs(blume - (0.04 + (0.67 * 2.47 + 0.33) * 0.07)) < 1e-9, blume
+    assert blume < raw, (blume, raw)               # Blume LOWERS it (17.9% < 21.3%)
+    assert abs(dcf.calculate_cost_of_equity({}) - 0.11) < 1e-9   # no beta → market β 1.0 → 11%
+    # (2c) TTM FCF from quarterly = sum of the 4 most-recent quarters of (OCF + CapEx); CapEx negative
+    q = _qdf({"Operating Cash Flow": [30e9, 28e9, 26e9, 24e9],
+              "Capital Expenditure": [-3e9, -2e9, -2e9, -1e9]}, 4)
+    assert abs(dcf._ttm_fcf_from_quarterly(q) - 100e9) < 1e6, dcf._ttm_fcf_from_quarterly(q)  # 108-8
+    assert dcf._ttm_fcf_from_quarterly(None) is None
+    # (2b) sensitivity: a LOWER WACC yields a HIGHER intrinsic value (bull > bear)
+    proj = [10e9, 11e9, 12e9, 13e9, 14e9]
+    bull = dcf._intrinsic_at_wacc(proj, 0.10, 0.025, 20e9, 50e6)
+    bear = dcf._intrinsic_at_wacc(proj, 0.15, 0.025, 20e9, 50e6)
+    assert bull and bear and bull > bear, (bull, bear)
+    print("PASS test_dcf_blume_beta_ttm_fcf_and_sensitivity")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -338,4 +362,5 @@ if __name__ == "__main__":
     test_revenue_growth_and_debt_to_equity_scale()
     test_ddgs_backends_exclude_mullvad()
     test_analyst_estimates_scale_and_guards()
+    test_dcf_blume_beta_ttm_fcf_and_sensitivity()
     print("\n✅ All financial-calculator accuracy tests passed")
