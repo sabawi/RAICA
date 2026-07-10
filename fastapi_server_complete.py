@@ -1634,8 +1634,19 @@ class AsyncToolManager:
                 def ducducgo(query, max_results=3):
                     try:
                         from ddgs import DDGS
+                        # v1.0.0.165 — exclude the dead/redundant mullvad_* proxies (leta.mullvad.net
+                        # fails DNS in all our envs → a wasted connect-timeout on every search; they are
+                        # proxy fronts to the google/brave backends already queried directly). Dynamic so
+                        # new ddgs engines are auto-included; falls back to 'auto' on any error (no
+                        # regression). Mirrors user_tools.comprehensive_stock_analyzer.ddgs_working_backends.
+                        try:
+                            from ddgs.engines import ENGINES
+                            _eng = [n for n in ENGINES.get("text", {}) if not n.startswith("mullvad")]
+                            _backend = ",".join(_eng) if _eng else "auto"
+                        except Exception:
+                            _backend = "auto"
                         with DDGS() as ddgs:
-                            results = ddgs.text(query, max_results=max_results)
+                            results = ddgs.text(query, max_results=max_results, backend=_backend)
                             res = ''
                             for i, result in enumerate(results, 1):
                                 title = result.get('title', 'No Title')

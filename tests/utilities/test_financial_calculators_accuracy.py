@@ -282,6 +282,18 @@ def test_revenue_growth_and_debt_to_equity_scale():
     print("PASS test_revenue_growth_and_debt_to_equity_scale")
 
 
+# ---------------------------------------------------------------------------
+# 10. ddgs search backends exclude the dead/redundant mullvad_* proxies (v1.0.0.165)
+# ---------------------------------------------------------------------------
+def test_ddgs_backends_exclude_mullvad():
+    from user_tools.comprehensive_stock_analyzer import ddgs_working_backends
+    bk = ddgs_working_backends()
+    assert "mullvad" not in bk, bk            # dead proxies (leta.mullvad.net DNS-fails) never included
+    if bk != "auto":                          # introspection worked → explicit engine list, not fallback
+        assert "google" in bk and "brave" in bk, bk
+    print("PASS test_ddgs_backends_exclude_mullvad")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -296,4 +308,5 @@ if __name__ == "__main__":
     test_interest_coverage_ttm_and_note()
     test_revenue_base_growth_capped()
     test_revenue_growth_and_debt_to_equity_scale()
+    test_ddgs_backends_exclude_mullvad()
     print("\n✅ All financial-calculator accuracy tests passed")

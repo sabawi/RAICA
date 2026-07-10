@@ -22,6 +22,25 @@ except ImportError:
     from base_user_tool import BaseUserTool
 
 
+def ddgs_working_backends() -> str:
+    """v1.0.0.165 — the ddgs text backend string with the DEAD/REDUNDANT ``mullvad_*`` proxies removed.
+
+    ``leta.mullvad.net`` fails DNS resolution in every environment we run (local + live AWS), so the
+    default ``backend='auto'`` wastes a connect-timeout on ``mullvad_brave`` + ``mullvad_google`` on
+    EVERY search (18 such failures per multi-round DR run on live). They are also redundant — privacy-
+    proxy fronts to the same ``google``/``brave`` providers we already query directly, so excluding
+    them loses zero coverage. Discovered dynamically from ddgs's own registry so newly-added engines
+    are auto-included; falls back to ``'auto'`` (current behavior) if introspection ever fails, so this
+    can never regress search. To re-enable mullvad, delete the ``startswith`` filter.
+    """
+    try:
+        from ddgs.engines import ENGINES
+        engines = [n for n in ENGINES.get("text", {}) if not n.startswith("mullvad")]
+        return ",".join(engines) if engines else "auto"
+    except Exception:
+        return "auto"
+
+
 class ComprehensiveStockAnalyzerTool(BaseUserTool):
     """
     A comprehensive stock analysis tool that combines:
@@ -82,7 +101,7 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                     # Use DuckDuckGo search to find recent news
                     from ddgs import DDGS
                     ddgs = DDGS()
-                    results = ddgs.text(query, max_results=5)
+                    results = ddgs.text(query, max_results=5, backend=ddgs_working_backends())
                     
                     for result in results:
                         # Filter for financial news sources
