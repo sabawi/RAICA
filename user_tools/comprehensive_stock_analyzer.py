@@ -714,6 +714,7 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                         from utils.dcf_calculator import DCFCalculator
                         from utils.projection_engine import ProjectionEngine
                         from utils.analyst_estimates import AnalystEstimates
+                        from utils.technical_indicators import TechnicalIndicators
 
                         detailed_output = []
 
@@ -750,6 +751,14 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                             _ainfo = (financials or {}).get('ticker_info') or real_time_data
                             estimates = analyst.get_estimates(ticker, ticker_info=_ainfo)
                             detailed_output.append(analyst.format_for_llm(estimates, ticker))
+
+                        # v1.0.0.168 — technical indicators (pandas-ta-classic): trend (SMA50/200 + cross),
+                        # momentum (RSI/MACD), ADX, volatility (ATR/realized), 52-wk position, 1/3/6/12-mo
+                        # returns. Objective values/states for the LLM — no hardcoded buy/sell signals.
+                        if getattr(FeatureFlags, 'DETAILED_ANALYSIS_TECHNICAL', True):
+                            technicals = TechnicalIndicators()
+                            tech = technicals.get_indicators(ticker)
+                            detailed_output.append(technicals.format_for_llm(tech, ticker))
 
                         # Append detailed analysis to basic report
                         if detailed_output:

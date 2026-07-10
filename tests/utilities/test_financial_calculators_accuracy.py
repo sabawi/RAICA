@@ -346,6 +346,39 @@ def test_dcf_blume_beta_ttm_fcf_and_sensitivity():
     print("PASS test_dcf_blume_beta_ttm_fcf_and_sensitivity")
 
 
+# ---------------------------------------------------------------------------
+# 13. Technical indicators (v1.0.0.168): computed states + objective (no-signal) rendering + guards
+# ---------------------------------------------------------------------------
+def test_technical_indicators_states_and_guards():
+    import numpy as np
+    from utils.technical_indicators import TechnicalIndicators
+    ti = TechnicalIndicators()
+    # synthetic 300-session UPTREND → price above rising SMAs → golden-cross regime
+    n = 300
+    idx = pd.date_range("2024-01-01", periods=n, freq="B")
+    close = pd.Series(np.linspace(50, 150, n) + np.sin(np.arange(n) / 5.0), index=idx)
+    hist = pd.DataFrame({"Open": close, "High": close + 1, "Low": close - 1,
+                         "Close": close, "Volume": 1_000_000}, index=idx)
+    d = ti.get_indicators("TEST", history=hist)
+    for k in ("price", "sma50", "sma200", "rsi14", "adx14", "wk52_position_pct", "ret_12m"):
+        assert d.get(k) is not None, (k, d)
+    assert d["cross_regime"] == "golden", d                 # uptrend → 50-day above 200-day
+    blk = ti.format_for_llm(d, "TEST")
+    assert "TECHNICAL ANALYSIS" in blk and "NOT a buy/sell signal" in blk and "golden-cross regime" in blk, blk
+    # objective state rendering on a hand-built dict (overbought RSI, strong ADX, MACD line above signal)
+    hb = {"symbol": "X", "price": 100.0, "history_days": 502, "sma50": 95.0, "sma200": 90.0,
+          "cross_regime": "golden", "price_vs_sma50_pct": 5.3, "price_vs_sma200_pct": 11.1,
+          "rsi14": 75.0, "macd": 1.2, "macd_signal": 0.8, "macd_hist": 0.4, "adx14": 30.0,
+          "di_plus": 28.0, "di_minus": 15.0, "atr_pct": 2.5, "realized_vol_pct": 40.0,
+          "wk52_high": 110.0, "wk52_low": 60.0, "wk52_position_pct": 80.0, "bb_percent_b": 0.9,
+          "ret_1m": 5.0, "ret_12m": 30.0}
+    b2 = ti.format_for_llm(hb, "X")
+    assert "overbought zone (>70)" in b2 and "strong trend (ADX>25)" in b2 and "line ABOVE signal" in b2, b2
+    # no-data guards → empty string, never a half-rendered SOURCE
+    assert ti.format_for_llm({}, "X") == "" and ti.format_for_llm({"symbol": "X"}, "X") == ""
+    print("PASS test_technical_indicators_states_and_guards")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -363,4 +396,5 @@ if __name__ == "__main__":
     test_ddgs_backends_exclude_mullvad()
     test_analyst_estimates_scale_and_guards()
     test_dcf_blume_beta_ttm_fcf_and_sensitivity()
+    test_technical_indicators_states_and_guards()
     print("\n✅ All financial-calculator accuracy tests passed")

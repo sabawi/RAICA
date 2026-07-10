@@ -51,6 +51,7 @@ class FeatureFlags:
     DETAILED_ANALYSIS_DCF_VALUATION = True
     DETAILED_ANALYSIS_PROJECTIONS = True
     DETAILED_ANALYSIS_ANALYST_ESTIMATES = True  # v1.0.0.166 — real analyst consensus (yfinance), not scraped
+    DETAILED_ANALYSIS_TECHNICAL = True          # v1.0.0.168 — technical indicators (pandas-ta-classic)
 
     # ========================================================================
     # ENHANCED DATA COLLECTION FEATURES (Option 2)
