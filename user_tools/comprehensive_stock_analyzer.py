@@ -330,7 +330,13 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             return str(change)
     
     def _format_percentage(self, value) -> str:
-        """Format percentage values safely"""
+        """Format a FRACTION (0..1) as a percent, e.g. yfinance revenueGrowth 0.852 → '85.20%'.
+
+        v1.0.0.164 — yfinance growth/margin fields (revenueGrowth, earningsGrowth, profitMargins,
+        returnOnEquity, ...) are fractions, so ``:.2%`` (which ×100) is correct. Do NOT pass values
+        that are ALREADY percentage numbers (e.g. a computed change_percent) here — those use
+        _format_change.
+        """
         if value is None or value == "N/A":
             return "N/A"
         try:
@@ -339,6 +345,21 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             else:
                 return str(value)
         except:
+            return str(value)
+
+    def _format_debt_to_equity(self, value) -> str:
+        """Format yfinance debtToEquity as a ratio. v1.0.0.164 — yfinance returns debtToEquity as a
+        PERCENTAGE NUMBER (verified against 0.2.65: NVDA 6.555, AMAT 30.399, AVGO 74.018), i.e. 30.4
+        means 0.30x — NOT 30x. Divide by 100 so the display block matches the computed leverage block
+        (which reported 0.30x) instead of feeding the LLM a contradictory '30.4'.
+        """
+        if value is None or value == "N/A":
+            return "N/A"
+        try:
+            if isinstance(value, (int, float)):
+                return f"{value/100:.2f}x"
+            return str(value)
+        except Exception:
             return str(value)
     
     def _convert_to_pdf(self, analysis_text: str, ticker: str) -> bytes:
@@ -595,10 +616,10 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
 💵 **Dividend Yield**: {self._format_dividend_yield(data)}
 📊 **Beta**: {data.get('beta', 'N/A')}
 💰 **Revenue (TTM)**: ${self._format_large_number(data.get('totalRevenue', 'N/A'))}
-📈 **Revenue Growth**: {self._format_change(data.get('revenueGrowth', 'N/A'))}%
+📈 **Revenue Growth (YoY)**: {self._format_percentage(data.get('revenueGrowth', 'N/A'))}
 💡 **Profit Margin**: {self._format_percentage(data.get('profitMargins', 'N/A'))}
 🏆 **ROE**: {self._format_percentage(data.get('returnOnEquity', 'N/A'))}
-💪 **Debt/Equity**: {data.get('debtToEquity', 'N/A')}
+💪 **Debt/Equity**: {self._format_debt_to_equity(data.get('debtToEquity', 'N/A'))}
 💰 **Current Ratio**: {data.get('currentRatio', 'N/A')}
 🎯 **Book Value**: ${data.get('bookValue', 'N/A')}
 📊 **Price/Book**: {data.get('priceToBook', 'N/A')}

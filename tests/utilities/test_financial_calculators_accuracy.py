@@ -265,6 +265,23 @@ def test_revenue_base_growth_capped():
     print("PASS test_revenue_base_growth_capped")
 
 
+# ---------------------------------------------------------------------------
+# 9. yfinance field-scale rendering (v1.0.0.164): revenueGrowth fraction + debtToEquity percent-number
+# ---------------------------------------------------------------------------
+def test_revenue_growth_and_debt_to_equity_scale():
+    ana = ComprehensiveStockAnalyzerTool()
+    # yfinance revenueGrowth is a FRACTION (NVDA 0.852 = 85.2%, QCOM -0.035 = -3.5%). Must render via
+    # _format_percentage (×100), NOT _format_change (which printed "+0.85%" — 100× too small).
+    assert ana._format_percentage(0.852) == "85.20%", ana._format_percentage(0.852)
+    assert ana._format_percentage(-0.035) == "-3.50%", ana._format_percentage(-0.035)
+    # yfinance debtToEquity is a PERCENTAGE NUMBER (AMAT 30.399 = 0.30x, NVDA 6.555 = 0.07x); render as ratio.
+    assert ana._format_debt_to_equity(30.399) == "0.30x", ana._format_debt_to_equity(30.399)
+    assert ana._format_debt_to_equity(6.555) == "0.07x", ana._format_debt_to_equity(6.555)
+    assert ana._format_debt_to_equity("N/A") == "N/A"
+    assert ana._format_debt_to_equity(None) == "N/A"
+    print("PASS test_revenue_growth_and_debt_to_equity_scale")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -278,4 +295,5 @@ if __name__ == "__main__":
     test_calculate_all_ratios_uses_quarterly_balance()
     test_interest_coverage_ttm_and_note()
     test_revenue_base_growth_capped()
+    test_revenue_growth_and_debt_to_equity_scale()
     print("\n✅ All financial-calculator accuracy tests passed")
