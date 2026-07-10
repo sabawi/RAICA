@@ -50,6 +50,7 @@ class FeatureFlags:
     DETAILED_ANALYSIS_FINANCIAL_RATIOS = True
     DETAILED_ANALYSIS_DCF_VALUATION = True
     DETAILED_ANALYSIS_PROJECTIONS = True
+    DETAILED_ANALYSIS_ANALYST_ESTIMATES = True  # v1.0.0.166 — real analyst consensus (yfinance), not scraped
 
     # ========================================================================
     # ENHANCED DATA COLLECTION FEATURES (Option 2)

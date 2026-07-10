@@ -294,6 +294,34 @@ def test_ddgs_backends_exclude_mullvad():
     print("PASS test_ddgs_backends_exclude_mullvad")
 
 
+# ---------------------------------------------------------------------------
+# 11. Analyst-consensus block (v1.0.0.166): fraction→percent scaling + no-data guards
+# ---------------------------------------------------------------------------
+def test_analyst_estimates_scale_and_guards():
+    from utils.analyst_estimates import AnalystEstimates
+    ae = AnalystEstimates()
+    # yfinance growth fields are FRACTIONS → ×100 (same gotcha class as dividendYield/revenueGrowth)
+    assert abs(ae._pct(0.4225) - 42.25) < 1e-9, ae._pct(0.4225)
+    assert abs(ae._pct(-0.035) - (-3.5)) < 1e-9, ae._pct(-0.035)
+    assert ae._pct(None) is None
+    assert ae._num(float("nan")) is None
+    # no-data guards → empty string, never a half-rendered SOURCE block
+    assert ae.format_for_llm({}, "X") == ""
+    assert ae.format_for_llm({"symbol": "X"}, "X") == ""
+    # populated dict → labeled block, correct scaling, distinct-from-projections labeling
+    d = {"symbol": "T", "current_price": 100.0, "target_mean": 150.0, "target_low": 120.0,
+         "target_high": 180.0, "target_median": 148.0, "num_analysts": 30, "recommendation_mean": 1.8,
+         "recommendation_key": "buy", "upside_to_mean_pct": 50.0, "fwd_eps_avg": 5.0,
+         "fwd_eps_growth_pct": 25.0, "fwd_eps_n": 20,
+         "rec_dist": {"strongBuy": 10, "buy": 15, "hold": 5, "sell": 0, "strongSell": 0}}
+    blk = ae.format_for_llm(d, "T")
+    assert "ANALYST CONSENSUS" in blk and "NOT web-scraped" in blk, blk
+    assert "mean $150.00" in blk and "+50.0%" in blk, blk
+    assert "+25.0% YoY" in blk, blk                       # growth as percent, not fraction
+    assert "10 Strong Buy, 15 Buy" in blk, blk
+    print("PASS test_analyst_estimates_scale_and_guards")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -309,4 +337,5 @@ if __name__ == "__main__":
     test_revenue_base_growth_capped()
     test_revenue_growth_and_debt_to_equity_scale()
     test_ddgs_backends_exclude_mullvad()
+    test_analyst_estimates_scale_and_guards()
     print("\n✅ All financial-calculator accuracy tests passed")

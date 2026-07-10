@@ -713,6 +713,7 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                         from utils.financial_ratio_calculator import FinancialRatioCalculator
                         from utils.dcf_calculator import DCFCalculator
                         from utils.projection_engine import ProjectionEngine
+                        from utils.analyst_estimates import AnalystEstimates
 
                         detailed_output = []
 
@@ -740,6 +741,15 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                             projector = ProjectionEngine()
                             projections = projector.generate_projections(ticker, financials)
                             detailed_output.append(projector.format_projections_for_llm(projections, ticker))
+
+                        # v1.0.0.166 — real analyst CONSENSUS (yfinance): price targets, recommendation
+                        # distribution, forward EPS/revenue estimates. Distinct from the RAICA historical-CAGR
+                        # projections above, and reliable (not web-scraped → survives search rate-limiting).
+                        if getattr(FeatureFlags, 'DETAILED_ANALYSIS_ANALYST_ESTIMATES', True):
+                            analyst = AnalystEstimates()
+                            _ainfo = (financials or {}).get('ticker_info') or real_time_data
+                            estimates = analyst.get_estimates(ticker, ticker_info=_ainfo)
+                            detailed_output.append(analyst.format_for_llm(estimates, ticker))
 
                         # Append detailed analysis to basic report
                         if detailed_output:
