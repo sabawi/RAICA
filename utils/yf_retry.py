@@ -51,3 +51,18 @@ def fetch_with_retry(fn, *, attempts: int = 3, backoff_seconds: float = 0.8,
             else:
                 log.error(f"{label}: all {attempts} attempts failed — {str(e)[:200]}")
     raise last_exc
+
+
+def configured_fetch(fn, *, label: str = "fetch", log: "logging.Logger" = None):
+    """`fetch_with_retry` with attempts/backoff read from config (``stock_analyzer.fetch_retries`` /
+    ``stock_analyzer.fetch_backoff_seconds``). Convenience so the many finance fetch sites are one-liners
+    and share one policy. Re-raises when exhausted, same as `fetch_with_retry`."""
+    try:
+        from utils.config_loader import config_loader
+        sa = (config_loader.load_config().get('stock_analyzer', {}) or {})
+    except Exception:
+        sa = {}
+    return fetch_with_retry(fn,
+                            attempts=int(sa.get('fetch_retries', 3)),
+                            backoff_seconds=float(sa.get('fetch_backoff_seconds', 0.8)),
+                            label=label, log=log)

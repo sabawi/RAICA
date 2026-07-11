@@ -140,5 +140,12 @@ Each phase validated on the mixed-cap basket + fault injection before moving on.
 - [x] **Sequencing agreed: P1 (retry-everywhere) → P2 (transparency sentinels) → P3 (`_safe_div` sweep)**, each a tested increment (tests + restart + E2E) before the next.
 - [x] Confirmed **separate** effort from the chart work — chart hardening + AVGO-gate retry committed first (v1.0.0.172) so the audit starts on a clean base.
 
-**▶ RESUME HERE:** Start **Phase P1** — route the remaining single-shot fetch sites through `utils/yf_retry.fetch_with_retry`:
-`financial_statements_extractor.py:76-91` (7 statement fetches — highest blast radius), `analyst_estimates.py:52/61/~80/~92`, `technical_indicators.py:53-54`, `comprehensive_stock_analyzer.py:783` (chart history). Add mixed-cap + fault-injection tests, then P2.
+### Progress
+- **✅ P1 (Recovery) — DONE (v1.0.0.173).** Added `yf_retry.configured_fetch` (config-driven convenience) and routed EVERY remaining single-shot fetch through it: `financial_statements_extractor` (7-statement build), `analyst_estimates` (info + earnings/revenue/growth estimates), `technical_indicators` (2y history), `comprehensive_stock_analyzer` chart history (the `.info`/`.history` gate was already retried in v172). Retry triggers only on a THROWN transient error; genuinely-absent data (empty return) skips as before. Tests: `test_yf_fetch_retry`, `test_finance_fetch_retry_p1` (extractor recovers from a transient blip instead of `return {}`). Live smoke: AVGO statements + analyst + technicals all fetch through the retry path.
+
+**▶ RESUME HERE:** Start **Phase P2 (Transparency)** — replace failure-as-empty with a distinguishable **failure sentinel** `{"_error": "..."}` + a formatter line "⚠️ unavailable — fetch failed (not blank data)":
+- `financial_statements_extractor.py:97-99` `except → return {}` → return `{"_error": str(e)}`; update `format_for_llm` + all callers (analyzer detailed block, dcf/ratio/projection inputs) to detect `_error` and render the label instead of blank N/A.
+- `analyst_estimates` / `technical_indicators`: on a *fetch* failure (vs genuinely-absent) mark the block "unavailable — fetch failed".
+- `projection_engine.py:169-171/224-226/281-283` `except → return {}` → sentinel.
+- Kill bare `except:` (dcf `:53/:156`, ratio `:42/:56`, projection `:43/:75`) → `except Exception` + log.
+Add tests: permanent-failure → labeled error surfaces (not blank/fake). Then P3.

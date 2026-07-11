@@ -50,8 +50,11 @@ class TechnicalIndicators:
         data: Dict[str, Any] = {"symbol": ticker}
         try:
             if history is None:
+                # P1 (v1.0.0.173): retry the transient-prone history fetch (shared bounded retry).
+                from utils.yf_retry import configured_fetch
                 t = ticker_obj or yf.Ticker(ticker)
-                history = t.history(period="2y")  # ≥200 sessions for the 200-day SMA + 12-mo return + ADX warmup
+                history = configured_fetch(lambda: t.history(period="2y"),
+                                           label=f"{ticker} 2y history", log=logger)  # ≥200 sessions for 200-SMA + 12-mo return + ADX warmup
             if history is None or getattr(history, "empty", True) or len(history) < 40:
                 return data
             df = history.copy()

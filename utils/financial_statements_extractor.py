@@ -73,23 +73,23 @@ Date: {date}
             import yfinance as yf
 
             logger.info(f"Extracting financial statements for {ticker}")
-            ticker_obj = yf.Ticker(ticker)
+            # P1 (v1.0.0.173) — the 7 statement fetches below each hit Yahoo (lazy properties); a
+            # transient failure on ANY one previously fell to `return {}`, silently starving every
+            # downstream calculator (DCF/ratios/projections). Route the whole build through the shared
+            # bounded retry so a blip is absorbed. (P2 will replace the final `return {}` with a
+            # distinguishable failure sentinel so a genuine failure is visible, not blank data.)
+            from utils.yf_retry import configured_fetch
 
-            result = {
-                'income_statement': {
-                    'annual': ticker_obj.financials,
-                    'quarterly': ticker_obj.quarterly_financials
-                },
-                'balance_sheet': {
-                    'annual': ticker_obj.balance_sheet,
-                    'quarterly': ticker_obj.quarterly_balance_sheet
-                },
-                'cash_flow': {
-                    'annual': ticker_obj.cashflow,
-                    'quarterly': ticker_obj.quarterly_cashflow
-                },
-                'ticker_info': ticker_obj.info
-            }
+            def _build_statements():
+                t = yf.Ticker(ticker)
+                return {
+                    'income_statement': {'annual': t.financials, 'quarterly': t.quarterly_financials},
+                    'balance_sheet': {'annual': t.balance_sheet, 'quarterly': t.quarterly_balance_sheet},
+                    'cash_flow': {'annual': t.cashflow, 'quarterly': t.quarterly_cashflow},
+                    'ticker_info': t.info,
+                }
+
+            result = configured_fetch(_build_statements, label=f"{ticker} financial statements", log=logger)
 
             logger.info(f"Successfully extracted financial statements for {ticker}")
             return result

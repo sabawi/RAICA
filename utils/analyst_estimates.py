@@ -54,11 +54,16 @@ class AnalystEstimates:
             logger.warning(f"AnalystEstimates: could not create Ticker for {ticker}: {e}")
             return data
 
+        # P1 (v1.0.0.173): route the transient-prone yfinance fetches below through the shared bounded
+        # retry (configured_fetch). Retry only triggers on a THROWN transient error; a genuinely-absent
+        # estimate returns empty → skipped as before (no wasteful retries).
+        from utils.yf_retry import configured_fetch
+
         # ---- price targets + recommendation (from info; already fetched by the analyzer) ----
         info = ticker_info
         if info is None:
             try:
-                info = t.info or {}
+                info = configured_fetch(lambda: (t.info or {}), label=f"{ticker} analyst info", log=logger)
             except Exception:
                 info = {}
         cp = self._num(info.get("currentPrice"))
@@ -78,7 +83,8 @@ class AnalystEstimates:
 
         # ---- forward consensus: next fiscal year EPS + revenue (separate endpoints) ----
         try:
-            ee = self._row(t.get_earnings_estimate(), "+1y")
+            ee = self._row(configured_fetch(lambda: t.get_earnings_estimate(),
+                                             label=f"{ticker} earnings estimate", log=logger), "+1y")
             if ee is not None:
                 data["fwd_eps_avg"] = self._num(ee.get("avg"))
                 data["fwd_eps_growth_pct"] = self._pct(ee.get("growth"))
@@ -86,7 +92,8 @@ class AnalystEstimates:
         except Exception as e:  # noqa: BLE001
             logger.info(f"AnalystEstimates: earnings estimate unavailable for {ticker}: {e}")
         try:
-            rev = self._row(t.get_revenue_estimate(), "+1y")
+            rev = self._row(configured_fetch(lambda: t.get_revenue_estimate(),
+                                              label=f"{ticker} revenue estimate", log=logger), "+1y")
             if rev is not None:
                 data["fwd_rev_avg"] = self._num(rev.get("avg"))
                 data["fwd_rev_growth_pct"] = self._pct(rev.get("growth"))
@@ -96,7 +103,8 @@ class AnalystEstimates:
 
         # ---- long-term growth estimate (often absent) ----
         try:
-            ltg = self._row(t.get_growth_estimates(), "LTG")
+            ltg = self._row(configured_fetch(lambda: t.get_growth_estimates(),
+                                             label=f"{ticker} growth estimate", log=logger), "LTG")
             if ltg is not None:
                 data["ltg_pct"] = self._pct(ltg.get("stockTrend"))
         except Exception:

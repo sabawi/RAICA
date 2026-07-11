@@ -523,6 +523,39 @@ def test_yf_fetch_retry():
     print("PASS test_yf_fetch_retry")
 
 
+def test_finance_fetch_retry_p1():
+    """v1.0.0.173 Pillar 1: statement-extractor recovers from a transient fetch blip (was: return {})."""
+    import pandas as pd
+    import yfinance
+    import utils.financial_statements_extractor as fse
+    class _FT:
+        n = {"c": 0}
+        def __init__(self, t): pass
+        @property
+        def financials(self):
+            _FT.n["c"] += 1
+            if _FT.n["c"] < 3:   # fail the whole build twice (transient), succeed on the 3rd
+                raise Exception("Failed to parse json response from Yahoo Finance: "
+                                "{'code': 'Internal Server Error', 'description': 'Server caught an exception'}")
+            return pd.DataFrame({"Total Revenue": [1.0]})
+        quarterly_financials = property(lambda s: pd.DataFrame())
+        balance_sheet = property(lambda s: pd.DataFrame())
+        quarterly_balance_sheet = property(lambda s: pd.DataFrame())
+        cashflow = property(lambda s: pd.DataFrame())
+        quarterly_cashflow = property(lambda s: pd.DataFrame())
+        info = property(lambda s: {"longName": "Test Co"})
+    orig = yfinance.Ticker   # extractor does a LOCAL `import yfinance as yf`, so patch the module
+    yfinance.Ticker = _FT
+    try:
+        res = fse.FinancialStatementsExtractor().extract_financials("TEST")
+    finally:
+        yfinance.Ticker = orig
+    # recovered on attempt 3 → real dict, NOT the {} that would silently starve downstream calculators
+    assert res and "income_statement" in res and "ticker_info" in res and _FT.n["c"] == 3, (bool(res), _FT.n["c"])
+    assert res["ticker_info"].get("longName") == "Test Co"
+    print("PASS test_finance_fetch_retry_p1")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -545,4 +578,5 @@ if __name__ == "__main__":
     test_chart_generator_and_publisher()
     test_chart_cache_and_cap()
     test_yf_fetch_retry()
+    test_finance_fetch_retry_p1()
     print("\n✅ All financial-calculator accuracy tests passed")

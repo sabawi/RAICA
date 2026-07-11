@@ -779,8 +779,12 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                             technicals = TechnicalIndicators()
                             # Fetch ~2y history ONCE and share it with the indicators AND the chart, so the
                             # 200-day SMA is warmed up across the display window and we don't double-fetch.
+                            # P1 (v1.0.0.173): retry the transient-prone history fetch (shared bounded retry).
                             try:
-                                _hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+                                from utils.yf_retry import configured_fetch
+                                _hist = configured_fetch(
+                                    lambda: yf.Ticker(ticker).history(period="2y", interval="1d"),
+                                    label=f"{ticker} 2y history (chart)", log=logging.getLogger(__name__))
                             except Exception:
                                 _hist = None
                             tech = technicals.get_indicators(ticker, history=_hist)
