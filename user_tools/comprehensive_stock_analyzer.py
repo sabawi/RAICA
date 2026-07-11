@@ -757,8 +757,31 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                         # returns. Objective values/states for the LLM — no hardcoded buy/sell signals.
                         if getattr(FeatureFlags, 'DETAILED_ANALYSIS_TECHNICAL', True):
                             technicals = TechnicalIndicators()
-                            tech = technicals.get_indicators(ticker)
-                            detailed_output.append(technicals.format_for_llm(tech, ticker))
+                            # Fetch ~2y history ONCE and share it with the indicators AND the chart, so the
+                            # 200-day SMA is warmed up across the display window and we don't double-fetch.
+                            try:
+                                _hist = yf.Ticker(ticker).history(period="2y", interval="1d")
+                            except Exception:
+                                _hist = None
+                            tech = technicals.get_indicators(ticker, history=_hist)
+                            tech_block = technicals.format_for_llm(tech, ticker)
+                            # v1.0.0.170 — inline chart card (Option B Phase 3, flag-gated): generate the main
+                            # technical chart, upload it to NewX, and PREPEND a [[chart:...]] marker so the
+                            # synthesis can place it in the technical section. Fully graceful — any failure
+                            # (disabled / gen error / upload error) → no marker, unchanged text output.
+                            try:
+                                from utils.chart_publisher import charts_enabled, publish_chart, chart_display_days
+                                if charts_enabled() and _hist is not None and tech_block:
+                                    from utils.chart_generator import generate_main_chart
+                                    _png = generate_main_chart(ticker, _hist, display_days=chart_display_days())
+                                    _url = publish_chart(_png, f"{ticker}_technical") if _png else None
+                                    if _url:
+                                        _cap = (f"{ticker} — daily technical chart (candles, SMA 50/200, "
+                                                "volume, RSI/MACD/ADX)")
+                                        tech_block = f'[[chart:{_url}|align=center|caption="{_cap}"]]\n\n' + tech_block
+                            except Exception as _cerr:
+                                logging.getLogger(__name__).info(f"chart card skipped for {ticker}: {_cerr}")
+                            detailed_output.append(tech_block)
 
                         # Append detailed analysis to basic report
                         if detailed_output:

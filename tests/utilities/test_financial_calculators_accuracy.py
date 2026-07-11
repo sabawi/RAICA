@@ -400,6 +400,31 @@ def test_dcf_reverse_implied_growth():
     print("PASS test_dcf_reverse_implied_growth")
 
 
+# ---------------------------------------------------------------------------
+# 15. Chart generation + publisher (v1.0.0.170, Option B Phase 3) — offline gates
+# ---------------------------------------------------------------------------
+def test_chart_generator_and_publisher():
+    import numpy as np
+    from utils.chart_generator import generate_main_chart
+    from utils.chart_publisher import charts_enabled, publish_chart, chart_display_days
+    # synthetic 300-day OHLCV → a valid PNG
+    n = 300
+    idx = pd.date_range("2024-01-01", periods=n, freq="B")
+    close = pd.Series(100 + np.cumsum(np.random.default_rng(3).normal(0.2, 2, n)), index=idx)
+    hist = pd.DataFrame({"Open": close, "High": close + 2, "Low": close - 2, "Close": close,
+                         "Volume": 1_000_000}, index=idx)
+    png = generate_main_chart("TEST", hist)
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 5000, (bool(png), len(png) if png else 0)
+    assert generate_main_chart("X", hist.tail(10)) is None   # too-short history → None
+    assert generate_main_chart("X", None) is None
+    # publisher is fail-closed: default config has charts.enabled=false → no upload, returns None
+    assert charts_enabled() is False, "charts must default OFF"
+    assert publish_chart(None) is None
+    assert publish_chart(png) is None            # disabled → never uploads
+    assert chart_display_days() == 126
+    print("PASS test_chart_generator_and_publisher")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -419,4 +444,5 @@ if __name__ == "__main__":
     test_dcf_blume_beta_ttm_fcf_and_sensitivity()
     test_technical_indicators_states_and_guards()
     test_dcf_reverse_implied_growth()
+    test_chart_generator_and_publisher()
     print("\n✅ All financial-calculator accuracy tests passed")

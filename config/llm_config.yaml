@@ -818,6 +818,16 @@ email:
     confidence_threshold: 0.7
 
 # =============================================================================
+# INLINE CHART CARDS (Option B) — generate per-stock technical charts, upload to NewX, embed
+# [[chart:...]] markers in the analysis. Default OFF. See docs (NewX DESIGN_inline_chart_cards.md).
+# The shared upload secret is a .env secret (CHART_UPLOAD_SECRET), NOT here.
+# =============================================================================
+charts:
+  enabled: false                 # master switch (also requires newx_upload_url + CHART_UPLOAD_SECRET)
+  newx_upload_url: "http://localhost:9876/internal/chart-upload"   # NewX chart-upload endpoint
+  display_days: 126              # trading sessions shown on the main chart (~6 months)
+
+# =============================================================================
 # USER TOOLS CONFIGURATION
 # =============================================================================
 user_tools:
