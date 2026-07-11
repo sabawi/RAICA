@@ -218,10 +218,30 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             EnvironmentManager.setup_tzdata_path()
             zoneinfo.reset_tzpath()
             logger.info(f"👀 New zoneinfo.TZPATH: {zoneinfo.TZPATH}")
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            hist = stock.history(period="1d")
-            
+            # v1.0.0.172 — transient Yahoo Finance errors (e.g. quoteSummary "Internal Server Error /
+            # Server caught an exception") intermittently hit ONE ticker's .info while the others
+            # succeed; with no retry a single blip fails the whole ticker (no data/DCF/chart — the AVGO
+            # incident). A bounded, config-driven retry with backoff absorbs it; if it still fails after
+            # all attempts we fall through to the existing except → a clear, visible error (never faked).
+            from utils.yf_retry import fetch_with_retry
+            try:
+                from utils.config_loader import config_loader
+                _sa = (config_loader.load_config().get('stock_analyzer', {}) or {})
+            except Exception:
+                _sa = {}
+            _attempts = int(_sa.get('fetch_retries', 3))
+            _backoff = float(_sa.get('fetch_backoff_seconds', 0.8))
+
+            def _fetch_quote():
+                s = yf.Ticker(ticker)
+                _info = s.info                     # transient-prone (Yahoo quoteSummary)
+                _hist = s.history(period="1d")
+                return s, _info, _hist
+
+            stock, info, hist = fetch_with_retry(
+                _fetch_quote, attempts=_attempts, backoff_seconds=_backoff,
+                label=f"{ticker} yfinance quote fetch", log=logger)
+
             if hist.empty:
                 return {"error": f"No data available for ticker {ticker}"}
             
@@ -765,16 +785,19 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                 _hist = None
                             tech = technicals.get_indicators(ticker, history=_hist)
                             tech_block = technicals.format_for_llm(tech, ticker)
-                            # v1.0.0.170 — inline chart card (Option B Phase 3, flag-gated): generate the main
-                            # technical chart, upload it to NewX, and PREPEND a [[chart:...]] marker so the
-                            # synthesis can place it in the technical section. Fully graceful — any failure
-                            # (disabled / gen error / upload error) → no marker, unchanged text output.
+                            # v1.0.0.170/.171 — inline chart card (Option B Phase 3, flag-gated): generate the
+                            # main technical chart, upload it to NewX, and PREPEND a [[chart:...]] marker so the
+                            # synthesis can place it in the technical section. get_or_publish_chart adds a
+                            # same-window cache + per-response cap (deferred render → a cache hit skips it).
+                            # Fully graceful — any failure (disabled / capped / gen / upload) → no marker.
                             try:
-                                from utils.chart_publisher import charts_enabled, publish_chart, chart_display_days
+                                from utils.chart_publisher import charts_enabled, get_or_publish_chart, chart_display_days
                                 if charts_enabled() and _hist is not None and tech_block:
                                     from utils.chart_generator import generate_main_chart
-                                    _png = generate_main_chart(ticker, _hist, display_days=chart_display_days())
-                                    _url = publish_chart(_png, f"{ticker}_technical") if _png else None
+                                    _days = chart_display_days()
+                                    _url = get_or_publish_chart(
+                                        ticker, _days,
+                                        lambda: generate_main_chart(ticker, _hist, display_days=_days))
                                     if _url:
                                         _cap = (f"{ticker} — daily technical chart (candles, SMA 50/200, "
                                                 "volume, RSI/MACD/ADX)")

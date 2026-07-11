@@ -425,6 +425,104 @@ def test_chart_generator_and_publisher():
     print("PASS test_chart_generator_and_publisher")
 
 
+def test_chart_cache_and_cap():
+    """v1.0.0.171 production guards: same-window cache + per-response cap (monkeypatched — flag-independent)."""
+    import utils.chart_publisher as cp
+    orig_enabled, orig_publish, orig_capttl = cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl
+    try:
+        cp.charts_enabled = lambda: True
+        _n = {"up": 0}
+        cp.publish_chart = lambda png, hint="c": (_n.__setitem__("up", _n["up"] + 1) or f"/static/images/media/{hint}_{_n['up']}.jpg")
+
+        # cache: same (ticker, days) renders once, second is a hit
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (6, 1800)
+        rc = {"n": 0}
+        r = lambda: (rc.__setitem__("n", rc["n"] + 1) or b"PNG")
+        u1 = cp.get_or_publish_chart("AVGO", 126, r); u2 = cp.get_or_publish_chart("AVGO", 126, r)
+        assert u1 and u1 == u2 and rc["n"] == 1, (u1, u2, rc["n"])
+        # distinct window is a separate cache entry
+        u3 = cp.get_or_publish_chart("AVGO", 60, r); assert u3 != u1 and rc["n"] == 2
+
+        # cap: max=2, three distinct tickers → 3rd blocked, only 2 rendered
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (2, 1800)
+        rd = {"n": 0}; rr = lambda: (rd.__setitem__("n", rd["n"] + 1) or b"PNG")
+        a = cp.get_or_publish_chart("AAA", 126, rr); b = cp.get_or_publish_chart("BBB", 126, rr)
+        c = cp.get_or_publish_chart("CCC", 126, rr)
+        assert a and b and c is None and rd["n"] == 2, (a, b, c, rd["n"])
+
+        # a failed render must NOT consume budget (slot released)
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (1, 1800)
+        f = cp.get_or_publish_chart("FAIL", 126, lambda: None)
+        g = cp.get_or_publish_chart("GOOD", 126, lambda: b"PNG")
+        assert f is None and g is not None, (f, g)
+
+        # reset zeroes the budget between responses
+        cp._url_cache.clear(); cp._cap_and_ttl = lambda *a, **k: (1, 1800)
+        cp.reset_response_charts(); h1 = cp.get_or_publish_chart("H1", 126, lambda: b"PNG")
+        h2 = cp.get_or_publish_chart("H2", 126, lambda: b"PNG")
+        cp.reset_response_charts(); h3 = cp.get_or_publish_chart("H3", 126, lambda: b"PNG")
+        assert h1 and h2 is None and h3, (h1, h2, h3)
+
+        # disabled → never renders/uploads even with a budget
+        cp.charts_enabled = lambda: False
+        assert cp.get_or_publish_chart("OFF", 126, lambda: b"PNG") is None
+    finally:
+        cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl = orig_enabled, orig_publish, orig_capttl
+        cp._url_cache.clear()
+    print("PASS test_chart_cache_and_cap")
+
+
+def test_yf_fetch_retry():
+    """v1.0.0.172: transient Yahoo Finance fetch errors are retried (recovery) then surfaced (transparency)."""
+    from utils.yf_retry import fetch_with_retry
+    # recovers on the 3rd try after 2 transient failures
+    n = {"c": 0}
+    def flaky():
+        n["c"] += 1
+        if n["c"] < 3:
+            raise RuntimeError("Failed to parse json response from Yahoo Finance: {'code': 'Internal Server Error'}")
+        return "DATA"
+    assert fetch_with_retry(flaky, attempts=3, backoff_seconds=0) == "DATA" and n["c"] == 3
+    # exhausts and re-raises the LAST exception (caller surfaces a clear error, never fakes data)
+    try:
+        fetch_with_retry(lambda: (_ for _ in ()).throw(RuntimeError("boom")), attempts=2, backoff_seconds=0)
+        assert False, "should have re-raised"
+    except RuntimeError as e:
+        assert "boom" in str(e)
+    # attempts=1 disables retry
+    m = {"c": 0}
+    try:
+        fetch_with_retry(lambda: m.__setitem__("c", m["c"] + 1) or (_ for _ in ()).throw(RuntimeError("x")),
+                         attempts=1, backoff_seconds=0)
+        assert False
+    except RuntimeError:
+        assert m["c"] == 1
+
+    # integration: the analyzer's fetch gate now recovers from the AVGO-style transient .info blip
+    import pandas as pd
+    import user_tools.comprehensive_stock_analyzer as csa
+    class _FakeTicker:
+        _n = {"c": 0}
+        def __init__(self, t): pass
+        @property
+        def info(self):
+            _FakeTicker._n["c"] += 1
+            if _FakeTicker._n["c"] < 3:
+                raise Exception("Failed to parse json response from Yahoo Finance: "
+                                "{'code': 'Internal Server Error', 'description': 'Server caught an exception'}")
+            return {"longName": "Broadcom Inc.", "previousClose": 1400.0, "marketCap": 6.5e12}
+        def history(self, period="1d"):
+            return pd.DataFrame({"Close": [1425.0]})
+    orig = csa.yf.Ticker
+    csa.yf.Ticker = _FakeTicker
+    try:
+        data = csa.ComprehensiveStockAnalyzerTool()._get_real_time_data("AVGO")
+    finally:
+        csa.yf.Ticker = orig
+    assert "error" not in data and data.get("company_name") == "Broadcom Inc." and data.get("current_price") == 1425.0, data
+    print("PASS test_yf_fetch_retry")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -445,4 +543,6 @@ if __name__ == "__main__":
     test_technical_indicators_states_and_guards()
     test_dcf_reverse_implied_growth()
     test_chart_generator_and_publisher()
+    test_chart_cache_and_cap()
+    test_yf_fetch_retry()
     print("\n✅ All financial-calculator accuracy tests passed")

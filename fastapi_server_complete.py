@@ -8978,6 +8978,13 @@ async def llama_stream(request: Request):
         logger.info("--- ENTERING GENERATE_STREAM ---")
         import time  # Import time at function start for timing measurements
         logger.info("🔧 DEBUG: generate_stream() function called")
+        # Start a fresh per-response chart budget so the max_per_response cap counts from zero for THIS
+        # response (set before any tool dispatch so gathered tool calls share one budget). No-op if charts off.
+        try:
+            from utils.chart_publisher import reset_response_charts
+            reset_response_charts()
+        except Exception:
+            pass
         try:
             # 🔧 VARIABLE SCOPE FIX: Initialize variables at function scope
             nonlocal image_exists  # Access outer scope image_exists variable

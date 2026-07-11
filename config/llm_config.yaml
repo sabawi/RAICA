@@ -395,7 +395,9 @@ deep_research:
       evidence_token_budget: 160000
       # Max tokens for the generated answer. Deep research has rich evidence to draw on;
       # give the model room to elaborate fully (kept well within the model window).
-      max_answer_tokens: 16000   # 8000 - 16000 (8000 truncated drafts mid-output — see 2026-06-01 test)
+      max_answer_tokens: 32000   # 8000→16000→32000: 16000 hit 100% of cap on a 5-stock full-detail report
+                                 # (2026-07-11, "AT CAP — may be truncated"). Model ctx=200000 (max ~1M) + client
+                                 # read-timeout 900s both allow it (2× synthesis ≈ +65s → ~260s total run).
       # Two-pass enumeration: for LIST/TABLE/"earliest/all" requests, first extract the COMPLETE
       # item roster from a breadth-first view of ALL evidence (before token-budget truncation can
       # drop boundary items), then synthesize a row for every item. Fixes enumeration-completeness
@@ -411,7 +413,9 @@ deep_research:
       # Output token budget for the verification JSON (maps to Ollama num_predict via
       # research/_collect_stream). A long answer yields a large claim list; the salvage parser
       # recovers complete claims if the JSON is still cut off, so verify never returns 0.
-      max_tokens: 16000
+      # Raised 16000 -> 24000 in step with max_answer_tokens (16000 -> 32000): a longer answer has
+      # more claims to verify, so give the claim-list JSON proportional room (salvage still backstops).
+      max_tokens: 24000
       # Token budget for the EVIDENCE document sent to the verifier. Kept well below the full
       # synthesis budget so the verify INPUT does not fill the context window and starve the
       # output. Raised 60000 -> 87000 (+45%) alongside the larger context window (200000).
@@ -824,8 +828,20 @@ email:
 # =============================================================================
 charts:
   enabled: false                 # master switch (also requires newx_upload_url + CHART_UPLOAD_SECRET)
-  newx_upload_url: "http://localhost:9876/internal/chart-upload"   # NewX chart-upload endpoint
-  display_days: 126              # trading sessions shown on the main chart (~6 months)
+  newx_upload_url: "https://localhost:9876/internal/chart-upload"  # NewX chart-upload endpoint (loopback, same host)
+  verify_tls: false             # loopback same-host: NewX cert is self-signed/CN-mismatched; shared secret is the auth
+  display_days: 126             # trading sessions shown on the main chart (~6 months)
+  max_per_response: 6           # hard fail-safe: max charts rendered per user response (over cap → no chart, text unaffected)
+  cache_ttl_seconds: 1800       # reuse a (ticker, window) chart for 30 min → popular tickers render once, not per request
+
+# =============================================================================
+# INDIVIDUAL-STOCK ANALYZER (comprehensive_stock_analyzer) resilience.
+# =============================================================================
+stock_analyzer:
+  fetch_retries: 3              # transient Yahoo Finance errors (e.g. quoteSummary "Internal Server Error /
+                                # Server caught an exception") on the .info/.history fetch are retried this many
+                                # TOTAL times before the ticker fails (1 = no retry). Absorbs the AVGO-style blip.
+  fetch_backoff_seconds: 0.8    # linear backoff between attempts (0.8s, 1.6s, ...); gives Yahoo time to recover
 
 # =============================================================================
 # USER TOOLS CONFIGURATION

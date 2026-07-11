@@ -88,8 +88,8 @@ def generate_main_chart(ticker: str, history: pd.DataFrame, display_days: int = 
         if has_vol:
             pv = p.twinx()
             pv.bar(xd, win["Volume"], width=bw,
-                   color=[_UP if cl >= o else _DN for o, cl in zip(win["Open"], win["Close"])], alpha=.18)
-            pv.set_ylim(0, float(win["Volume"].max()) * 4)
+                   color=[_UP if cl >= o else _DN for o, cl in zip(win["Open"], win["Close"])], alpha=.38)
+            pv.set_ylim(0, float(win["Volume"].max()) * 2.5)  # bars fill bottom ~40% (was *4 ≈ 25%)
             pv.axis("off")
         # RSI
         rax.plot(xd, win["RSI"], color="#7ee787", lw=1.4)
