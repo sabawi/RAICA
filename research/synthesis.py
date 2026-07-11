@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 
 VALID_TIERS = ("peer_reviewed", "reputable", "popular", "low_credibility", "unknown")
 
+# Structural extraction of the RAICA inline-chart markers `[[chart:<url>|align=...|caption="..."]]`.
+# This matches the EXACT opaque token as it appears in the evidence — it does NOT interpret meaning,
+# it only lets RAICA count/compare presence of a token that ORIGINATED in the evidence (used by the
+# LLM-driven chart-completeness pass below). Non-greedy up to the first `]]` so a `]` inside a caption
+# can never over-consume. (LLM-Policy Gate: this decides no meaning/intent/placement — the LLM does.)
+_CHART_MARKER_RE = re.compile(r'\[\[chart:.*?\]\]', re.DOTALL)
+
 # Token accounting for budgeting the evidence to the model window. tiktoken (cl100k_base)
 # is a close-enough proxy for the cloud models; we keep headroom for tokenizer mismatch.
 try:
@@ -158,6 +165,31 @@ class ResearchSynthesizer:
     @property
     def _enumeration_two_pass(self) -> bool:
         return bool(self._cfg.get("synthesis", {}).get("enumeration_two_pass", True))
+
+    # ---- chart-completeness (inline-chart marker relay) config ----
+    @property
+    def _chart_completeness_cfg(self) -> Dict[str, Any]:
+        return self._cfg.get("synthesis", {}).get("chart_completeness", {}) or {}
+
+    @property
+    def _chart_completeness_on(self) -> bool:
+        # Master switch for the LLM-driven chart-marker completeness pass (verify + re-place). Default ON:
+        # inline charts are worthless if the synthesis silently drops them, and the pass is a no-op when the
+        # evidence has no chart markers (normal research) or the draft already relayed them all.
+        return bool(self._chart_completeness_cfg.get("enabled", True))
+
+    @property
+    def _chart_max_repair_passes(self) -> int:
+        # How many bounded LLM re-place attempts before we give up and return the best draft (never destroy
+        # the answer). Each pass is a narrow edit ("insert these markers into your report"), so 3 is ample.
+        return int(self._chart_completeness_cfg.get("max_repair_passes", 3))
+
+    @property
+    def _chart_min_content_ratio(self) -> float:
+        # A repair pass is ACCEPTED only if it kept at least this fraction of the prior draft's length —
+        # a mechanical safety guard so a repair that summarizes/truncates the report is discarded (fail-safe:
+        # a complete report missing a chart beats a shorter garbled one). Not a meaning judgement.
+        return float(self._chart_completeness_cfg.get("min_content_ratio", 0.85))
 
     @property
     def _arbitration_model(self) -> Optional[str]:
@@ -555,6 +587,104 @@ class ResearchSynthesizer:
             logger.warning("📋 Roster extraction failed (%s) — using normal single-pass synthesis", e)
             return None
 
+    # ---- step 1.7: inline-chart marker completeness (LLM verify + re-place) ----
+    #
+    # PROBLEM (evidence, 2026-07-11): the writer model (deepseek-v4-flash for sub-250K synthesis prompts)
+    # relays the `[[chart:...]]` markers RELIABLY for a single-stock report, but on a multi-stock report it
+    # drops them STOCHASTICALLY and ALL-OR-NOTHING: measured 6 identical runs = [0,5,0,0,0,5] markers — never
+    # a partial count. The model makes ONE global sampling decision per generation about whether to reproduce
+    # these opaque tokens, and once it strips the first it strips all (path-dependent). It is NOT a
+    # length/opacity problem (short `[[chart:CHART1]]` ids drop just the same) and NOT truncation (drafts sit
+    # at ~50% of the token cap). Policy-language strengthening alone can't hold a ~2/3 drop rate.
+    #
+    # FIX (CARDINAL-RULE compliant — the LLM-driven verify→feedback→regenerate loop, mirroring verify() and
+    # enumeration_two_pass): RAICA MECHANICALLY checks whether every marker that ORIGINATED in the evidence is
+    # present in the draft (a structural set-difference over exact tokens — no meaning/intent/placement is
+    # decided by RAICA), and if any are missing it FEEDS THEM BACK to the LLM and asks the LLM to re-place
+    # them. The LLM still decides WHERE each chart goes and emits the final text; RAICA only detects the
+    # omission and bounds the retries. No hardcoded placement, no regex that injects a marker into a section.
+
+    def _chart_markers_in_evidence(self, doc: str) -> List[str]:
+        """The exact `[[chart:...]]` tokens present in the evidence document, de-duplicated in order.
+        These are the markers the answer is REQUIRED to relay (they came from the evidence)."""
+        seen, out = set(), []
+        for m in _CHART_MARKER_RE.findall(doc or ""):
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    async def _repair_chart_markers(self, draft: str, missing: List[str],
+                                    model: Optional[str] = None) -> str:
+        """Feed the writer its OWN draft + the exact markers it dropped, and ask it to reinsert each at the
+        right place. This is a NARROW edit task (not re-synthesis), so the model complies where full
+        synthesis stochastically doesn't. The LLM decides placement; RAICA supplies only the verified-missing
+        tokens. temperature=0.0 for faithful verbatim copying + content preservation."""
+        miss_list = "\n".join(missing)
+        system_prompt = (
+            "You are fixing an already-written research report that is missing some required inline CHART "
+            "MARKERS. Return the COMPLETE corrected report, IDENTICAL to the input EXCEPT that you INSERT "
+            "each missing chart marker listed below, exactly once, copied EXACTLY and VERBATIM (never alter "
+            "the URL, caption, or align; never wrap it in a code fence). Place each on its OWN line inside "
+            "the part of the report that discusses the stock its caption NAMES — its technical / price-action "
+            "discussion. Do NOT remove, rewrite, shorten, reorder, or summarize ANY existing content: "
+            "reproduce the entire report and ONLY add the markers. Do not add any marker that is not in the "
+            "list below. Output ONLY the corrected report, nothing else."
+        )
+        prompt = (f"MISSING CHART MARKERS (insert every one of these, verbatim):\n{miss_list}\n\n"
+                  f"CURRENT REPORT:\n{draft}")
+        kwargs = {"system_prompt": system_prompt, "temperature": 0.0,
+                  "max_tokens": self._max_answer_tokens, "stream": False}
+        if model:
+            kwargs["model"] = model
+        return await _collect_stream(self._gen, prompt, **kwargs)
+
+    async def _ensure_chart_completeness(self, draft: str, doc: str,
+                                         model: Optional[str] = None) -> str:
+        """Guarantee every evidence chart marker appears in the answer, via bounded LLM repair passes.
+        No-op when there are no markers or the draft already relays them all. Fail-safe: a repair that
+        doesn't strictly improve coverage or that shrinks the report past the content guard is rejected,
+        and after all attempts the BEST draft is returned (a missing chart never destroys a good answer)."""
+        if not self._chart_completeness_on or self._chart_max_repair_passes < 1:
+            return draft
+        required = self._chart_markers_in_evidence(doc)
+        if not required:
+            return draft
+        missing = [m for m in required if m not in draft]
+        if not missing:
+            return draft  # first-pass draft already complete — nothing to do
+
+        best = draft
+        for attempt in range(1, self._chart_max_repair_passes + 1):
+            missing = [m for m in required if m not in best]
+            if not missing:
+                break
+            logger.info("🖼️🩹 chart-completeness repair %d/%d — %d/%d markers missing, re-prompting LLM to place them",
+                        attempt, self._chart_max_repair_passes, len(missing), len(required))
+            try:
+                fixed = await self._repair_chart_markers(best, missing, model)
+            except Exception as e:  # noqa: BLE001 — a repair failure must never discard the answer
+                logger.warning("🖼️🩹 chart-completeness repair %d failed (%s) — keeping current draft", attempt, e)
+                continue
+            fixed_missing = [m for m in required if m not in fixed]
+            improved = len(fixed_missing) < len([m for m in required if m not in best])
+            preserved = len(fixed) >= self._chart_min_content_ratio * len(best)
+            if improved and preserved:
+                best = fixed
+            else:
+                logger.warning("🖼️🩹 chart-completeness repair %d rejected (improved=%s preserved=%s: "
+                               "len %d→%d, missing %d→%d) — retrying with fresh sampling",
+                               attempt, improved, preserved, len(best), len(fixed),
+                               len([m for m in required if m not in best]), len(fixed_missing))
+
+        final_missing = [m for m in required if m not in best]
+        if final_missing:
+            logger.warning("🖼️🩹 chart-completeness: %d/%d markers STILL missing after %d pass(es) — returning best draft",
+                           len(final_missing), len(required), self._chart_max_repair_passes)
+        else:
+            logger.info("🖼️✅ chart-completeness: all %d chart markers present in the final answer", len(required))
+        return best
+
     # ---- step 2: grounded, credibility-aware synthesis (C3) ----
     async def synthesize(self, user_request: str, evidence: List[Dict[str, Any]],
                          credibility: Dict[str, str], model: Optional[str] = None,
@@ -714,14 +844,20 @@ class ResearchSynthesizer:
             "the final answer; (c) never blend a model estimate with a sourced figure without distinguishing the "
             "two. The 'never invent/guess/estimate/extrapolate' rule above applies to figures YOU generate "
             "yourself — it does NOT forbid relaying a clearly-labeled model estimate from the evidence.\n"
-            "- INLINE CHARTS: some SOURCE blocks contain a chart marker of the exact form "
-            "`[[chart:<url>|align=...|caption=\"...\"]]` (a RAICA-generated chart image). If one is present "
-            "and relevant to a section you are writing, PLACE that marker on its OWN line in the appropriate "
-            "section — a stock's technical chart belongs under that stock's technical / price-action "
-            "discussion. Copy the marker EXACTLY and VERBATIM (do not alter the URL, caption, or align; do "
-            "not wrap it in code fences). NEVER invent a chart marker, reuse one URL for a different stock, "
-            "or emit a marker for a chart that is not in the evidence. If no chart is relevant, simply omit "
-            "it — a missing chart is fine, a fabricated one is a failure.\n"
+            "- INLINE CHARTS (MANDATORY — treat exactly like a required citation): some SOURCE blocks "
+            "contain a chart marker of the exact form `[[chart:<url>|align=...|caption=\"...\"]]` (a "
+            "RAICA-generated technical chart for a specific stock — its caption names the stock). You MUST "
+            "reproduce EVERY chart marker that appears in the evidence, each exactly once, copied EXACTLY and "
+            "VERBATIM (never alter the URL, caption, or align; never wrap it in code fences). It is YOUR "
+            "decision WHERE each belongs, but a chart marker present in the evidence and OMITTED from your "
+            "answer is a FAILURE — as serious as dropping a required citation. Place each on its OWN line "
+            "within that stock's technical / price-action discussion (the caption tells you which stock). "
+            "So if the evidence has five chart markers, your answer MUST contain all five, one per stock. "
+            "NEVER invent a marker, reuse one stock's URL for a different stock, or emit a marker that is not "
+            "in the evidence. For your convenience these markers are ALSO listed together under 'AVAILABLE "
+            "CHARTS' just below the USER REQUEST — treat that list as your authoritative checklist: your "
+            "answer must contain EVERY marker in it, each placed in its stock's section. These markers are "
+            "CONTENT you must reproduce, not reference artifacts to summarize away.\n"
             "- STRUCTURE: BEGIN with a SINGLE top-level title line — `# <a concise Title-Case name for "
             "the overall topic of THIS request>` (exactly one H1 naming the WHOLE report; it must NOT be "
             "numbered and must NOT be a section heading) — then a brief **TL;DR** (2-4 sentences giving "
@@ -735,12 +871,39 @@ class ResearchSynthesizer:
         # For enumeration requests, the pre-extracted roster (from the FULL evidence set) is
         # injected so every qualifying item gets a row even if its detail evidence was truncated.
         roster_block = f"\n\n{roster}\n" if roster else ""
-        prompt = f"USER REQUEST:\n{user_request}{roster_block}\n\nEVIDENCE:\n{doc}"
+        # AVAILABLE CHARTS inventory (fix, 2026-07-11): surface the evidence's chart markers as a distinct,
+        # SALIENT list OUTSIDE the evidence SOURCE blocks. Measured effect on the 5-stock case: first-pass
+        # marker relay jumped from ~2/6 to 5/5 — because buried in a SOURCE block the writer treats a marker
+        # as read-only reference to summarize away, whereas an explicit "place each of these" checklist frames
+        # it as content to emit. RAICA does NOT choose placement here: it only lists the exact tokens that
+        # came from the evidence and tells the LLM each must appear in its stock's section (LLM decides where).
+        _required_markers = self._chart_markers_in_evidence(doc) if self._chart_completeness_on else []
+        chart_block = ""
+        if _required_markers:
+            _inv = "\n".join(_required_markers)
+            chart_block = (
+                f"\n\nAVAILABLE CHARTS — your answer MUST contain EVERY ONE of the {len(_required_markers)} "
+                "chart markers below, each exactly once, copied VERBATIM, on its OWN line inside the section "
+                "discussing the stock its caption names (its technical / price-action analysis). These are "
+                "CONTENT to reproduce, not reference material to summarize. Do not omit any, do not add any "
+                f"not listed, do not alter them:\n{_inv}\n"
+            )
+        prompt = f"USER REQUEST:\n{user_request}{roster_block}{chart_block}\n\nEVIDENCE:\n{doc}"
         kwargs = {"system_prompt": system_prompt, "temperature": 0.4,
                   "max_tokens": self._max_answer_tokens, "stream": False}
         if model:
             kwargs["model"] = model
         draft = await _collect_stream(self._gen, prompt, **kwargs)
+        # First-pass probe (raw model behavior). Note: prompt now also contains the AVAILABLE CHARTS
+        # inventory, so prompt count = evidence markers + inventory markers (2× the required count).
+        logger.info("🖼️🔎 synth chart-markers — evidence=%d prompt=%d draft=%d",
+                    doc.count('[[chart:'), prompt.count('[[chart:'), draft.count('[[chart:'))
+        # GUARANTEE completeness: mechanically verify every evidence marker made it into the draft, and if
+        # the writer dropped any (stochastic all-or-nothing drop), feed them back for the LLM to re-place
+        # (bounded, LLM decides placement). No-op when there are no markers or the draft is already complete.
+        draft = await self._ensure_chart_completeness(draft, doc, model)
+        logger.info("🖼️🔎 synth chart-markers (final) — required=%d final_draft=%d",
+                    len(_required_markers), draft.count('[[chart:'))
         _out_tok = _tok_count(draft)
         _cap = self._max_answer_tokens
         logger.info("📝 Synthesized draft (%s): %d chars, ~%d output tokens / %d cap (%d%% of cap)%s",

@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import re
 import sys
+import logging  # module-level: the chart/technical block (execute) references logging.getLogger before
+                # the local `import logging` in the outer except — without this it NameErrors → _hist=None
 
 # Add parent directory to path for shared utilities
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,8 +74,8 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
             "properties": {
                 "ticker": {
                     "type": "string",
-                    "description": "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'GOOGL')",
-                    "pattern": "^[A-Z]{1,5}$"
+                    "description": "Stock ticker symbol (e.g., 'AAPL', 'MSFT', 'GOOGL', or a class share like 'BRK-B')",
+                    "pattern": "^[A-Za-z0-9.\\-]{1,8}$"
                 },
                 "detailed": {
                     "type": "boolean",
@@ -688,7 +690,11 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                 }
 
             # Detect if tool is being misused for general market analysis
-            general_market_tickers = ["MARKET", "NEWS", "GENERAL", "STOCK", "STOCKS", "INDEX", "SP500", "DOW", "NASDAQ"]
+            # NOTE (v1.0.0.174): "DOW" removed — it is a real ticker (Dow Inc.), not a misuse word. The rest
+            # resolve to no yfinance data so they stay as clean misuse guards. ("INDEX" is kept: it resolves
+            # to an obscure ETF, so guarding it avoids a surprising wrong analysis.) Full removal of this
+            # hardcoded list is deferred to the finance-hardening audit (fetch-decides, done deliberately).
+            general_market_tickers = ["MARKET", "NEWS", "GENERAL", "STOCK", "STOCKS", "INDEX", "SP500", "NASDAQ"]
             if ticker.upper() in general_market_tickers:
                 return {
                     "success": False,
@@ -696,11 +702,16 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                     "result": None
                 }
 
-            # Validate ticker format
-            if not ticker.isalpha() or len(ticker) > 5:
+            # Sanity-only guard (v1.0.0.174): do NOT hard-reject on character class. `isalpha()` wrongly
+            # rejected every legitimate class-share / dual-listing symbol (BRK-B, BF-B, BRK.B, HEI-A) and
+            # silently dropped it from the analysis (the BRK-B mixed-basket finding). A ticker is just a
+            # short single token — let the DATA decide validity: _get_real_time_data returns a clear
+            # "No data available for {ticker}" error for a well-formed-but-unknown symbol, which execute()
+            # surfaces transparently (no silent drop, no hardcoded allow/deny list).
+            if " " in ticker or len(ticker) > 8:
                 return {
                     "success": False,
-                    "error": f"❌ INVALID TICKER: '{ticker}' is not a valid stock symbol format. Use standard symbols like AAPL, MSFT, GOOGL, etc.",
+                    "error": f"❌ INVALID TICKER: '{ticker}' is not a single stock symbol. Pass one ticker (e.g. AAPL, BRK-B).",
                     "result": None
                 }
 
@@ -806,6 +817,11 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                         _cap = (f"{ticker} — daily technical chart (candles, SMA 50/200, "
                                                 "volume, RSI/MACD/ADX)")
                                         tech_block = f'[[chart:{_url}|align=center|caption="{_cap}"]]\n\n' + tech_block
+                                        logging.getLogger(__name__).info(f"🖼️ chart marker EMITTED for {ticker}: {_url}")
+                                    else:
+                                        logging.getLogger(__name__).info(
+                                            f"🖼️ chart NOT emitted for {ticker} (enabled={charts_enabled()}, "
+                                            f"hist_rows={0 if _hist is None else len(_hist)}, url={_url})")
                             except Exception as _cerr:
                                 logging.getLogger(__name__).info(f"chart card skipped for {ticker}: {_cerr}")
                             detailed_output.append(tech_block)
@@ -815,8 +831,10 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                             raw_data_report += "\n\n" + "\n".join(detailed_output)
 
                     except Exception as e:
-                        # Graceful degradation - if detailed analysis fails, just log and continue
-                        import logging
+                        # Graceful degradation - if detailed analysis fails, just log and continue.
+                        # NOTE: do NOT `import logging` here — a function-local import makes `logging`
+                        # local to the ENTIRE execute() scope, causing UnboundLocalError at the earlier
+                        # chart-history fetch. Use the module-level `import logging` instead.
                         logger = logging.getLogger(__name__)
                         logger.warning(f"Detailed analysis failed for {ticker}: {e}")
                         raw_data_report += f"\n\n⚠️ **Note**: Detailed analysis partially unavailable - {str(e)}"

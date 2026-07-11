@@ -143,6 +143,14 @@ Each phase validated on the mixed-cap basket + fault injection before moving on.
 ### Progress
 - **✅ P1 (Recovery) — DONE (v1.0.0.173).** Added `yf_retry.configured_fetch` (config-driven convenience) and routed EVERY remaining single-shot fetch through it: `financial_statements_extractor` (7-statement build), `analyst_estimates` (info + earnings/revenue/growth estimates), `technical_indicators` (2y history), `comprehensive_stock_analyzer` chart history (the `.info`/`.history` gate was already retried in v172). Retry triggers only on a THROWN transient error; genuinely-absent data (empty return) skips as before. Tests: `test_yf_fetch_retry`, `test_finance_fetch_retry_p1` (extractor recovers from a transient blip instead of `return {}`). Live smoke: AVGO statements + analyst + technicals all fetch through the retry path.
 
+### Additional fixes shipped alongside (v1.0.0.174)
+- **Ticker-format gate de-hardcoded** — `comprehensive_stock_analyzer.execute()` used `if not ticker.isalpha()` (+ schema `^[A-Z]{1,5}$`), which silently rejected every class-share / dual-listing symbol (**BRK-B**, BF-B, BRK.B, HEI-A) — the mixed-cap basket caught it. Replaced with a sanity-only guard (single token, ≤8 chars); the **fetch decides validity** (no data → transparent error). Removed **DOW** from the `general_market_tickers` misuse list (it is a real ticker, Dow Inc.).
+- **Chart cap 6 → 10** (`charts.max_per_response`) — an 8-stock basket capped the last 2 charts.
+
+### Deferred (validated, tracked — do deliberately in the hardening pass)
+- **Remove the `general_market_tickers` hardcoded list entirely.** Empirically checked (2026-07-11): of the 8 remaining words, 7 resolve to no yfinance data (still clean misuse errors), but **`INDEX` resolves to a real obscure ETF ("CYBER HORNET S&P 500")** — a blind removal would silently analyze it. So the full removal needs a deliberate design (fetch-decides + ambiguity note for index-like words), not a one-liner. Not urgent (no active problem).
+- **Advice-quality prompt tweaks** (from the TSLA-vs-IBM decision test): the answer argued risk qualitatively ("speculative gamble") without citing **beta**, and covered the tax holding period without naming the **long-term capital-gains** rate benefit. Prompt-level, not code.
+
 **▶ RESUME HERE:** Start **Phase P2 (Transparency)** — replace failure-as-empty with a distinguishable **failure sentinel** `{"_error": "..."}` + a formatter line "⚠️ unavailable — fetch failed (not blank data)":
 - `financial_statements_extractor.py:97-99` `except → return {}` → return `{"_error": str(e)}`; update `format_for_llm` + all callers (analyzer detailed block, dcf/ratio/projection inputs) to detect `_error` and render the label instead of blank N/A.
 - `analyst_estimates` / `technical_indicators`: on a *fetch* failure (vs genuinely-absent) mark the block "unavailable — fetch failed".

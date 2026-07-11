@@ -556,6 +556,40 @@ def test_finance_fetch_retry_p1():
     print("PASS test_finance_fetch_retry_p1")
 
 
+def test_no_function_local_logging_shadow():
+    """Regression (v173→v174): a function-local `import logging` inside execute() makes `logging` local
+    to the WHOLE method, so the earlier chart-history fetch's logging.getLogger() hits UnboundLocalError,
+    gets swallowed by `except: _hist=None`, and the chart is silently skipped. Guard: module-level import,
+    no shadowing local import in execute()."""
+    import inspect
+    import user_tools.comprehensive_stock_analyzer as csa
+    assert getattr(csa, "logging", None) is not None, "comprehensive_stock_analyzer must import logging at module level"
+    src = inspect.getsource(csa.ComprehensiveStockAnalyzerTool.execute)
+    # check for an actual `import logging` STATEMENT (a code line), not a mention inside a comment
+    offending = [l for l in src.splitlines() if l.strip().startswith("import logging")]
+    assert not offending, \
+        "execute() must NOT contain a function-local `import logging` (shadows module-level → UnboundLocalError at chart fetch)"
+    print("PASS test_no_function_local_logging_shadow")
+
+
+def test_ticker_gate_allows_class_shares():
+    """v1.0.0.174: the ticker gate must NOT hard-reject class-share symbols (BRK-B). isalpha() rejected
+    every hyphen/dot ticker and silently dropped it (the mixed-basket BRK-B finding)."""
+    import asyncio
+    import user_tools.comprehensive_stock_analyzer as csa
+    tool = csa.ComprehensiveStockAnalyzerTool()
+    tool._get_real_time_data = lambda t: {"error": "PATCHED-NO-NET"}   # short-circuit before network
+    # hyphen / class-share tickers must PASS the format gate (reach the fetch → get the patched error)
+    for tk in ("BRK-B", "BF-B", "BRK.B", "HEI-A"):
+        r = asyncio.run(tool.execute(ticker=tk, detailed=False))
+        assert "INVALID TICKER" not in str(r.get("error", "")), (tk, r)
+        assert "PATCHED-NO-NET" in str(r.get("error", "")), (tk, r)   # proves the gate passed it through
+    # a multi-token string is still rejected by the sanity gate
+    r2 = asyncio.run(tool.execute(ticker="BAD TICKER", detailed=False))
+    assert "INVALID TICKER" in str(r2.get("error", "")), r2
+    print("PASS test_ticker_gate_allows_class_shares")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -579,4 +613,6 @@ if __name__ == "__main__":
     test_chart_cache_and_cap()
     test_yf_fetch_retry()
     test_finance_fetch_retry_p1()
+    test_no_function_local_logging_shadow()
+    test_ticker_gate_allows_class_shares()
     print("\n✅ All financial-calculator accuracy tests passed")

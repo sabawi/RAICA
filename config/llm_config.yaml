@@ -264,7 +264,12 @@ deep_research:
     # `primary` (pro) directly. null `model` = use primary; null `heavy_model` = no heavy routing.
     model: deepseek-v4-flash:cloud           # LIGHT — default for all small DR calls
     heavy_model: deepseek-v4-pro:cloud       # HEAVY — large-payload calls (e.g. synthesis)
-    heavy_threshold_chars: 250000            # prompt chars at/above which -> heavy_model
+    heavy_threshold_chars: 20000             # prompt chars at/above which -> heavy_model (pro). 20000 =
+                                             # highest-quality DR baseline: every real synthesis (~30K+) and
+                                             # verify (100K+) routes to deepseek-v4-pro (more professional,
+                                             # persuasive output — 2026-07-11 flash-vs-pro study); only the
+                                             # small mechanical sub-calls (plan/grade/relevance, <~8K) stay on
+                                             # flash. Dev==prod (identical). Cost-reduction tuning deferred.
                                              # (synthesis ~596K >> 250K; next-biggest call ~139K < 250K)
     # Phase 0 (orchestration retrofit): before researching, LLM-extract the RESEARCH-and-writing
     # intent from a possibly-compound request, stripping delivery/packaging directives (generate
@@ -406,7 +411,27 @@ deep_research:
       # failure, synthesis falls back to the normal single-pass path (no behavior change for
       # non-enumeration queries).
       enumeration_two_pass: true
-    verification:
+      # INLINE-CHART MARKER COMPLETENESS (fix, 2026-07-11). The stock analyzer prepends a
+      # `[[chart:...]]` marker (a NewX-rendered technical chart) to each stock's technical block. The
+      # synthesis writer (deepseek-v4-flash for sub-heavy-threshold prompts) relays it reliably for ONE
+      # stock but on a MULTI-stock report drops the markers STOCHASTICALLY and all-or-nothing (measured
+      # 6 identical runs: [0,5,0,0,0,5] — ~2/3 drop rate; never partial). Two rule-compliant mitigations
+      # (both keep the LLM as the placement decider — no hardcoded injection):
+      #   1) synthesis surfaces the markers as a salient "AVAILABLE CHARTS" checklist OUTSIDE the evidence
+      #      SOURCE blocks (buried in a source block the writer treats them as reference to summarize away;
+      #      as an explicit checklist it treats them as content to emit) → first-pass relay ~2/6 → 5/5.
+      #   2) after the draft, RAICA mechanically verifies every evidence marker is present and, if any were
+      #      dropped, feeds them back for the LLM to re-place (bounded passes; the LLM decides where). This
+      #      is the same verify→feedback→regenerate loop as verification/enumeration_two_pass.
+      # No-op when the evidence has no chart markers (all normal research) or the draft already relayed
+      # them all. Fail-safe: a repair that shrinks the report past min_content_ratio, or doesn't improve
+      # coverage, is rejected; after max_repair_passes the best draft is returned (a missing chart never
+      # destroys a good answer).
+      chart_completeness:
+        enabled: true
+        max_repair_passes: 3       # bounded LLM re-place attempts before returning the best draft
+        min_content_ratio: 0.85    # reject a repair that keeps < this fraction of the draft's length
+      verification:
       enabled: true
       # A claim needs at least this many independent sources to be labeled "supported".
       min_corroborating_sources: 2
@@ -831,7 +856,9 @@ charts:
   newx_upload_url: "https://localhost:9876/internal/chart-upload"  # NewX chart-upload endpoint (loopback, same host)
   verify_tls: false             # loopback same-host: NewX cert is self-signed/CN-mismatched; shared secret is the auth
   display_days: 126             # trading sessions shown on the main chart (~6 months)
-  max_per_response: 6           # hard fail-safe: max charts rendered per user response (over cap → no chart, text unaffected)
+  max_per_response: 10          # hard fail-safe: max charts rendered per user response (over cap → no chart, text
+                                # unaffected). 6→10 (2026-07-11): an 8-stock basket capped the last 2 charts; 10
+                                # fits an 8–10 name comparison. Same-window cache keeps repeats free.
   cache_ttl_seconds: 1800       # reuse a (ticker, window) chart for 30 min → popular tickers render once, not per request
 
 # =============================================================================
