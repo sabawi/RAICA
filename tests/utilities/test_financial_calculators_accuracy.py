@@ -590,6 +590,38 @@ def test_ticker_gate_allows_class_shares():
     print("PASS test_ticker_gate_allows_class_shares")
 
 
+def test_charts_env_override():
+    """v1.0.0.175: .env overrides (RAICA_CHARTS_ENABLED / NEWX_CHART_UPLOAD_URL) take precedence over yaml
+    so live activates durably with the correct http URL and survives a deploy's config checkout."""
+    import os
+    import utils.chart_publisher as cp
+    import utils.config_loader as cl
+    orig_load = cl.config_loader.load_config
+    saved = {k: os.environ.get(k) for k in ('RAICA_CHARTS_ENABLED', 'NEWX_CHART_UPLOAD_URL', 'CHART_UPLOAD_SECRET')}
+    try:
+        cl.config_loader.load_config = lambda: {'charts': {'enabled': False,
+                                                           'newx_upload_url': 'https://localhost:9876/x',
+                                                           'verify_tls': False}}
+        for k in saved:
+            os.environ.pop(k, None)
+        en, url, sec, _ = cp._charts_config()           # no env → yaml wins
+        assert en is False and url == 'https://localhost:9876/x', (en, url)
+        os.environ['RAICA_CHARTS_ENABLED'] = 'true'      # env overrides → enabled + http URL + secret
+        os.environ['NEWX_CHART_UPLOAD_URL'] = 'http://localhost:9876/internal/chart-upload'
+        os.environ['CHART_UPLOAD_SECRET'] = 'sek'
+        en, url, sec, _ = cp._charts_config()
+        assert en is True and url == 'http://localhost:9876/internal/chart-upload' and sec == 'sek', (en, url, sec)
+        assert cp.charts_enabled() is True
+        cl.config_loader.load_config = lambda: {'charts': {'enabled': True, 'newx_upload_url': 'https://x'}}
+        os.environ['RAICA_CHARTS_ENABLED'] = 'false'     # explicit env false overrides a yaml true
+        assert cp._charts_config()[0] is False
+    finally:
+        cl.config_loader.load_config = orig_load
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    print("PASS test_charts_env_override")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -615,4 +647,5 @@ if __name__ == "__main__":
     test_finance_fetch_retry_p1()
     test_no_function_local_logging_shadow()
     test_ticker_gate_allows_class_shares()
+    test_charts_env_override()
     print("\n✅ All financial-calculator accuracy tests passed")

@@ -29,17 +29,23 @@ logger = logging.getLogger(__name__)
 def _charts_config():
     """(enabled, upload_url, secret, verify_tls). Fail-closed: enabled+url+secret must all be present.
 
-    verify_tls defaults True (secure); set false in config for the loopback same-host case, where
-    NewX serves HTTPS with a self-signed / CN-mismatched cert on localhost (the shared secret is the
-    real auth and there is no MITM surface on loopback).
+    Deployment (.env) overrides take PRECEDENCE over the yaml so the SAME committed config works across
+    environments and survives a deploy's `git checkout -- config` (v1.0.0.175):
+      • RAICA_CHARTS_ENABLED  (true/false) → overrides `charts.enabled`
+      • NEWX_CHART_UPLOAD_URL             → overrides `charts.newx_upload_url`
+      • CHART_UPLOAD_SECRET               → the shared secret (always .env; never in yaml)
+    Live (sabawi.net) NewX runs HTTP on :9876 (TLS terminated upstream) → set the URL to
+    http://localhost:9876/...; local dev uses the yaml https default. verify_tls defaults True (secure),
+    is irrelevant for http, and is set false for the loopback self-signed https case.
     """
     try:
         from utils.config_loader import config_loader
         cfg = (config_loader.load_config().get('charts', {}) or {})
     except Exception:
         cfg = {}
-    enabled = bool(cfg.get('enabled', False))
-    url = (cfg.get('newx_upload_url') or os.getenv('NEWX_CHART_UPLOAD_URL', '')).strip()
+    _env_enabled = os.getenv('RAICA_CHARTS_ENABLED')
+    enabled = (_env_enabled.strip().lower() == 'true') if _env_enabled is not None else bool(cfg.get('enabled', False))
+    url = (os.getenv('NEWX_CHART_UPLOAD_URL') or cfg.get('newx_upload_url') or '').strip()
     secret = os.getenv('CHART_UPLOAD_SECRET', '').strip()
     verify_tls = bool(cfg.get('verify_tls', True))
     return enabled, url, secret, verify_tls
