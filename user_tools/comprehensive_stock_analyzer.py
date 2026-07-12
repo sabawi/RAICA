@@ -762,10 +762,24 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                             ratios = ratio_calc.calculate_all_ratios(financials, real_time_data)
                             detailed_output.append(ratio_calc.format_ratios_for_llm(ratios, ticker))
 
-                        # Calculate DCF valuation
+                        # Analyst consensus computed ONCE here (v1.0.0.176) — its FORWARD growth feeds the
+                        # DCF stage-1 growth median, and the full object is reused by the analyst block below
+                        # (no double fetch). Graceful: on any failure the DCF simply omits the analyst signal.
+                        _analyst_estimates, _analyst_g = None, None
+                        try:
+                            _ainfo = (financials or {}).get('ticker_info') or real_time_data
+                            _analyst_estimates = AnalystEstimates().get_estimates(ticker, ticker_info=_ainfo)
+                            _g = _analyst_estimates.get('fwd_eps_growth_pct')
+                            if _g is not None:
+                                _analyst_g = float(_g) / 100.0   # percent → fraction for the DCF
+                        except Exception:
+                            _analyst_estimates, _analyst_g = None, None
+
+                        # Calculate DCF valuation (stage-1 growth median-blends the analyst forward growth)
                         if FeatureFlags.DETAILED_ANALYSIS_DCF_VALUATION:
                             dcf_calc = DCFCalculator()
-                            dcf_result = dcf_calc.calculate_intrinsic_value(ticker, financials, real_time_data)
+                            dcf_result = dcf_calc.calculate_intrinsic_value(ticker, financials, real_time_data,
+                                                                           analyst_growth=_analyst_g)
                             detailed_output.append(dcf_calc.format_dcf_for_llm(dcf_result, ticker))
 
                         # Generate projections
@@ -779,8 +793,9 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                         # projections above, and reliable (not web-scraped → survives search rate-limiting).
                         if getattr(FeatureFlags, 'DETAILED_ANALYSIS_ANALYST_ESTIMATES', True):
                             analyst = AnalystEstimates()
-                            _ainfo = (financials or {}).get('ticker_info') or real_time_data
-                            estimates = analyst.get_estimates(ticker, ticker_info=_ainfo)
+                            # reuse the consensus already fetched for the DCF (no second network call)
+                            estimates = _analyst_estimates if _analyst_estimates is not None else \
+                                analyst.get_estimates(ticker, ticker_info=(financials or {}).get('ticker_info') or real_time_data)
                             detailed_output.append(analyst.format_for_llm(estimates, ticker))
 
                         # v1.0.0.168 — technical indicators (pandas-ta-classic): trend (SMA50/200 + cross),

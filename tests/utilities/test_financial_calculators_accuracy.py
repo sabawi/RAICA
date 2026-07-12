@@ -622,6 +622,40 @@ def test_charts_env_override():
     print("PASS test_charts_env_override")
 
 
+def test_dcf_median_blend_growth():
+    """v1.0.0.176: stage-1 FCF growth = MEDIAN(trailing FCF growth, analyst forward growth, 5% anchor).
+    A TRANSIENT negative trailing year is ignored (the KO fix), forward growth is used, growth is floored
+    at terminal, and the derivation is shown in the output."""
+    import statistics
+    dcf = DCFCalculator()
+    inc = _annual_df({"Operating Income": [12e9, 12e9, 12e9], "Net Income": [9e9, 9e9, 9e9],
+                      "Pretax Income": [11e9, 11e9, 11e9], "Tax Provision": [2e9, 2e9, 2e9],
+                      "Interest Expense": [0.3e9, 0.3e9, 0.3e9], "Total Revenue": [45e9, 45e9, 45e9]})
+    bal = _annual_df({"Total Debt": [40e9, 40e9, 40e9], "Cash And Cash Equivalents": [15e9, 15e9, 15e9],
+                      "Stockholders Equity": [60e9, 60e9, 60e9], "Total Assets": [120e9, 120e9, 120e9]})
+    # FCF: latest (col 0) far BELOW prior years → strongly NEGATIVE trailing growth (a transient dip)
+    cf = _annual_df({"Operating Cash Flow": [50e9, 120e9, 160e9], "Capital Expenditure": [-10e9, -10e9, -10e9]})
+    info = {"freeCashflow": 40e9, "sharesOutstanding": 4e9, "marketCap": 3.5e11, "beta": 0.4}
+    market = {"current_price": 85.0, "market_cap": 3.5e11, "sharesOutstanding": 4e9, "beta": 0.4}
+    fin = {"cash_flow": {"annual": cf}, "balance_sheet": {"annual": bal},
+           "income_statement": {"annual": inc}, "ticker_info": info}
+    trailing = dcf.calculate_historical_growth_rate(cf, periods=3)
+    assert trailing is not None and trailing < 0, trailing            # confirm the transient negative
+    res = dcf.calculate_intrinsic_value("TEST", fin, market, analyst_growth=0.07)
+    pg = res["assumptions"]["projection_growth"]
+    expected = min(max(statistics.median([trailing, 0.07, 0.05]), dcf.terminal_growth_rate), 0.20)
+    assert abs(pg - expected) < 1e-9, (pg, expected, trailing)
+    assert pg > 0, pg                                                 # negative trailing NOT extrapolated
+    sigs = res["assumptions"]["growth_signals"]
+    assert len(sigs) == 3 and any("analyst" in l for l, _ in sigs), sigs
+    fmt = dcf.format_dcf_for_llm(res, "TEST")
+    assert "median" in fmt.lower() and "analyst forward growth" in fmt, fmt
+    # no analyst signal → median(trailing, anchor) still floored at terminal (never a negative projection)
+    res2 = dcf.calculate_intrinsic_value("TEST", fin, market, analyst_growth=None)
+    assert res2["assumptions"]["projection_growth"] >= dcf.terminal_growth_rate
+    print("PASS test_dcf_median_blend_growth")
+
+
 if __name__ == "__main__":
     test_pb_prefers_priceToBook()
     test_pb_fallback_equity_with_note()
@@ -648,4 +682,5 @@ if __name__ == "__main__":
     test_no_function_local_logging_shadow()
     test_ticker_gate_allows_class_shares()
     test_charts_env_override()
+    test_dcf_median_blend_growth()
     print("\n✅ All financial-calculator accuracy tests passed")

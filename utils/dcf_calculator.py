@@ -380,7 +380,8 @@ class DCFCalculator:
                 hi = mid
         return (lo + hi) / 2.0, None
 
-    def calculate_intrinsic_value(self, ticker: str, financials: Dict, market_data: Dict = None) -> Dict[str, Any]:
+    def calculate_intrinsic_value(self, ticker: str, financials: Dict, market_data: Dict = None,
+                                  analyst_growth: float = None) -> Dict[str, Any]:
         """
         Calculate intrinsic value using DCF model.
 
@@ -388,6 +389,9 @@ class DCFCalculator:
             ticker: Stock ticker symbol
             financials: Financial statements from extractor
             market_data: Market data (price, shares, market cap) - optional
+            analyst_growth: analyst FORWARD growth as a FRACTION (e.g. 0.066 for +6.6%), from
+                AnalystEstimates — one of the three signals median-blended into stage-1 FCF growth
+                (v1.0.0.176). None → the median falls back to (trailing, anchor) only.
 
         Returns:
             Dictionary with intrinsic value, upside/downside, and analysis
@@ -453,18 +457,40 @@ class DCFCalculator:
                     "unavailable, so treat the intrinsic value as directional."
                 )
 
-            # Step 2: Calculate historical growth rate
+            # Step 2: Stage-1 FCF growth — FORWARD-AWARE + ROBUST (v1.0.0.176).
+            #
+            # The old model used ONLY trailing 3-yr FCF growth: projection_growth = (trailing + 5%)/2.
+            # That EXTRAPOLATES a TRANSIENT trailing number forward and is blind to forward prospects —
+            # e.g. KO's trailing FCF growth was -17.8% (a one-time payment / working-capital swing), so
+            # the model projected FCF SHRINKING 6.4%/yr for a dividend aristocrat (→ absurd $33 intrinsic,
+            # -60%), while analysts saw +6.6%. So a single bad trailing year crushed the DCF.
+            #
+            # Fix: stage-1 growth = MEDIAN(trailing FCF growth, analyst FORWARD growth, 5% sustainable
+            # anchor). The median is robust to a single transient outlier (KO's -17.8% AND NVDA's +100%
+            # are both ignored by the median) while pulling in forward-looking analyst growth. Floored at
+            # the terminal rate (a profitable, positive-FCF company is not projected to shrink forever) and
+            # capped at 20%. All inputs are stored so format_dcf_for_llm can SHOW the derivation.
             historical_growth = self.calculate_historical_growth_rate(cash_flow, periods=3)
+            _signals = []                                    # (label, value) for transparency
             if historical_growth is not None:
                 result['calculations']['historical_growth'] = historical_growth
-                # Use conservative estimate: average of historical and long-term sustainable (5%)
-                projection_growth = (historical_growth + 0.05) / 2
-                # Cap at 20% for safety
-                projection_growth = min(projection_growth, 0.20)
-            else:
-                projection_growth = 0.05  # Default 5% growth
+                _signals.append(('trailing 3-yr FCF growth', historical_growth))
+            if analyst_growth is not None:
+                try:
+                    _ag = float(analyst_growth)
+                    if -0.9 < _ag < 3.0:                     # sanity: ignore absurd analyst outliers
+                        _signals.append(('analyst forward growth', _ag))
+                except (TypeError, ValueError):
+                    pass
+            _signals.append(('sustainable anchor', 0.05))
+            projection_growth = float(np.median([v for _, v in _signals]))
+            # floor at terminal for a profitable/positive-FCF name (never project a durable FCF decline);
+            # cap at 20% for safety
+            projection_growth = max(projection_growth, self.terminal_growth_rate)
+            projection_growth = min(projection_growth, 0.20)
 
             result['assumptions']['projection_growth'] = projection_growth
+            result['assumptions']['growth_signals'] = _signals   # [(label, value), ...] for the formatter
 
             # Step 3: Calculate WACC
             wacc = self.calculate_wacc(financials, market_data)
@@ -690,7 +716,16 @@ Date: {date}
         if dcf_result.get('assumptions'):
             assumptions = dcf_result['assumptions']
             if 'projection_growth' in assumptions:
-                content_lines.append(f"  Projected FCF Growth Rate: {assumptions['projection_growth']*100:.1f}%")
+                _pg = assumptions['projection_growth'] * 100
+                _sigs = assumptions.get('growth_signals')
+                if _sigs:
+                    _sig_str = ", ".join(f"{lbl} {val*100:.1f}%" for lbl, val in _sigs)
+                    content_lines.append(
+                        f"  Stage-1 FCF Growth: {_pg:.1f}% — the MEDIAN of [{_sig_str}], floored at the "
+                        "terminal rate and capped at 20% (the median ignores a transient trailing year, "
+                        "e.g. a one-off FCF dip, and a lone extreme forecast)")
+                else:
+                    content_lines.append(f"  Projected FCF Growth Rate: {_pg:.1f}%")
             if 'wacc' in assumptions:
                 wacc_line = f"  Discount Rate (WACC): {assumptions['wacc']*100:.1f}%"
                 _wu = assumptions.get('wacc_unadjusted')
@@ -700,8 +735,9 @@ Date: {date}
             if 'terminal_growth' in assumptions:
                 content_lines.append(f"  Terminal Growth Rate: {assumptions['terminal_growth']*100:.1f}%")
             if 'wacc' in assumptions:
-                content_lines.append("  [Method: 5-yr FCF DCF; cost of equity via CAPM with a "
-                                     "Blume-adjusted beta (0.67·β+0.33) so high-beta names are not over-discounted]")
+                content_lines.append("  [Method: 5-yr FCF DCF. Stage-1 growth = median(trailing FCF growth, "
+                                     "analyst forward growth, 5% sustainable anchor). Cost of equity via CAPM "
+                                     "with a Blume-adjusted beta (0.67·β+0.33) so high-beta names are not over-discounted]")
 
             # Add sensitivity warnings
             if 'wacc_adjustment' in assumptions:
