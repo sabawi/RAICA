@@ -1,10 +1,13 @@
 # RAICA quality/performance benchmark convenience targets. See docs/RAICA_QUALITY_BENCHMARK.md
 PY := $(shell [ -x venv/bin/python ] && echo venv/bin/python || echo python3)
 
-.PHONY: benchmark benchmark-full benchmark-all install-hooks
+.PHONY: benchmark benchmark-full benchmark-all install-hooks smoke
 
 benchmark:                ## Tier 0 — deterministic gates (fast; the pre-commit floor)
 	$(PY) tests/benchmark/run_benchmark.py --tier 0
+
+smoke:                    ## Tool smoke — INVOKE each core tool through the real code path (~30s; run before EVERY deploy)
+	$(PY) tests/smoke/tool_smoke.py
 
 benchmark-full:           ## Tier 1 — real-LLM golden scenarios vs baseline (local, ~15 min)
 	$(PY) tests/benchmark/run_benchmark.py --tier 1

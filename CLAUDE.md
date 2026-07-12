@@ -332,7 +332,7 @@ Ask yourself: "Does this code path change based on magic keywords in user's prom
   3. Restart the local server (`./stop_complete.sh && sleep 10 && ./start_complete.sh` or local foreground runner).
   4. Verify local health status (`/health` endpoint on localhost:5000).
   5. Review local startup logs (`logs/server_complete.log`) for any warnings or errors.
-  6. Run regression tests and E2E verification locally (`pytest` + `run_mu_e2e_verify.py`).
+  6. Run regression tests and E2E verification locally (`pytest` + `run_mu_e2e_verify.py`), AND the MANDATORY tool functional smoke (`make smoke` / `python tests/smoke/tool_smoke.py`) — it INVOKES each core tool (search_web, wikipedia_query, get_news_summaries, get_stock_and_company_data, lookup_website) through the real code path and captures their stdout, so it catches a tool that crashes on invocation even when the error is swallowed into a generic string. Offline/fixture gates CANNOT see this. A CODE-FAIL here BLOCKS the deploy. (Rationale: a swallowed `NameError` from a missing per-function `import re` broke ALL of `search_web` for ~6 days in v1.0.0.142 and every offline gate stayed green — because nothing ever called the tool.)
   7. Once fully clean and problem-free, push the changes to GitHub.
   8. Deploy to the live remote server (`sabawi.net`) by pulling the repository changes.
   9. Restart the remote production server.
