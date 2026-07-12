@@ -34,7 +34,7 @@ CHECKS = [
     ("search_web",                 {"query": "latest world news today"}),
     ("wikipedia_query",            {"query": "Python (programming language)"}),
     ("get_news_summaries",         {"query": "technology"}),
-    ("get_stock_and_company_data", {"ticker": "AAPL"}),
+    ("get_stock_and_company_data", {"symbol": "AAPL"}),  # tool reads the `symbol` key (fastapi_server_complete.py:952)
     ("lookup_website",             {"url": "https://example.com"}),
 ]
 
@@ -43,6 +43,13 @@ EXC_SIGNATURES = (
     "is not defined", "traceback (most recent call last)", "nameerror",
     "unboundlocalerror", "attributeerror", "keyerror", "typeerror:", "importerror",
     "modulenotfounderror", "indentationerror", "syntaxerror",
+)
+# Result-level FAILURE phrases — the tool didn't crash but returned a "nothing / failed" message. These
+# are usually ENV (network/rate-limit/bad data) or a bad call, so they WARN (review) — they do NOT hard
+# block. Added after a false-pass: a "no data found" stock reply was scored PASS on length alone.
+RESULT_FAILURE_PHRASES = (
+    "an error occurred", "no data found", "no price data", "possibly delisted",
+    "stock data error", "no results found", "couldn't find", "could not find",
 )
 PER_CALL_TIMEOUT = 30
 
@@ -72,9 +79,9 @@ def main():
         if sig:
             code_fail.append(f"{name}: exception signature {sig!r} (swallowed) — real code bug")
             print(f"  ✗ CODE  {name:<28} exception signature {sig!r} in output (swallowed error)")
-        elif len(res.strip()) < 20 or "an error occurred" in res.lower():
-            warn.append(f"{name}: empty / generic error (likely ENV: network/egress)")
-            print(f"  ⚠ WARN  {name:<28} empty/generic result (likely ENV) | {res[:90]!r}")
+        elif len(res.strip()) < 20 or any(p in res.lower() for p in RESULT_FAILURE_PHRASES):
+            warn.append(f"{name}: empty / failure-message result (likely ENV or a bad call)")
+            print(f"  ⚠ WARN  {name:<28} empty/failure result (likely ENV) | {res[:90]!r}")
         else:
             print(f"  ✓ PASS  {name:<28} {len(res)} chars of real content")
     print("-" * 74)
