@@ -227,7 +227,11 @@ deep_research:
     # evidence). on_unsourced governs a block left with 0 valid sources after grounding.
     citation_grounding:
       enabled: true
-      shadow: true              # true = compute + log only (answer unchanged); false = enforce (strip)
+      shadow: true              # NOTE: EFFECTIVELY ENFORCED regardless of this flag — pipeline.py computes
+                                # `_effective_shadow = shadow AND not verify_live.enforcing`; verify_live is
+                                # enforcing (below), so grounding runs ACTIVE (strips fabricated + rotted).
+                                # This flag only bites if verify_live is ALSO shadowed. (Kept true so disabling
+                                # verify_live cleanly reverts BOTH to shadow.)
       on_unsourced: flag        # flag (mark) | drop (remove block) | off
       # Output-side citation LIVENESS (docs/RAICA_DR_CITATION_LIVENESS.md). Actually FETCHES each CITED URL
       # and treats only a hard 404/410 or an article→homepage redirect as dead (403/paywall/JS/timeout are
@@ -362,7 +366,11 @@ deep_research:
       # Fail-open; enabled:false turns it off.
       retrieval_gate:
         enabled: true
-        shadow: true
+        shadow: false                    # ENFORCE (v1.0.0.182): annotate body-not-retrieved (title-only)
+                                         # blocks with ⚠️ BODY-NOT-RETRIEVED + add the attribution rule so
+                                         # synthesis never presents unseen specifics as sourced to them
+                                         # (governs ATTRIBUTION, not exclusion). Baseline: ~10-21 title-only
+                                         # blocks/run; most cited URLs are body-fetched. true = shadow (log only).
       # SOURCE PROVENANCE (primary-vs-secondary) — docs/RAICA_SOURCE_PROVENANCE.md. Phase 0 wires ONLY
       # the shadow role-grading + logging (a baseline; ZERO answer change — roles are logged, not fed to
       # synthesis). Later phases flip prefer_primary (synthesis prefers the primary in evidence),
