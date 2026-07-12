@@ -41,6 +41,30 @@ VALID_TIERS = ("peer_reviewed", "reputable", "popular", "low_credibility", "unkn
 # can never over-consume. (LLM-Policy Gate: this decides no meaning/intent/placement — the LLM does.)
 _CHART_MARKER_RE = re.compile(r'\[\[chart:.*?\]\]', re.DOTALL)
 
+# Canonical REASONING DIRECTIVE (v1.0.0.177) — shared by every prose-generating reasoning node so they
+# speak with one voice (the no-inconsistency clause). Pushes the model to USE its full reasoning to get
+# from the user's prompt to a VERIFIABLE answer, not just to convey/summarize evidence. Policy language
+# only (LLM decides) — no hardcoded logic.
+REASONING_DIRECTIVE = (
+    "🧠 REASON TO A VERIFIABLE ANSWER — use your full reasoning; do not merely report or summarize:\n"
+    "- Pin down what is TRULY being asked — the real question and the decision behind the words — and make "
+    "the answer resolve THAT, not a loosely-related restatement.\n"
+    "- Decompose the problem and reason through each part; connect the evidence to the specific question "
+    "rather than laying sources side by side.\n"
+    "- WEIGH competing, contradictory, or uneven evidence explicitly: state which is better-supported and WHY "
+    "(directness, source quality, recency, corroboration), and reconcile or clearly flag genuine conflicts — "
+    "never average them away or choose silently.\n"
+    "- Draw the well-supported INFERENCES the evidence enables — the implications, mechanisms, and "
+    "consequences a careful expert would deduce (reasoning beyond a bare restatement is the value) — but "
+    "NEVER beyond what the evidence supports.\n"
+    "- Reach a CLEAR, DIRECT conclusion that answers the question, and make it VERIFIABLE: every load-bearing "
+    "claim must be checkable against the cited evidence, and every quantitative claim must follow "
+    "arithmetically from the figures shown.\n"
+    "- SELF-CHECK before finalizing: re-examine your own chain for unsupported leaps, arithmetic slips, and "
+    "question-dodging, and fix them. If the evidence genuinely cannot settle the question, say so plainly and "
+    "give the best-supported partial answer with its uncertainty stated.\n"
+)
+
 # Token accounting for budgeting the evidence to the model window. tiktoken (cl100k_base)
 # is a close-enough proxy for the cloud models; we keep headroom for tokenizer mismatch.
 try:
@@ -722,8 +746,12 @@ class ResearchSynthesizer:
         doc = self._evidence_document(_ev, credibility)
         system_prompt = (
             "You are an expert research writer producing an authoritative, in-depth report. A large "
-            "body of evidence has been gathered for you — your job is to convey as much of its insight "
-            "as possible to an avid, curious reader. Using ONLY the evidence provided, write the answer.\n\n"
+            "body of evidence has been gathered for you — your job is to REASON over it and convey as much "
+            "of its insight as possible to an avid, curious reader. Using ONLY the evidence provided, write "
+            "the answer.\n\n"
+            + REASONING_DIRECTIVE +
+            "\n(Depth and reasoning are complementary: cover every substantive point below AND reason it "
+            "through to a verifiable conclusion — a comprehensive answer that also THINKS is the goal.)\n\n"
             "🎯 PRIMARY DIRECTIVE — MAXIMIZE DEPTH AND COVERAGE:\n"
             "- COVER EVERY substantive point, finding, argument, example, and nuance the evidence "
             "supports that is relevant to the request — do NOT limit yourself to a handful of points. "
@@ -919,8 +947,11 @@ class ResearchSynthesizer:
             for i, d in enumerate(drafts)
         )
         system_prompt = (
-            "Multiple independent draft answers to the same research request will be provided. "
-            "Produce a SINGLE reconciled final answer that:\n"
+            "Multiple independent draft answers to the same research request will be provided. Reconcile "
+            "them into ONE final answer — REASON about why they differ and which reasoning is better-"
+            "grounded; do not merely union them.\n\n"
+            + REASONING_DIRECTIVE +
+            "\nThe reconciled answer must:\n"
             "- OPENS with a brief **TL;DR** (2-4 sentences giving the bottom-line answer for skim readers);\n"
             "- is COMPREHENSIVE and MUST be AT LEAST AS LONG AND DETAILED as the most thorough draft "
             "(do NOT compress or summarize) — take the UNION of the drafts: merge ALL complementary "
