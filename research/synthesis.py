@@ -41,10 +41,15 @@ VALID_TIERS = ("peer_reviewed", "reputable", "popular", "low_credibility", "unkn
 # can never over-consume. (LLM-Policy Gate: this decides no meaning/intent/placement — the LLM does.)
 _CHART_MARKER_RE = re.compile(r'\[\[chart:.*?\]\]', re.DOTALL)
 
-# Canonical REASONING DIRECTIVE (v1.0.0.177) — shared by every prose-generating reasoning node so they
+# Canonical REASONING DIRECTIVE (v1.0.0.178) — shared by every prose-generating reasoning node so they
 # speak with one voice (the no-inconsistency clause). Pushes the model to USE its full reasoning to get
 # from the user's prompt to a VERIFIABLE answer, not just to convey/summarize evidence. Policy language
 # only (LLM decides) — no hardcoded logic.
+# v1.0.0.178 added two clauses hardening against the failures observed when native `think` is OFF (which
+# the think-vs-directive A/B confirmed is the right default — think showed no quality gain, produced empty
+# answers on hard prompts, and cost 3–10×): ONE COMMITTED ANSWER (kills a stale/superseded figure that
+# survives into the final answer contradicting it — the "ghost" self-contradiction) and NO STAGED EVIDENCE
+# (no presenting unexecuted code / an invented output as verification).
 REASONING_DIRECTIVE = (
     "🧠 REASON TO A VERIFIABLE ANSWER — use your full reasoning; do not merely report or summarize:\n"
     "- Pin down what is TRULY being asked — the real question and the decision behind the words — and make "
@@ -63,6 +68,13 @@ REASONING_DIRECTIVE = (
     "- SELF-CHECK before finalizing: re-examine your own chain for unsupported leaps, arithmetic slips, and "
     "question-dodging, and fix them. If the evidence genuinely cannot settle the question, say so plainly and "
     "give the best-supported partial answer with its uncertainty stated.\n"
+    "- ONE COMMITTED ANSWER: reconcile everything to a SINGLE final figure/verdict and state it once. If you "
+    "revised a number or conclusion mid-reasoning, scrub the superseded value so it cannot survive into the "
+    "answer contradicting your conclusion — a figure that contradicts your own final number is a defect even "
+    "when the final number is correct.\n"
+    "- NO STAGED EVIDENCE: never present code, a script, or a computation as though you executed it and are "
+    "quoting its output unless you genuinely did. If a number needs working, show the ACTUAL arithmetic you "
+    "performed; do not dress up unexecuted code, or an invented 'output', as verification to look rigorous.\n"
 )
 
 # Token accounting for budgeting the evidence to the model window. tiktoken (cl100k_base)
