@@ -2831,6 +2831,8 @@ def _is_specific_article_url(url: str) -> bool:
     rejects the section pages _validate_article_url passes (e.g. bbc.com/news/world/middle_east,
     aljazeera.com/middle-east, arabnews.com/middleeast). Fail-open on parse error (don't over-reject).
     """
+    import re  # this file imports `re` per-function; re.search is used below, so it MUST be imported here.
+              # Its absence made every search_web result raise NameError('re') → ALL web searches failed.
     if not _validate_article_url(url):
         return False
     try:

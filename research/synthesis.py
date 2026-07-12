@@ -72,9 +72,10 @@ REASONING_DIRECTIVE = (
     "revised a number or conclusion mid-reasoning, scrub the superseded value so it cannot survive into the "
     "answer contradicting your conclusion — a figure that contradicts your own final number is a defect even "
     "when the final number is correct.\n"
-    "- NO STAGED EVIDENCE: never present code, a script, or a computation as though you executed it and are "
-    "quoting its output unless you genuinely did. If a number needs working, show the ACTUAL arithmetic you "
-    "performed; do not dress up unexecuted code, or an invented 'output', as verification to look rigorous.\n"
+    "- NO STAGED EVIDENCE: you CANNOT execute code in this answer. You may show code to illustrate an "
+    "approach, but NEVER append an 'Output:', 'Result:', or console block as if the code ran — instead "
+    "compute the result yourself and show the ACTUAL arithmetic. A shown 'output' you did not truly produce "
+    "is fabricated evidence, even if the number happens to be right.\n"
 )
 
 # Token accounting for budgeting the evidence to the model window. tiktoken (cl100k_base)
