@@ -2,35 +2,35 @@
   "S1_news_citation.citation_count": {
     "cls": "CODE",
     "direction": "higher_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 2,
     "unit": "count",
-    "value": 12
+    "value": 10
   },
   "S1_news_citation.latency_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 30,
     "unit": "seconds",
-    "value": 33.0
+    "value": 16.0
   },
   "S1_news_citation.specific_url_ratio": {
     "cls": "CODE",
     "direction": "higher_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0.15,
     "unit": "ratio",
-    "value": 0.833
+    "value": 1.0
   },
   "S1_news_citation.url_resolve_ratio": {
     "cls": "ENV",
     "direction": "higher_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0.25,
     "unit": "ratio",
     "value": 1.0
@@ -38,8 +38,8 @@
   "S2_dr_delivery.attachment_count": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "count",
     "value": 2
@@ -47,8 +47,8 @@
   "S2_dr_delivery.doc_title_is_section": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "bool",
     "value": false
@@ -56,8 +56,8 @@
   "S2_dr_delivery.dr_completed": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "bool",
     "value": true
@@ -65,35 +65,35 @@
   "S2_dr_delivery.dr_latency_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 120,
     "unit": "seconds",
-    "value": 230.1
+    "value": 265.0
   },
   "S2_dr_delivery.dr_synthesize_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 40,
     "unit": "seconds",
-    "value": 71.6
+    "value": 23.2
   },
   "S2_dr_delivery.dr_verify_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 40,
     "unit": "seconds",
-    "value": 82.6
+    "value": 20.8
   },
   "S2_dr_delivery.html_self_contained": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "bool",
     "value": true
@@ -101,8 +101,8 @@
   "S2_dr_delivery.pdf_valid": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "bool",
     "value": true
@@ -110,8 +110,8 @@
   "S3_vision.description_keyword_hits": {
     "cls": "CODE",
     "direction": "higher_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0.25,
     "unit": "ratio",
     "value": 1.0
@@ -119,32 +119,32 @@
   "S3_vision.latency_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 20,
     "unit": "seconds",
-    "value": 42.9
+    "value": 24.8
   },
   "S3_vision.vision_model_s": {
     "cls": "PERF",
     "direction": "lower_better",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 10,
     "unit": "seconds",
-    "value": 7.9
+    "value": 8.8
   },
   "S3_vision.vision_ran": {
     "cls": "CODE",
     "direction": "must_equal",
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131",
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run",
     "tolerance": 0,
     "unit": "bool",
     "value": true
   },
   "_meta": {
-    "measured_at": "2026-06-18T01:26:54.401463+00:00",
-    "reason": "add Tier-2 per-stage latency (vision_model_s, dr_synthesize_s, dr_verify_s) at v1.0.0.131"
+    "measured_at": "2026-07-12T18:19:50.774971+00:00",
+    "reason": "re-baseline at v1.0.0.182 hardened state; the v131 (2026-06-18) baseline is 45 versions stale (predates citation-specificity hardening, DR grounding/liveness, retrieval_gate enforce, and model/latency gains) and false-flagged S1 citation_count REGRESSION every run"
   }
 }
