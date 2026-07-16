@@ -94,6 +94,31 @@ the matter; never present as settled what is genuinely speculative or subjective
 "surface controversial/heterodox positions" rule (`synthesis.py:778`): it applies to genuinely contested/subjective
 questions and does NOT license surfacing fringe dissent against established empirical findings.
 
+### 4.2 Methodological reflexivity — separate EVIDENCE from INTERPRETATION (Cluster A, operator feedback 2026-07-16)
+Live testing (the Jewish-origins query) showed the synthesis reasoning well on *which side* but still letting
+INTERPRETIVE MODELS and CATEGORIES pose as the evidence. The directive now also requires (P3, same flag):
+- **Evidence vs interpretation** — pin each claim to its level; state what a class of evidence CAN/CANNOT show.
+- **Material culture ≠ identity** — a house-form / pottery / diet / burial marker may be environmental,
+  economic, regional, or fashion, not a "people" ("pots are not people"); weigh the mundane alternatives before
+  treating it as an ethnic signature. *(Concrete instance from operator: absence-of-pig-bones was used as an
+  Israelite ethnic marker, but low pig husbandry was a REGIONAL Levantine pattern — environment/economy, not a
+  distinct people's diet. The directive encodes the PRINCIPLE, never the example — no-hardcoding gate.)*
+- **A dominant reconstruction is a MODEL, not the endpoint** — present it as a model with assumptions + critics.
+- **Flag retrojection / anachronism** — reading a later identity/category back onto earlier evidence; make the
+  continuity itself an object of scrutiny.
+- **Neutral framing** — don't let the prose assume the contested conclusion ("interpreted as", not asserted).
+
+Validated (isolation A/B): without the block the model called the four-room house "a diagnostic marker of
+Israelite ethnicity" and asserted a "continuous biological lineage"; with it, it split raw-evidence from model,
+applied "pots are not people," critiqued the pig-bone-as-identity claim, flagged the retrojection, and concluded
+the markers "do not, by themselves, prove this culture called itself 'Israelite' or 'Jewish'."
+
+### Remaining clusters (roadmap)
+- **Cluster B — primary-source depth** (avoid secondary/tertiary summaries like wikis; develop the competing
+  ethnogenesis models; give the historiography of the debate) → Phase 2 gather-quality + primary-first provenance.
+- **Cluster C — deeper domain balance** (genetics: shared ancestry ≠ descent ≠ a people; fringe: critique WHY it
+  fails, not just a credibility tag) → emerges from A+B plus a small directive sharpening.
+
 ### Reconciliation with `ONE COMMITTED ANSWER` (No-Inconsistency)
 The reasoning directive's "commit to one answer" is preserved but **scoped**: on a contested/subjective
 question the committed answer is a committed characterization of **the state of the debate** — what is
