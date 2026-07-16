@@ -78,6 +78,40 @@ REASONING_DIRECTIVE = (
     "is fabricated evidence, even if the number happens to be right.\n"
 )
 
+# Adversarial-balance directive (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, Phase 1 / P3). As DR extends beyond
+# hard science into humanities/philosophy/religion, "consensus" stops being a truth-signal and sources form
+# ECHO CHAMBERS. Balance is PROPORTIONAL to genuine uncertainty — never manufactured. Policy language only:
+# the LLM judges the domain, the epistemic status, the echo-chamber, and steelmans — NO hardcoded topic lists.
+# Scopes the existing "surface controversial positions" rule so it cannot false-balance settled empirical science.
+ADVERSARIAL_BALANCE_DIRECTIVE = (
+    "⚖️ ADVERSARIAL BALANCE — CALIBRATE TO EPISTEMIC STATUS, NEVER MANUFACTURE BALANCE. First judge what KIND of "
+    "question each claim is, and treat it accordingly — balance tracks genuine uncertainty, it is never a reflex "
+    "symmetry:\n"
+    "- ESTABLISHED EMPIRICAL (natural science / verifiable fact the evidence has settled — e.g. evolution, "
+    "vaccine efficacy, heliocentrism): report it AS established. Do NOT invent balance, manufacture dissent, or "
+    "elevate fringe denial to a 'side'. Settled science is not made 'balanced' by inventing critics; note only "
+    "GENUINE live scientific disputes.\n"
+    "- SPECULATIVE / UNSETTLED EMPIRICAL (a live hypothesis or open scientific question — e.g. string theory, a "
+    "competing cosmological model): label it plainly as a HYPOTHESIS/CONJECTURE, not settled fact; represent the "
+    "genuine rival hypotheses IN PROPORTION to their actual evidential support (never a forced 50/50); and "
+    "EXPLAIN WHY the field currently favors one over the others — the specific evidence/reasoning that makes it "
+    "catch on — rather than presenting it as proven.\n"
+    "- SUBJECTIVE (humanities, philosophy, religion, ethics/normative, aesthetics — no empirical arbiter, and "
+    "where sources form ECHO CHAMBERS that cite each other, exclude outsiders, and disparage dissent): here you "
+    "MUST be the adversary the field lacks. For every significant point make the STRONGEST case you honestly can "
+    "FOR it AND your utmost-effort STRONGEST case AGAINST it — a token 'some disagree' is a failure. Watch for "
+    "the echo-chamber effect in the gathered sources and BREAK OUT of it: represent the excluded, dissenting, or "
+    "outsider position at its strongest even if the pool under-supplies it, and SAY when the sources are "
+    "one-sided. Distinguish what the evidence CAN establish (facts) from what it CANNOT (the normative/"
+    "theological/interpretive claim). Do NOT declare a verdict on an unfalsifiable claim; commit instead to a "
+    "clear characterization of the DEBATE — what is established, what is genuinely disputed, and the strongest "
+    "case on each side.\n"
+    "- GROUNDING: do NOT backfill a thin or one-sided evidence pool with confident specifics from your own "
+    "trained knowledge dressed as sourced — if the evidence is thin or one-sided, say so plainly rather than "
+    "padding it out. (This SCOPES the 'surface controversial positions' rule above: it applies to genuinely "
+    "contested/subjective questions and does NOT license fringe dissent against established empirical findings.)\n"
+)
+
 # Token accounting for budgeting the evidence to the model window. tiktoken (cl100k_base)
 # is a close-enough proxy for the cloud models; we keep headroom for tokenizer mismatch.
 try:
@@ -756,6 +790,12 @@ class ResearchSynthesizer:
             "prefer sources WITH a retrieved body for concrete claims. (Governs ATTRIBUTION, not exclusion.)\n"
         ) if _rg_active else ""
 
+        # Adversarial balance (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, P3) — steelman both sides + break the
+        # echo chamber on subjective questions; calibrate to epistemic status; never false-balance settled
+        # science. Policy language only (LLM judges), gated + reversible.
+        _ab = self._cfg.get("synthesis", {}).get("adversarial_balance", {}) or {}
+        _ab_rule = ADVERSARIAL_BALANCE_DIRECTIVE if bool(_ab.get("enabled", False)) else ""
+
         doc = self._evidence_document(_ev, credibility)
         system_prompt = (
             "You are an expert research writer producing an authoritative, in-depth report. A large "
@@ -780,6 +820,7 @@ class ResearchSynthesizer:
             "and in research the prevailing narrative is itself open to challenge. Include important "
             "in-research and dissenting points, clearly framed as contested, with who argues them and "
             "on what basis. Omitting a substantive controversial point is a FAILURE of the report.\n"
+            + _ab_rule +
             "- EXPAND AND ENRICH — never cut, trim, or summarize for brevity. For each point, develop it "
             "FULLY: explain the underlying reasoning, mechanisms, historical/scientific context, "
             "supporting examples, competing interpretations, caveats, and implications that the sources "

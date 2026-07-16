@@ -371,6 +371,14 @@ deep_research:
                                          # synthesis never presents unseen specifics as sourced to them
                                          # (governs ATTRIBUTION, not exclusion). Baseline: ~10-21 title-only
                                          # blocks/run; most cited URLs are body-fetched. true = shadow (log only).
+      # ADVERSARIAL BALANCE (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, Phase 1/P3). Adds a synthesis directive that
+      # calibrates to EPISTEMIC STATUS: report established empirical science as settled (NO invented balance);
+      # label speculative science as conjecture + explain differential support; and on SUBJECTIVE questions
+      # (humanities/philosophy/religion) steelman BOTH sides, break the source echo-chamber, and don't backfill
+      # thin evidence from parametric memory. Policy language only (LLM judges domain/status/echo-chamber — no
+      # hardcoded topic lists). Prompt-only, fail-open; enabled:false reverts to prior behavior.
+      adversarial_balance:
+        enabled: true
       # SOURCE PROVENANCE (primary-vs-secondary) — docs/RAICA_SOURCE_PROVENANCE.md. Phase 0 wires ONLY
       # the shadow role-grading + logging (a baseline; ZERO answer change — roles are logged, not fed to
       # synthesis). Later phases flip prefer_primary (synthesis prefers the primary in evidence),
