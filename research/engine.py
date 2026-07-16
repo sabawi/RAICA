@@ -257,6 +257,35 @@ class ResearchPlanner:
         _queries_schema = (
             ', "queries": {"<source_name>": "<arg_string> or [<arg_string>, ...]"}'
         ) if _psq else ""
+        # Cluster B (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, Phase 2) — reach PRIMARY peer-reviewed scholarship,
+        # not tertiary wikis/SEO, on scholarly/historical/humanities questions; seek competing models +
+        # historiography + the opposing side. Gated + reversible; policy language, LLM-judged (no topic lists).
+        _gq_on = bool(self._cfg.get("planner", {}).get("gather_quality", {}).get("enabled", True))
+        _source_strategy = (
+            "- SOURCE STRATEGY — REACH PRIMARY, PEER-REVIEWED SCHOLARSHIP; do NOT settle for tertiary "
+            "summaries:\n"
+            "  * For any SCHOLARLY / HISTORICAL / SCIENTIFIC / HUMANITIES claim — or any request asking for "
+            "evidence-based, researched, or peer-reviewed grounding — route the LOAD-BEARING sub-questions to "
+            "published_papers_search: it reaches the peer-reviewed AND humanities/cross-disciplinary "
+            "literature (OpenAlex, Crossref, CORE, DOAJ, DOAB, Semantic Scholar, Internet Archive, "
+            "arXiv/PubMed). That is the citation of record for such claims.\n"
+            "  * Use wikipedia / search_web only for ORIENTATION, terminology, or where the scholarly "
+            "literature is genuinely thin — NEVER as the source of record for a claim the academic "
+            "literature covers. A tertiary wiki or an advocacy/SEO page is not acceptable ground for a "
+            "load-bearing scholarly claim.\n"
+            "  * SEEK THE COMPETING MODELS AND THE HISTORIOGRAPHY: for a debated topic add sub-questions that "
+            "surface the rival scholarly models/schools (who argues what, on what evidence) and how the "
+            "debate itself developed — not just the current topline finding.\n"
+            "  * ADVERSARIAL DECOMPOSITION: for a contested / prove-or-disprove / worldview question, add "
+            "sub-question(s) that deliberately seek the STRONGEST OPPOSING and critical scholarship, so the "
+            "evidence pool is not one-sided from the start.\n"
+            "  * news for current events, get_sec_filings for filings, document_search for the user's own "
+            "documents.\n"
+        ) if _gq_on else (
+            "- Prefer academic sources (published_papers_search) for scholarly/scientific claims, "
+            "news for current events, wikipedia for background, search_web for general/web coverage, "
+            "get_sec_filings for company filings, document_search for the user's own documents.\n"
+        )
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
@@ -265,9 +294,7 @@ class ResearchPlanner:
             f"  {allowed}\n\n"
             "Guidance:\n"
             f"- Produce at most {self._max_sub_questions} sub-questions (fewer if that suffices).\n"
-            "- Prefer academic sources (published_papers_search) for scholarly/scientific claims, "
-            "news for current events, wikipedia for background, search_web for general/web coverage, "
-            "get_sec_filings for company filings, document_search for the user's own documents.\n"
+            + _source_strategy +
             "- STOCK / VALUATION / COMPANY-FINANCIALS topics (a named ticker or company whose price, "
             "valuation multiples — P/E, P/S, EV/EBITDA, P/B, PEG — fundamentals, financial statements, "
             "DCF, analyst targets, or prospects are wanted): route the DATA sub-questions to "

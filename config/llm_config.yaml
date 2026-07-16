@@ -334,6 +334,13 @@ deep_research:
       # sub-question text exactly as before (zero change for search-style sources / non-stock
       # queries). Set false for a one-line rollback to v1.0.0.155 behavior everywhere.
       per_source_queries: true
+      # Cluster B (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, Phase 2). When true, the planner is told to reach
+      # PRIMARY peer-reviewed scholarship (published_papers_search → OpenAlex/Crossref/CORE/DOAB/Semantic
+      # Scholar/arXiv/PubMed) for scholarly/historical/humanities claims INSTEAD OF tertiary wikis/SEO, to
+      # seek the competing models + historiography, and to decompose adversarially (seek the opposing side).
+      # Policy language, LLM-judged, no hardcoded topic lists. false = prior (weak "prefer academic") hint.
+      gather_quality:
+        enabled: true
     loop:
       # Iterative gather loop ceilings (LLM proposes within these; RAICA clamps).
       max_rounds_ceiling: 4
