@@ -35,6 +35,11 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Cluster B / academic-abstract retrieval (docs/RAICA_DR_ADVERSARIAL_BALANCE.md): the FULL abstract is
+# the groundable content of a paper reached by metadata search. The old 200-char cap gave the writer
+# a ~2-sentence teaser, forcing it to backfill the paper's specific findings from memory (unverifiable).
+_ABSTRACT_MAX = 1800
+
 class PublishedPapersSearchTool(BaseUserTool):
     """
     A comprehensive academic paper search tool that queries multiple databases:
@@ -383,8 +388,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             
             summary_elem = entry.find("{http://www.w3.org/2005/Atom}summary")
             abstract = summary_elem.text.strip() if summary_elem is not None else "No abstract"
-            if len(abstract) > 200:
-                abstract = abstract[:200] + "..."
+            if len(abstract) > _ABSTRACT_MAX:
+                abstract = abstract[:_ABSTRACT_MAX] + "..."
             
             # Create URL for citation
             arxiv_url = f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else None
@@ -436,8 +441,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             
             authors = [author.get("name", "") for author in paper.get("authors", [])]
             abstract = paper.get("abstract", "")
-            if abstract and len(abstract) > 200:
-                abstract = abstract[:200] + "..."
+            if abstract and len(abstract) > _ABSTRACT_MAX:
+                abstract = abstract[:_ABSTRACT_MAX] + "..."
             
             # Create URL for citation
             paper_id = paper.get("paperId")
@@ -556,8 +561,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                 pdf_link = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={article['pmcid']}&blobtype=pdf"
             
             abstract = article.get("abstractText", "")
-            if abstract and len(abstract) > 200:
-                abstract = abstract[:200] + "..."
+            if abstract and len(abstract) > _ABSTRACT_MAX:
+                abstract = abstract[:_ABSTRACT_MAX] + "..."
             
             authors = article.get("authorString", "").split(", ") if article.get("authorString") else []
             
@@ -637,8 +642,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                     break
             
             abstract = bibjson.get("abstract", "")
-            if abstract and len(abstract) > 200:
-                abstract = abstract[:200] + "..."
+            if abstract and len(abstract) > _ABSTRACT_MAX:
+                abstract = abstract[:_ABSTRACT_MAX] + "..."
             
             doi = None
             identifiers = bibjson.get("identifier", [])
@@ -690,8 +695,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             
             if query_lower in title or query_lower in abstract:
                 abstract_text = article.get("abstract", "")
-                if abstract_text and len(abstract_text) > 200:
-                    abstract_text = abstract_text[:200] + "..."
+                if abstract_text and len(abstract_text) > _ABSTRACT_MAX:
+                    abstract_text = abstract_text[:_ABSTRACT_MAX] + "..."
                 
                 # Create URL for citation
                 doi = article.get("doi")
@@ -743,8 +748,8 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
         for item in items:
             authors = [author.get("name", "") for author in item.get("authors", [])]
             abstract = item.get("abstract", "")
-            if abstract and len(abstract) > 200:
-                abstract = abstract[:200] + "..."
+            if abstract and len(abstract) > _ABSTRACT_MAX:
+                abstract = abstract[:_ABSTRACT_MAX] + "..."
             
             results.append({
                 "source": "CORE",
@@ -781,7 +786,7 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
         for w, ps in inv.items():
             for p in ps:
                 pos[p] = w
-        return " ".join(pos[i] for i in sorted(pos))[:200]
+        return " ".join(pos[i] for i in sorted(pos))[:_ABSTRACT_MAX]
 
     async def _search_openalex(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
         """OpenAlex — 250M+ works across ALL disciplines (incl. humanities); robust free API."""
@@ -849,7 +854,7 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                     "url": it.get("URL") or (f"https://doi.org/{it.get('DOI')}" if it.get("DOI") else None),
                     "doi": it.get("DOI"),
                     "pdf_link": None,
-                    "abstract": re.sub(r"<[^>]+>", "", it.get("abstract", "") or "")[:200] or "No abstract",
+                    "abstract": re.sub(r"<[^>]+>", "", it.get("abstract", "") or "")[:_ABSTRACT_MAX] or "No abstract",
                 })
             return out
         except Exception as e:
@@ -885,7 +890,7 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                     "url": f"https://archive.org/details/{ident}",
                     "doi": None,
                     "pdf_link": None,
-                    "abstract": (str(desc)[:200] if desc else "No abstract"),
+                    "abstract": (str(desc)[:_ABSTRACT_MAX] if desc else "No abstract"),
                 })
             return out
         except Exception as e:
@@ -914,7 +919,7 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                             else md.get("dc.identifier.uri")),
                     "doi": None,
                     "pdf_link": None,
-                    "abstract": (str(md.get("dc.description.abstract", ""))[:200] or "No abstract"),
+                    "abstract": (str(md.get("dc.description.abstract", ""))[:_ABSTRACT_MAX] or "No abstract"),
                 })
             return out
         except Exception as e:

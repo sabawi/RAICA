@@ -534,9 +534,13 @@ class DeepResearchEngine:
         lines = []
         for e in evidence:
             snippet = re.sub(r'\s+', ' ', e["content"])[:per_item_chars]
+            # Cluster B (#1): expose the source DOMAINS so the assessor can judge source QUALITY
+            # (journals/edu/gov vs wikis/blogs/advocacy), not just the tool. Compact — up to 4 distinct.
+            _doms = sorted({re.sub(r'^https?://(www\.)?([^/]+).*$', r'\2', u) for u in (e.get("urls") or []) if u})
+            _dom_tag = (", ".join(_doms[:4]) + ("…" if len(_doms) > 4 else "")) if _doms else "no-url"
             lines.append(
                 f"[{e['sub_question_id']} | {e['source']} | r{e['round']} | "
-                f"{e['chars']} chars | {len(e['urls'])} urls] {snippet}"
+                f"{e['chars']} chars | src: {_dom_tag}] {snippet}"
             )
         return "\n".join(lines)
 
@@ -574,6 +578,23 @@ class DeepResearchEngine:
                 "locating the PRIMARY source (name the likely document/author/record/dataset where you can). "
                 "Prefer chasing the ORIGIN over adding more secondary restatements — but do NOT invent or force a "
                 "primary that does not exist; if none is plausibly findable, say so in gaps and move on."
+            )
+        # Cluster B / #1 — SOURCE-QUALITY breakout (reuses the gather_quality flag). Mid-gather, upgrade the
+        # source quality when a scholarly topic came back tertiary/low-quality (the Nicaea residual). Policy
+        # language, LLM-judged from the source tool + domains; bounded by max_rounds; reversible via the flag.
+        if bool(self._cfg.get("planner", {}).get("gather_quality", {}).get("enabled", True)):
+            system_prompt += (
+                "\n\nSOURCE-QUALITY BREAKOUT: for a SCHOLARLY / HISTORICAL / SCIENTIFIC / HUMANITIES topic, also "
+                "judge the QUALITY of the sources behind each load-bearing sub-question (use the source tool and "
+                "the domains shown). If a sub-question's evidence rests on POPULAR or low-quality tertiary sources "
+                "(general-web snippets, wikis, personal blogs, advocacy/apologetics sites) and LACKS peer-reviewed "
+                "or reputable scholarship — in particular if NOTHING was gathered via published_papers_search for "
+                "it — set status=\"needs_more\" and add a next_query that UPGRADES quality: route it to "
+                "published_papers_search, or a search_web query NAMING reputable/academic targets (university-"
+                "press works, period reference encyclopedias, named scholars/journals). Prefer upgrading source "
+                "QUALITY over adding more of the same tier — no hardcoded source lists. Do NOT apply this to "
+                "current-events, quantitative-data, or company-financials topics, where web/structured sources "
+                "are the correct sources."
             )
         prompt = (
             f"USER REQUEST:\n{user_request}\n\n"
