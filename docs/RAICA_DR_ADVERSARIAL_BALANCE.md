@@ -114,8 +114,23 @@ applied "pots are not people," critiqued the pig-bone-as-identity claim, flagged
 the markers "do not, by themselves, prove this culture called itself 'Israelite' or 'Jewish'."
 
 ### Remaining clusters (roadmap)
-- **Cluster B — primary-source depth** (avoid secondary/tertiary summaries like wikis; develop the competing
-  ethnogenesis models; give the historiography of the debate) → Phase 2 gather-quality + primary-first provenance.
+- **Cluster B — primary-source depth.** *Planner gather-quality SHIPPED v1.0.0.186* (route load-bearing
+  scholarly claims to `published_papers_search`, seek competing models + historiography, adversarial
+  decomposition). Validated on the archaeology case (low_cred 24→10, peer_reviewed pool, 12 journal DOIs).
+  Validated on the archaeology + Arab-origins cases (peer-reviewed pool, journal/epigraphic sources).
+  **NEXT — a paired Cluster-B / veracity increment:**
+  - **(1) Assess-loop QUALITY breakout (P2):** when a gather round comes back dominated by POPULAR /
+    low-credibility sources — typical of *narrative* "what happened" history where journal coverage is thin
+    (live Nicaea run: peer_reviewed **3**, popular 15, low_cred 9, leaning on explainer blogs/advocacy) — spend
+    a round pulling REPUTABLE reference / university-press scholarship (period encyclopedias, academic histories,
+    primary-text editions) instead of settling. `engine.py _assess`. Pairs with primary-first provenance.
+  - **(2) Citability-requires-retrieval:** a SPECIFIC empirical finding may be attributed to a source ONLY if
+    that source's BODY was actually retrieved — not just its title / DOI / abstract. Observed live (Arab-origins
+    run): the writer stated the specific conclusions of peer-reviewed papers (Genome Research 2016, the Marsh-
+    Arabs J1 study) from memory because it knew the paper existed, though the gathered evidence held only the
+    metadata; verify caught all 5. Tightens the retrieval-gate (v1.0.0.182) + the synthesis attribution rule so a
+    paper's results can't be asserted from its metadata alone. The veracity increment that most directly serves
+    "the cited evidence genuinely supports the claim."
 - **Cluster C — deeper domain balance** (genetics: shared ancestry ≠ descent ≠ a people; fringe: critique WHY it
   fails, not just a credibility tag) → emerges from A+B plus a small directive sharpening.
 
