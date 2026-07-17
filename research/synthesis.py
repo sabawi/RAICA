@@ -808,6 +808,14 @@ class ResearchSynthesizer:
             "fact, quote, statistic, figure, date, or detail to it; reference it only for the existence of a "
             "topic or as further reading, clearly framed. Never present unseen specifics as sourced to it, and "
             "prefer sources WITH a retrieved body for concrete claims. (Governs ATTRIBUTION, not exclusion.)\n"
+            "- ABSTRACT / METADATA-ONLY SOURCES (citability-requires-retrieval): for an academic paper whose "
+            "block gives you only its TITLE, DOI, citation, or ABSTRACT (typical of published_papers_search "
+            "results — you hold the paper's abstract, NOT its full text), report ONLY what that abstract or "
+            "metadata actually states. Do NOT assert the study's specific detailed findings, figures, sample "
+            "sizes, dates, or conclusions as if you had read the full paper. If you 'know' more about the study "
+            "than its block provides, that is PARAMETRIC memory — do NOT present it as sourced to that block: "
+            "cite the paper for what the abstract supports, and mark or omit specifics the abstract does not "
+            "contain.\n"
         ) if _rg_active else ""
 
         # Adversarial balance (docs/RAICA_DR_ADVERSARIAL_BALANCE.md, P3) — steelman both sides + break the
