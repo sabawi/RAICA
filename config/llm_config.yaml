@@ -884,6 +884,37 @@ charts:
                                 # fits an 8–10 name comparison. Same-window cache keeps repeats free.
   cache_ttl_seconds: 1800       # reuse a (ticker, window) chart for 30 min → popular tickers render once, not per request
 
+  # ── Event-anchored technical sub-charts (Phase 5) — see docs/DESIGN_event_anchored_subcharts.md ──
+  # TWEAK THE LONG/SHORT-TERM BOUNDARIES HERE — one place, no code change. Sessions are trading days
+  # (~21/mo, ~63/qtr, ~126/6mo, ~252/yr, ~504/2yr). `default` is used when the query horizon is ambiguous.
+  trend_categories:
+    default: short_term
+    long_term:
+      display_sessions: 504      # main-chart span (~2 years horizon)
+      fetch_sessions: 756        # history to fetch (~3y) so SMA200 is warmed across the whole span
+      prior_sessions: 126        # "prior emphasis" lookback (~2 fiscal quarters) for featuring events
+      event_zoom_sessions: 25    # sub-chart crops to event ± this many sessions (~5 weeks)
+    short_term:
+      display_sessions: 126      # main-chart span (~6 months horizon)
+      fetch_sessions: 378        # ~1.5y so SMA200 is warmed across the span
+      prior_sessions: 63         # ~1 fiscal quarter
+      event_zoom_sessions: 12    # event ± ~2.5 weeks
+
+  # ── Deterministic event-detection thresholds (all tunable; NEVER a buy/sell signal — just dated states) ──
+  detection:
+    rsi_length: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    adx_length: 14
+    adx_strong: 25             # ADX crossing UP through this = trend strengthening
+    adx_weak: 20               # ADX crossing DOWN through this = weakening
+    sma_fast: 50
+    sma_slow: 200              # sign-flip of (SMA50 − SMA200) = golden/death cross
+    volume_avg_length: 20
+    volume_spike_mult: 2.0     # volume ≥ this × its trailing average = a spike
+    volume_confirm_window: 3   # a spike within ± this many sessions of another event = "confirming"
+    max_subcharts_per_stock: 3 # featured event sub-charts per stock (beyond the 1 main chart)
+
 # =============================================================================
 # INDIVIDUAL-STOCK ANALYZER (comprehensive_stock_analyzer) resilience.
 # =============================================================================
