@@ -81,6 +81,11 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                     "type": "boolean",
                     "description": "Set to true to include comprehensive financial statements, 20+ financial ratios, DCF intrinsic valuation, and 3-year projections. Use detailed=true when user asks for fundamental analysis, valuation, or financial metrics.",
                     "default": False
+                },
+                "analysis_horizon": {
+                    "type": "string",
+                    "enum": ["long_term", "short_term"],
+                    "description": "Set from the USER'S time frame so the technical event sub-charts zoom to the right window: 'long_term' for a multi-quarter / 1-2 year thesis (structural signals like the SMA 50/200 golden/death cross surface), 'short_term' for a <6-month / next-quarter view (recent RSI/MACD/volume events surface). Omit to use the configured default."
                 }
             },
             "required": ["ticker"]
@@ -839,6 +844,52 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                             f"hist_rows={0 if _hist is None else len(_hist)}, url={_url})")
                             except Exception as _cerr:
                                 logging.getLogger(__name__).info(f"chart card skipped for {ticker}: {_cerr}")
+
+                            # Phase 5 — event-anchored technical sub-charts: detect DATED events, render each
+                            # ZOOMED to its occurrence, and emit alternating-float [[chart:...]] markers plus an
+                            # OBJECTIVE dated-event list, so synthesis can place each in the section discussing
+                            # that indicator (text↔chart bound to the same occurrence). Category (long/short) is
+                            # LLM-set via analysis_horizon; selection/zoom are config-driven. Fully graceful.
+                            try:
+                                from utils.chart_publisher import charts_enabled, get_or_publish_chart, chart_display_days
+                                if charts_enabled() and _hist is not None and tech_block:
+                                    from utils.technical_events import (detect_events, detection_cfg,
+                                                                        default_category, event_label)
+                                    from utils.chart_generator import generate_event_chart
+                                    _horizon = (kwargs.get("analysis_horizon") or "").strip().lower() or default_category()
+                                    _events = detect_events(_hist, category=_horizon)
+                                    if _events:
+                                        _detcfg = detection_cfg()
+                                        _maxsub = int(_detcfg.get("max_subcharts_per_stock", 3))
+                                        _width = int(_detcfg.get("subchart_width_px", 500))
+                                        # Feature the most-recent occurrence of each distinct signal type,
+                                        # then the N most recent overall (deterministic; the category's display
+                                        # window already biases which signals are in view). Then chronological.
+                                        _by_type = {}
+                                        for _e in _events:               # detect_events returns ascending by date
+                                            _by_type[_e["type"]] = _e
+                                        _featured = sorted(_by_type.values(), key=lambda e: e["date"], reverse=True)[:_maxsub]
+                                        _featured = sorted(_featured, key=lambda e: e["date"])
+                                        _markers = []
+                                        for _i, _ev in enumerate(_featured):
+                                            _u = get_or_publish_chart(
+                                                ticker, chart_display_days(),
+                                                (lambda ev=_ev: generate_event_chart(ticker, _hist, ev, category=_horizon)),
+                                                variant=f"{_ev['type']}_{_ev['date']}")
+                                            if _u:
+                                                _align = "left" if _i % 2 == 0 else "right"
+                                                _markers.append(
+                                                    f'[[chart:{_u}|align={_align}|caption="{ticker} — {event_label(_ev)}"|w={_width}]]')
+                                        if _markers:
+                                            tech_block += ("\n\nKEY TECHNICAL EVENTS (objective dated states computed by "
+                                                           "RAICA; each has a matching zoomed chart below):\n")
+                                            tech_block += "\n".join(f"  • {event_label(_e)}" for _e in _featured)
+                                            tech_block += "\n\n" + "\n\n".join(_markers)
+                                            logging.getLogger(__name__).info(
+                                                f"🖼️ {len(_markers)} event sub-chart(s) EMITTED for {ticker} ({_horizon})")
+                            except Exception as _eerr:
+                                logging.getLogger(__name__).info(f"event sub-charts skipped for {ticker}: {_eerr}")
+
                             detailed_output.append(tech_block)
 
                         # Append detailed analysis to basic report

@@ -84,6 +84,21 @@ def detection_cfg() -> Dict[str, Any]:
     return dict(_require_keys(_charts_cfg().get("detection"), _DETECTION_KEYS, "detection."))
 
 
+def event_label(event: Dict[str, Any]) -> str:
+    """Objective, dated one-line label for an event — a STATE, never a buy/sell call. Shared by the
+    chart title/caption and the dated-event list handed to synthesis so text and chart read consistently."""
+    t = str(event.get("type", "")); d = str(event.get("direction", "")); date = str(event.get("date", ""))
+    names = {
+        "rsi_oversold": "RSI oversold (<30)", "rsi_overbought": "RSI overbought (>70)",
+        "macd_cross": f"MACD {d} cross", "macd_zero_cross": f"MACD {d} zero-cross",
+        "adx_strengthening": "ADX trend strengthening (>25)", "adx_weakening": "ADX weakening (<20)",
+        "sma_cross": f"{d.capitalize()} cross (SMA 50/200)",
+        "volume_confirm": f"Volume spike ({d.replace('_', ' ')})",
+    }
+    base = names.get(t, t.replace("_", " "))
+    return f"{base} · {date}" if date else base
+
+
 # ── deterministic detection primitives ──────────────────────────────────────
 def _cross_dates(s: pd.Series, level: float, up: bool) -> List[pd.Timestamp]:
     """Dates where ``s`` crosses ``level``. up=True: prev<level and now>=level. up=False: prev>level and now<=level."""

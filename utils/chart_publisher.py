@@ -116,15 +116,17 @@ def reset_response_charts():
     _response_budget.set(_Budget())
 
 
-def get_or_publish_chart(ticker: str, display_days: int, render_fn):
+def get_or_publish_chart(ticker: str, display_days: int, render_fn, variant: str = None):
     """Cache- and cap-aware chart publishing (the single entry point callers should use).
 
     render_fn is a zero-arg callable that produces PNG bytes (deferred so a cache hit skips rendering).
+    `variant` distinguishes different charts for the SAME (ticker, display_days) — e.g. an event
+    sub-chart keyed by its type+date — so they don't collide in the cache (default None = the main chart).
     Returns the same-origin URL to embed in a [[chart:...]] marker, or None (disabled / capped / failed).
     """
     if not charts_enabled():
         return None
-    key = (str(ticker).upper(), int(display_days))
+    key = (str(ticker).upper(), int(display_days), variant)
 
     # 1) cache hit → reuse, no render/upload, no budget spend
     hit = _cache_get(key)
@@ -146,7 +148,7 @@ def get_or_publish_chart(ticker: str, display_days: int, render_fn):
     url = None
     try:
         png = render_fn()
-        url = publish_chart(png, f"{key[0]}_technical") if png else None
+        url = publish_chart(png, f"{key[0]}_{variant or 'technical'}") if png else None
     except Exception as e:  # noqa: BLE001 — a chart failure must never break the caller
         logger.info(f"get_or_publish_chart error for {key[0]}: {e}")
     if url:

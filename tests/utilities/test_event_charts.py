@@ -84,3 +84,49 @@ def test_graceful_on_bad_input():
     assert generate_event_chart("T", hist, {"type": "unknown_thing", "date": good_date}) is None  # no wrong chart
     assert generate_event_chart("T", hist, {"type": "rsi_oversold"}) is None                       # no date
     assert generate_event_chart("T", hist, "not-a-dict") is None
+
+
+def test_event_label_objective_and_dated():
+    from utils.technical_events import event_label
+    assert event_label({"type": "sma_cross", "direction": "golden", "date": "2024-05-30"}) == \
+        "Golden cross (SMA 50/200) · 2024-05-30"
+    assert event_label({"type": "rsi_oversold", "date": "2023-02-06"}) == "RSI oversold (<30) · 2023-02-06"
+    assert "Volume spike" in event_label({"type": "volume_confirm", "direction": "up_confirm", "date": "2024-01-01"})
+
+
+def test_publisher_variant_cache_separation():
+    """Event sub-charts share (ticker, display_days) with the main chart and each other — the `variant`
+    must keep them from colliding in the cache (Step 3)."""
+    import utils.chart_publisher as cp
+    orig = (cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl)
+    try:
+        cp.charts_enabled = lambda: True
+        up = {"n": 0}
+        cp.publish_chart = lambda png, hint="c": (up.__setitem__("n", up["n"] + 1) or f"/static/images/media/{hint}_{up['n']}.jpg")
+        cp._cap_and_ttl = lambda *a, **k: (10, 1800)
+        cp._url_cache.clear(); cp.reset_response_charts()
+        rc = {"n": 0}
+        r = lambda: (rc.__setitem__("n", rc["n"] + 1) or b"PNG")
+
+        a = cp.get_or_publish_chart("AAPL", 126, r, variant="rsi_oversold_2024-01-05")
+        b = cp.get_or_publish_chart("AAPL", 126, r, variant="sma_cross_2024-03-10")
+        assert a and b and a != b and rc["n"] == 2, (a, b, rc["n"])            # distinct variants → distinct renders
+        a2 = cp.get_or_publish_chart("AAPL", 126, r, variant="rsi_oversold_2024-01-05")
+        assert a2 == a and rc["n"] == 2                                        # same variant → cache hit
+        m = cp.get_or_publish_chart("AAPL", 126, r)                            # main chart (variant=None)
+        assert m not in (a, b) and rc["n"] == 3                               # separate entry
+        assert "rsi_oversold" in a                                            # variant is traceable in the filename
+    finally:
+        cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl = orig
+        cp._url_cache.clear()
+
+
+def test_analyzer_exposes_horizon_param():
+    """The tool advertises analysis_horizon so the LLM can drive the long/short category (LLM-policy gate)."""
+    try:
+        from user_tools.comprehensive_stock_analyzer import ComprehensiveStockAnalyzerTool
+    except Exception as e:
+        pytest.skip(f"analyzer import unavailable in this env: {e}")
+    props = ComprehensiveStockAnalyzerTool().parameters["properties"]
+    assert "analysis_horizon" in props
+    assert props["analysis_horizon"]["enum"] == ["long_term", "short_term"]

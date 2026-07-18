@@ -126,15 +126,10 @@ def generate_main_chart(ticker: str, history: pd.DataFrame, display_days: int = 
 # panels / technical_indicators.format_for_llm's per-indicator rendering) — not meaning classification.
 
 def _human_event(event: dict) -> str:
-    """Objective, dated label for the card title/annotation — a STATE, never a buy/sell call."""
-    t = str(event.get("type", "")); d = str(event.get("direction", "")); date = str(event.get("date", ""))
-    names = {
-        "rsi_oversold": "RSI oversold (<30)", "rsi_overbought": "RSI overbought (>70)",
-        "macd_cross": f"MACD {d} cross", "macd_zero_cross": f"MACD {d} zero-cross",
-        "adx_strengthening": "ADX trend strengthening (>25)", "adx_weakening": "ADX weakening (<20)",
-        "sma_cross": f"{d.capitalize()} cross (SMA 50/200)", "volume_confirm": f"Volume spike ({d.replace('_', ' ')})",
-    }
-    return f"{names.get(t, t)} · {date}"
+    """Objective, dated label for the card title/annotation — a STATE, never a buy/sell call.
+    Shared with the analyzer's dated-event list via technical_events.event_label (one source)."""
+    from utils.technical_events import event_label
+    return event_label(event)
 
 
 def _mark_event(ax, xnum, label=None):

@@ -914,6 +914,7 @@ charts:
     volume_spike_mult: 2.0     # volume ≥ this × its trailing average = a spike
     volume_confirm_window: 3   # a spike within ± this many sessions of another event = "confirming"
     max_subcharts_per_stock: 3 # featured event sub-charts per stock (beyond the 1 main chart)
+    subchart_width_px: 500     # size hint (w=) on event sub-chart markers → NewX .chart-md (floated card)
 
 # =============================================================================
 # INDIVIDUAL-STOCK ANALYZER (comprehensive_stock_analyzer) resilience.
