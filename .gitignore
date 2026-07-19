@@ -158,3 +158,11 @@ tests/benchmark/scorecard.json
 # Benchmark engine (override any generic lib/ ignore)
 !tests/benchmark/lib/
 !tests/benchmark/lib/*.py
+
+# Local/runtime configs + editor & test artifacts — never commit (some carry secrets).
+# NOTE: config/communication_hub.yaml (no suffix) IS tracked; only these local variants are ignored.
+config/communication_hub.yaml.original
+config/communication_hub_newx.yaml
+.obsidian/
+archive/
+tests/data/intent_eval_results.jsonl
