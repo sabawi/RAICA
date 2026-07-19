@@ -134,6 +134,12 @@ def _normalize(history: pd.DataFrame) -> Optional[pd.DataFrame]:
         df.index = pd.to_datetime(df.index)
     except Exception:
         return None
+    # yfinance returns a tz-AWARE index (e.g. America/New_York); event dates are stored as naive
+    # 'YYYY-MM-DD' strings. Drop the tz so every date comparison downstream is naive-consistent —
+    # otherwise "Cannot compare tz-naive and tz-aware" is raised (synthetic date_range fixtures are
+    # naive and never hit this; real data does).
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
     df = df[~df.index.duplicated(keep="last")].sort_index()
     return df if len(df) >= 40 else None
 
@@ -144,6 +150,8 @@ def event_window(df_index, date, category: Optional[str] = None):
     idx = pd.DatetimeIndex(pd.to_datetime(df_index))
     if len(idx) == 0:
         return None, None
+    if idx.tz is not None:                      # match the naive event-date string (see _normalize)
+        idx = idx.tz_localize(None)
     z = int(trend_category(category)["event_zoom_sessions"])
     pos = int(idx.get_indexer([pd.Timestamp(date)], method="nearest")[0])
     lo = max(0, pos - z)

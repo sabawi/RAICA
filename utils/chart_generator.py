@@ -159,6 +159,8 @@ def generate_event_chart(ticker: str, history: pd.DataFrame, event: dict,
         if "Close" not in df.columns:
             return None
         df.index = pd.to_datetime(df.index)
+        if getattr(df.index, "tz", None) is not None:   # yfinance tz-aware vs naive event dates (see technical_events)
+            df.index = df.index.tz_localize(None)
         df = df[~df.index.duplicated(keep="last")].sort_index()
         c = df["Close"]; h = df.get("High"); l = df.get("Low")
 

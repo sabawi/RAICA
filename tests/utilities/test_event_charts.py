@@ -60,6 +60,20 @@ def test_every_event_family_renders_a_valid_png():
         assert _png_ok(png), (ev["type"], 0 if not png else len(png))
 
 
+def test_tz_aware_index_like_yfinance_renders():
+    """REGRESSION: real yfinance history is tz-AWARE (e.g. America/New_York) while event dates are
+    naive 'YYYY-MM-DD' strings. The naive-vs-aware comparison raised TypeError inside
+    generate_event_chart → every real-data sub-chart returned None (the live @Ask test found this;
+    the naive synthetic fixtures never did). Detection + render must both work on a tz-aware index."""
+    hist = _hist().tz_localize("America/New_York")     # mimic yfinance
+    assert hist.index.tz is not None
+    events = te.detect_events(hist, category="long_term")
+    assert events, "detect_events must work on a tz-aware index"
+    ev = next(e for e in events if e["type"] in ("sma_cross", "rsi_oversold", "macd_cross"))
+    png = generate_event_chart("TZ", hist, ev, category="long_term")
+    assert _png_ok(png), ("tz-aware render returned None", ev["type"], 0 if not png else len(png))
+
+
 def test_detect_then_render_handoff():
     """A real detected event must render — proves Step-1 → Step-2 wiring."""
     hist = _hist()
