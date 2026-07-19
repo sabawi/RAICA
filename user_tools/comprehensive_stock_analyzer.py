@@ -854,7 +854,8 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                 from utils.chart_publisher import charts_enabled, get_or_publish_chart, chart_display_days
                                 if charts_enabled() and _hist is not None and tech_block:
                                     from utils.technical_events import (detect_events, detection_cfg,
-                                                                        default_category, event_label)
+                                                                        default_category, event_label,
+                                                                        select_featured_events)
                                     from utils.chart_generator import generate_event_chart
                                     _horizon = (kwargs.get("analysis_horizon") or "").strip().lower() or default_category()
                                     _events = detect_events(_hist, category=_horizon)
@@ -862,14 +863,11 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                         _detcfg = detection_cfg()
                                         _maxsub = int(_detcfg.get("max_subcharts_per_stock", 3))
                                         _width = int(_detcfg.get("subchart_width_px", 500))
-                                        # Feature the most-recent occurrence of each distinct signal type,
-                                        # then the N most recent overall (deterministic; the category's display
-                                        # window already biases which signals are in view). Then chronological.
-                                        _by_type = {}
-                                        for _e in _events:               # detect_events returns ascending by date
-                                            _by_type[_e["type"]] = _e
-                                        _featured = sorted(_by_type.values(), key=lambda e: e["date"], reverse=True)[:_maxsub]
-                                        _featured = sorted(_featured, key=lambda e: e["date"])
+                                        # Feature ONE card per indicator family (no duplicate MACD cards),
+                                        # guaranteeing the structural SMA trend-regime cross when present, then
+                                        # filling by recency (config: subchart_priority_families). Chronological.
+                                        _featured = select_featured_events(
+                                            _events, _maxsub, _detcfg.get("subchart_priority_families"))
                                         _markers = []
                                         for _i, _ev in enumerate(_featured):
                                             _u = get_or_publish_chart(

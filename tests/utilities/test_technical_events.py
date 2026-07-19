@@ -147,6 +147,38 @@ def test_graceful_on_empty_and_short():
     assert te.detect_events(short) == []       # < 40 sessions → no detection
 
 
+def test_select_featured_events_dedup_and_priority():
+    """One card per indicator family (no duplicate MACD), structural SMA guaranteed, rest by recency."""
+    from utils.technical_events import select_featured_events
+    events = sorted([
+        {"type": "macd_zero_cross", "date": "2026-06-10"},
+        {"type": "sma_cross",       "date": "2026-01-15"},   # oldest, but structural → must be featured
+        {"type": "adx_weakening",   "date": "2026-06-02"},
+        {"type": "macd_cross",      "date": "2026-07-14"},   # same family as zero_cross, more recent
+        {"type": "rsi_oversold",    "date": "2026-05-01"},
+    ], key=lambda e: e["date"])
+    sel = select_featured_events(events, 3, ["sma"])
+    types = [e["type"] for e in sel]
+    assert len(sel) == 3
+    assert sum(1 for t in types if t.startswith("macd")) == 1   # MACD family de-duped
+    assert "macd_cross" in types                                # kept the more-recent MACD
+    assert "sma_cross" in types                                 # structural guaranteed despite being oldest
+    assert [e["date"] for e in sel] == sorted(e["date"] for e in sel)   # chronological
+
+
+def test_select_featured_events_cap_priority_and_empty():
+    from utils.technical_events import select_featured_events
+    assert select_featured_events([], 3, ["sma"]) == []
+    assert select_featured_events([{"type": "macd_cross", "date": "2026-07-14"}], 0, []) == []
+    evs = sorted([{"type": "macd_cross", "date": "2026-07-14"},
+                  {"type": "rsi_oversold", "date": "2026-06-01"},
+                  {"type": "adx_weakening", "date": "2026-05-01"}], key=lambda e: e["date"])
+    assert len(select_featured_events(evs, 2, [])) == 2          # capped at max_n
+    assert len(select_featured_events(evs, 5, [])) == 3          # only 3 families available
+    # priority family absent → just recency, no crash
+    assert len(select_featured_events(evs, 3, ["sma"])) == 3
+
+
 def test_missing_config_fails_fast(monkeypatch):
     """RAICA config directive: no hardcoded fallbacks — a missing charts.* config must FAIL FAST,
     never silently use defaults. detect_events() still degrades gracefully (logs + []) so the

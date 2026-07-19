@@ -216,7 +216,11 @@ def generate_event_chart(ticker: str, history: pd.DataFrame, event: dict,
             a = adx.reindex(df.index).loc[win.index]
             ax.plot(xd, a[ac], color=_TXT, lw=1.6, label="ADX")
             ax.plot(xd, a[dp], color=_UP, lw=1, label="+DI"); ax.plot(xd, a[dn], color=_DN, lw=1, label="-DI")
-            ax.axhline(25, color="#8899a6", ls=":", alpha=.6)
+            # Draw BOTH ADX regime thresholds so the event's line is visible: a 'weakening (<20)' event
+            # crosses the 20 line, a 'strengthening (>25)' event crosses 25 (previously only 25 was drawn,
+            # so a <20 event had no reference line).
+            ax.axhline(25, color="#8899a6", ls=":", alpha=.6)    # strong-trend threshold (>25)
+            ax.axhline(20, color="#8899a6", ls=":", alpha=.45)   # weak-trend threshold (<20)
             ax.legend(loc="upper left", framealpha=.3, facecolor=_AX, edgecolor=_SP, labelcolor=_TXT, fontsize=7, ncol=3)
         elif etype == "volume_confirm":
             if "Volume" not in win.columns:

@@ -99,6 +99,36 @@ def event_label(event: Dict[str, Any]) -> str:
     return f"{base} · {date}" if date else base
 
 
+def select_featured_events(events, max_n, priority_families=None):
+    """Choose which detected events to render as sub-charts for one stock.
+
+    1. Dedupe to ONE event per indicator FAMILY (rsi / macd / adx / sma / volume), keeping the most
+       recent — so a stock never gets two MACD cards (macd_cross + macd_zero_cross collapse to one).
+    2. Guarantee any ``priority_families`` a slot when present — e.g. the structural SMA trend-regime
+       (golden/death) cross, which an analysis leans on even when it isn't the most *recent* event.
+    3. Fill the remaining slots by recency. Return up to ``max_n``, chronological (for display order).
+
+    Pure deterministic selection of WHICH structured events to visualize (like always drawing the main
+    chart) — not meaning classification (LLM-policy gate). Families/priority come from config.
+    ``events`` must be ascending by date (as ``detect_events`` returns) so 'last per family' = most recent."""
+    if not events or int(max_n) <= 0:
+        return []
+    max_n = int(max_n)
+    priority_families = priority_families or []
+    fam_latest = {}
+    for e in events:
+        fam_latest[str(e.get("type", "")).split("_")[0]] = e   # most-recent per family
+    featured = []
+    for fam in priority_families:
+        if len(featured) >= max_n:
+            break
+        if fam in fam_latest:
+            featured.append(fam_latest.pop(fam))
+    rest = sorted(fam_latest.values(), key=lambda e: e.get("date", ""), reverse=True)
+    featured += rest[:max(0, max_n - len(featured))]
+    return sorted(featured, key=lambda e: e.get("date", ""))
+
+
 # ── deterministic detection primitives ──────────────────────────────────────
 def _cross_dates(s: pd.Series, level: float, up: bool) -> List[pd.Timestamp]:
     """Dates where ``s`` crosses ``level``. up=True: prev<level and now>=level. up=False: prev>level and now<=level."""
