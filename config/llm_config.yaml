@@ -879,9 +879,15 @@ charts:
   newx_upload_url: "https://localhost:9876/internal/chart-upload"  # NewX chart-upload endpoint (loopback, same host)
   verify_tls: false             # loopback same-host: NewX cert is self-signed/CN-mismatched; shared secret is the auth
   display_days: 126             # trading sessions shown on the main chart (~6 months)
-  max_per_response: 10          # hard fail-safe: max charts rendered per user response (over cap → no chart, text
-                                # unaffected). 6→10 (2026-07-11): an 8-stock basket capped the last 2 charts; 10
-                                # fits an 8–10 name comparison. Same-window cache keeps repeats free.
+  # Per-response chart budget (multi-stock fair allocation, 2026-07-19). Every stock is GUARANTEED its
+  # minimum FIRST (main chart is requested before sub-charts, so it's always reserved); EXTRA sub-charts
+  # then come from the shared soft pool; a hard ceiling guards a huge basket. So an 8-stock basket gives
+  # all 8 their main+1 sub, instead of 3 stocks fully-charted and 5 blank.
+  min_charts_per_stock: 2       # each stock guaranteed at least this many (its main chart + 1 event sub-chart),
+                                # reserved before the shared pool — honored even in a large multi-stock basket
+  max_per_response: 10          # SOFT pool: beyond each stock's minimum, extra sub-charts are granted only
+                                # while the running total is below this (few-stock queries → richer charts)
+  hard_cap_per_response: 30     # ABSOLUTE ceiling on total charts per response (safety net for a huge basket)
   cache_ttl_seconds: 1800       # reuse a (ticker, window) chart for 30 min → popular tickers render once, not per request
 
   # ── Event-anchored technical sub-charts (Phase 5) — see docs/DESIGN_event_anchored_subcharts.md ──

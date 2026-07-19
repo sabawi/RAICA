@@ -426,38 +426,49 @@ def test_chart_generator_and_publisher():
 
 
 def test_chart_cache_and_cap():
-    """v1.0.0.171 production guards: same-window cache + per-response cap (monkeypatched — flag-independent)."""
+    """Production guards: same-window cache + multi-stock budget (per-stock minimum reserved, shared soft pool
+    for extras, absolute hard cap). Monkeypatched — flag/config-independent. _budget_cfg → (min, soft, hard, ttl)."""
     import utils.chart_publisher as cp
-    orig_enabled, orig_publish, orig_capttl = cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl
+    orig_enabled, orig_publish, orig_budget = cp.charts_enabled, cp.publish_chart, cp._budget_cfg
     try:
         cp.charts_enabled = lambda: True
         _n = {"up": 0}
         cp.publish_chart = lambda png, hint="c": (_n.__setitem__("up", _n["up"] + 1) or f"/static/images/media/{hint}_{_n['up']}.jpg")
 
-        # cache: same (ticker, days) renders once, second is a hit
-        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (6, 1800)
+        # cache: same (ticker, days, variant) renders once, second is a hit; a distinct window is a new entry
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._budget_cfg = lambda *a, **k: (2, 6, 30, 1800)
         rc = {"n": 0}
         r = lambda: (rc.__setitem__("n", rc["n"] + 1) or b"PNG")
         u1 = cp.get_or_publish_chart("AVGO", 126, r); u2 = cp.get_or_publish_chart("AVGO", 126, r)
         assert u1 and u1 == u2 and rc["n"] == 1, (u1, u2, rc["n"])
-        # distinct window is a separate cache entry
         u3 = cp.get_or_publish_chart("AVGO", 60, r); assert u3 != u1 and rc["n"] == 2
 
-        # cap: max=2, three distinct tickers → 3rd blocked, only 2 rendered
-        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (2, 1800)
+        # per-stock MINIMUM guaranteed even when the soft pool is small; extras beyond it are capped, hard cap bounds total.
+        # (min=2, soft=4, hard=8) — 3 stocks each request 3 charts (main + 2 subs).
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._budget_cfg = lambda *a, **k: (2, 4, 8, 1800)
         rd = {"n": 0}; rr = lambda: (rd.__setitem__("n", rd["n"] + 1) or b"PNG")
-        a = cp.get_or_publish_chart("AAA", 126, rr); b = cp.get_or_publish_chart("BBB", 126, rr)
-        c = cp.get_or_publish_chart("CCC", 126, rr)
-        assert a and b and c is None and rd["n"] == 2, (a, b, c, rd["n"])
+        res = {t: [cp.get_or_publish_chart(t, 126, rr, variant=f"c{i}") for i in range(3)] for t in ("AAA", "BBB", "CCC")}
+        for t in ("AAA", "BBB", "CCC"):
+            assert res[t][0] and res[t][1], (t, res[t])                     # every stock gets its 2 minimums
+        assert rd["n"] <= 8, rd["n"]                                        # bounded by the hard cap
+        assert any(res[t][2] is None for t in ("AAA", "BBB", "CCC"))        # some 3rd (extra) denied — pool exhausted
 
-        # a failed render must NOT consume budget (slot released)
-        cp._url_cache.clear(); cp.reset_response_charts(); cp._cap_and_ttl = lambda *a, **k: (1, 1800)
+        # the per-stock minimum still holds AFTER an earlier stock exhausts the soft pool
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._budget_cfg = lambda *a, **k: (2, 4, 20, 1800)
+        re = {"n": 0}; rf = lambda: (re.__setitem__("n", re["n"] + 1) or b"PNG")
+        for i in range(4):                                                  # LEAD grabs its min + fills the soft pool
+            cp.get_or_publish_chart("LEAD", 126, rf, variant=f"c{i}")
+        assert cp.get_or_publish_chart("LATE", 126, rf, variant="main") is not None   # min guaranteed despite total >= soft
+        assert cp.get_or_publish_chart("LATE", 126, rf, variant="sub1") is not None
+
+        # a failed render must NOT consume budget (slot released) — hard cap 1 makes the release observable
+        cp._url_cache.clear(); cp.reset_response_charts(); cp._budget_cfg = lambda *a, **k: (1, 1, 1, 1800)
         f = cp.get_or_publish_chart("FAIL", 126, lambda: None)
         g = cp.get_or_publish_chart("GOOD", 126, lambda: b"PNG")
         assert f is None and g is not None, (f, g)
 
-        # reset zeroes the budget between responses
-        cp._url_cache.clear(); cp._cap_and_ttl = lambda *a, **k: (1, 1800)
+        # reset zeroes the budget between responses (hard cap 1 → only the first chart of a response renders)
+        cp._url_cache.clear(); cp._budget_cfg = lambda *a, **k: (1, 1, 1, 1800)
         cp.reset_response_charts(); h1 = cp.get_or_publish_chart("H1", 126, lambda: b"PNG")
         h2 = cp.get_or_publish_chart("H2", 126, lambda: b"PNG")
         cp.reset_response_charts(); h3 = cp.get_or_publish_chart("H3", 126, lambda: b"PNG")
@@ -467,7 +478,7 @@ def test_chart_cache_and_cap():
         cp.charts_enabled = lambda: False
         assert cp.get_or_publish_chart("OFF", 126, lambda: b"PNG") is None
     finally:
-        cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl = orig_enabled, orig_publish, orig_capttl
+        cp.charts_enabled, cp.publish_chart, cp._budget_cfg = orig_enabled, orig_publish, orig_budget
         cp._url_cache.clear()
     print("PASS test_chart_cache_and_cap")
 

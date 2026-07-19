@@ -66,14 +66,23 @@ def chart_display_days(default: int = 126) -> int:
         return default
 
 
-def _cap_and_ttl(max_default: int = 6, ttl_default: int = 1800):
-    """(max_per_response, cache_ttl_seconds) from config/llm_config.yaml charts block."""
+def _budget_cfg(min_default: int = 2, soft_default: int = 10, hard_default: int = 30, ttl_default: int = 1800):
+    """(min_charts_per_stock, soft_cap, hard_cap, cache_ttl_seconds) from config/llm_config.yaml charts.
+
+    min_charts_per_stock — each stock is GUARANTEED this many charts (main + a sub-chart), reserved before
+      the shared pool, even in a large basket (the main chart is requested first so it's always reserved).
+    soft_cap (max_per_response) — beyond each stock's minimum, EXTRA sub-charts are granted only while the
+      running total is below this; a few-stock query draws rich extras, a big basket mostly gets minimums.
+    hard_cap — absolute ceiling on total charts per response (guards a huge basket)."""
     try:
         from utils.config_loader import config_loader
         cfg = (config_loader.load_config().get('charts', {}) or {})
-        return int(cfg.get('max_per_response', max_default)), int(cfg.get('cache_ttl_seconds', ttl_default))
+        return (int(cfg.get('min_charts_per_stock', min_default)),
+                int(cfg.get('max_per_response', soft_default)),
+                int(cfg.get('hard_cap_per_response', hard_default)),
+                int(cfg.get('cache_ttl_seconds', ttl_default)))
     except Exception:
-        return max_default, ttl_default
+        return min_default, soft_default, hard_default, ttl_default
 
 
 # --- same-window URL cache (process-global, thread-safe) --------------------------------------------
@@ -100,10 +109,11 @@ def _cache_put(key, url, ttl):
 
 # --- per-response chart budget (shared mutable object on a contextvar) -------------------------------
 class _Budget:
-    __slots__ = ("count", "lock")
+    __slots__ = ("per_ticker", "total", "lock")
 
     def __init__(self):
-        self.count = 0
+        self.per_ticker = {}   # TICKER -> charts committed this response (for the per-stock minimum guarantee)
+        self.total = 0
         self.lock = threading.Lock()
 
 
@@ -134,15 +144,26 @@ def get_or_publish_chart(ticker: str, display_days: int, render_fn, variant: str
         logger.info(f"chart cache HIT {key[0]}@{key[1]}d → {hit}")
         return hit
 
-    # 2) per-response cap (reserve a slot up front so concurrent calls can't overshoot)
-    max_per, ttl = _cap_and_ttl()
+    # 2) per-response budget: GUARANTEE each stock its first `min_charts_per_stock` charts (main + a sub —
+    #    the main is requested first so it's always reserved), then hand EXTRA sub-charts from a shared pool
+    #    (soft_cap) to whichever stocks race first, under an absolute hard ceiling. Reserve the slot up front
+    #    so concurrently-gathered tool calls can't overshoot. Every stock gets its minimum regardless of order.
+    min_per_stock, soft_cap, hard_cap, ttl = _budget_cfg()
     budget = _response_budget.get()
+    tkr = key[0]
     if budget is not None:
         with budget.lock:
-            if budget.count >= max_per:
-                logger.info(f"chart cap reached ({budget.count}/{max_per}) — skipping chart for {key[0]}")
+            if budget.total >= hard_cap:
+                logger.info(f"chart hard cap reached ({budget.total}/{hard_cap}) — skipping chart for {tkr}")
                 return None
-            budget.count += 1
+            per = budget.per_ticker.get(tkr, 0)
+            # extra chart (this stock already has its minimum) is allowed only while the shared pool has room
+            if per >= min_per_stock and budget.total >= soft_cap:
+                logger.info(f"chart cap reached ({tkr}: {per}/{min_per_stock} min, total {budget.total}/soft "
+                            f"{soft_cap}) — skipping extra chart")
+                return None
+            budget.per_ticker[tkr] = per + 1
+            budget.total += 1
 
     # 3) render (deferred) + publish; cache the URL on success, release the reserved slot on failure
     url = None
@@ -155,7 +176,8 @@ def get_or_publish_chart(ticker: str, display_days: int, render_fn, variant: str
         _cache_put(key, url, ttl)
     elif budget is not None:
         with budget.lock:
-            budget.count = max(0, budget.count - 1)
+            budget.per_ticker[tkr] = max(0, budget.per_ticker.get(tkr, 1) - 1)
+            budget.total = max(0, budget.total - 1)
     return url
 
 

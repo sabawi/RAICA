@@ -112,12 +112,12 @@ def test_publisher_variant_cache_separation():
     """Event sub-charts share (ticker, display_days) with the main chart and each other — the `variant`
     must keep them from colliding in the cache (Step 3)."""
     import utils.chart_publisher as cp
-    orig = (cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl)
+    orig = (cp.charts_enabled, cp.publish_chart, cp._budget_cfg)
     try:
         cp.charts_enabled = lambda: True
         up = {"n": 0}
         cp.publish_chart = lambda png, hint="c": (up.__setitem__("n", up["n"] + 1) or f"/static/images/media/{hint}_{up['n']}.jpg")
-        cp._cap_and_ttl = lambda *a, **k: (10, 1800)
+        cp._budget_cfg = lambda *a, **k: (2, 10, 30, 1800)   # min, soft pool, hard cap, ttl
         cp._url_cache.clear(); cp.reset_response_charts()
         rc = {"n": 0}
         r = lambda: (rc.__setitem__("n", rc["n"] + 1) or b"PNG")
@@ -131,7 +131,7 @@ def test_publisher_variant_cache_separation():
         assert m not in (a, b) and rc["n"] == 3                               # separate entry
         assert "rsi_oversold" in a                                            # variant is traceable in the filename
     finally:
-        cp.charts_enabled, cp.publish_chart, cp._cap_and_ttl = orig
+        cp.charts_enabled, cp.publish_chart, cp._budget_cfg = orig
         cp._url_cache.clear()
 
 
