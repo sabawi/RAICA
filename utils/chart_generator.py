@@ -227,7 +227,12 @@ def generate_event_chart(ticker: str, history: pd.DataFrame, event: dict,
                 return None
             ax.plot(xd, win["Close"], color=_TXT, lw=1.3, label="Close")
             pv = ax.twinx()
-            cols = [_UP if cl >= o else _DN for o, cl in zip(win.get("Open", win["Close"]), win["Close"])]
+            # Colour each bar by DAILY RETURN (close vs PRIOR close) — the same up/down convention the
+            # event detector uses for 'up_confirm'/'down_confirm', so the spike bar's colour matches its
+            # label. (Candle body close-vs-open can disagree on a gap day.) pct_change on the full series
+            # gives the window's first bar its true prior-day return.
+            ret = c.pct_change().loc[win.index]
+            cols = [_DN if (r < 0) else _UP for r in ret]
             pv.bar(xd, win["Volume"], width=bw, color=cols, alpha=.35)
             pv.set_ylim(0, float(win["Volume"].max()) * 1.6); pv.axis("off")
             ax.legend(loc="upper left", framealpha=.3, facecolor=_AX, edgecolor=_SP, labelcolor=_TXT, fontsize=7)
