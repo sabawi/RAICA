@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(_ROOT, "user_tools"))   # tools do `from base_us
 
 import datasources.data_chart_builder as builder
 import user_tools.search_datasets_tool as sdt
-from datasources.fbi_cde import FbiCdeAdapter
+from datasources.declarative_adapter import DeclarativeAdapter
 from user_tools.search_datasets_tool import SearchDatasetsTool
 
 
@@ -35,7 +35,7 @@ def _run(coro):
 def _enable(monkeypatch, fixture=True, publish=True):
     monkeypatch.setattr(sdt, "_feature_enabled", lambda: True)
     if fixture:
-        monkeypatch.setattr(FbiCdeAdapter, "_http_get", lambda self, req: _fixture())
+        monkeypatch.setattr(DeclarativeAdapter, "_http_get", lambda self, req: _fixture())
     if publish:
         monkeypatch.setattr(builder, "_default_publish",
                             lambda: (lambda png, hint: f"/static/images/media/{hint}.jpg"))
@@ -72,7 +72,7 @@ def test_missing_params(monkeypatch):
 
 def test_extract_failure_fails_closed(monkeypatch):
     monkeypatch.setattr(sdt, "_feature_enabled", lambda: True)
-    monkeypatch.setattr(FbiCdeAdapter, "_http_get", lambda self, req: {"results": []})
+    monkeypatch.setattr(DeclarativeAdapter, "_http_get", lambda self, req: {"results": []})
     r = _run(SearchDatasetsTool().execute(source="fbi_cde", measure="violent-crime"))
     assert r["success"] is False and r["error"]
 
