@@ -63,15 +63,22 @@ is registered once and gets `{artifact_id, kind, same-origin url, local path, mi
 - **Numbers-by-reference / no-fabrication carries over:** a generated chart's data still comes from a real
   source (the data-charting rule); the registry stores the produced bytes, never LLM-typed content.
 
-### (B) One Marker Family + one Renderer used on BOTH sides — closes G1
-Content references artifacts by a small marker family: `[[chart:…]]` (exists), plus `[[image:…]]` and
-`[[file:…]]` (new, same grammar: `[[kind:<url>|align=…|caption="…"|w=…]]`).
-- **A single marker→HTML renderer module** (new, e.g. `utils/artifact_markup.py`) converts a marker to the
-  right affordance: chart/image → `<img>`; file → a download/preview block. **Both** callers use it:
-  - **NewX** chat renderer (today it renders `[[chart:]]`→card; it calls the shared contract for all kinds).
-  - **RAICA file-packaging** (`pdf_generator`/HTML) calls it BEFORE producing the PDF/HTML, so the delivered
-    file contains real `<img>`/links — not raw markers.
-- One grammar, one renderer, two targets → an artifact rendered in chat is rendered identically in the file.
+### (B) RAICA emits markers (placement); NewX OWNS rendering/style — closes G1
+**Platform boundary (decided):** RAICA is the intelligent AGENT — it decides WHETHER, WHEN, and WHICH artifact
+to include and emits a placement **marker**; it does **NOT** decide **style**. NewX is the UI PLATFORM — it OWNS
+the marker→visual rendering (the *single* source of style), for the chat reply AND for delivered files.
+- Content references artifacts by one small marker family: `[[chart:…]]` (exists) + `[[image:…]]` + `[[file:…]]`
+  (new), one grammar. RAICA *places* them; it **never** converts them to styled HTML.
+- **Chat target:** NewX renders markers → card/inline (as today for `[[chart:]]`), extended to image/file
+  (`[[file:]]` → **inline preview**, decision §8.3).
+- **Delivery target (the G1 fix):** the styled, self-contained HTML/PDF deliverable is ALSO produced by NewX's
+  renderer — RAICA calls a **NewX render endpoint** with the answer+markers, receives the rendered self-
+  contained HTML back, then packages/emails it (RAICA owns *delivery*: `secure_email_sender`, recipient lock).
+  RAICA does NOT style the deliverable. (This is a NEW NewX capability: "render answer+markers → self-contained
+  styled HTML"; the existing RAICA `pdf_generator` HTML template moves to / is owned by NewX so style lives in
+  one place.)
+- Result: ONE renderer (NewX), two outputs (chat + file) → a chart looks identical in the reply and in the
+  emailed HTML, never raw `[[chart:…]]` text.
 
 ### (C) Content-vs-Delivery split — closes G3, enables 3/4 = 1/2 minus delivery
 `_decompose_request` (`pipeline.py:218`) strips **only OUTBOUND DELIVERY** — save-as-file/PDF/HTML, email,
@@ -92,9 +99,10 @@ artifact markers are already rendered by (B), and packages/emails it.
 2. Planner routes a sub-question to `search_datasets` (gather source) → World Bank Egypt population → chart
    rendered → registered (A) → `[[chart:url]]` in the tool's evidence (`engine.py:496` dispatch → evidence).
 3. Synthesize writes the explanation and **reproduces `[[chart:]]`** from evidence (existing relay).
-4. Chat target: answer streams; NewX renders the chart card (B). 
-5. Delivery: `_run_dr_delivery` renders the answer's markers via (B) → HTML file **with the `<img>`** →
-   emails to the locked recipient (`_artifact_snapshot`/attach + `secure_email_sender`).
+4. Chat target: answer streams; NewX renders the chart card (B).
+5. Delivery: `_run_dr_delivery` calls the **NewX render endpoint** (answer+markers → self-contained styled
+   HTML **with the `<img>`**), then emails that file to the locked recipient (`secure_email_sender`). RAICA
+   orchestrates delivery; NewX did the styling.
 
 **Prompt 2 — caption attached photo + email body**
 1. Ingest: photo → registry (A) → `[[image:url]]`; vision (`:2204`) lets the LLM "see" it.
@@ -120,7 +128,7 @@ artifact markers are already rendered by (B), and packages/emails it.
 |---|---|---|
 | Artifact capture | `chart_publisher.publish_chart` (upload), `_artifact_snapshot` (files) | thin **registry** wrapping both |
 | Marker relay in synthesis | `synthesis.py:37,681-740` (already relays `[[chart:]]`) | extend to `[[image:]]`/`[[file:]]` |
-| Marker→HTML renderer | NewX chat renderer (charts) | shared `artifact_markup` used by NewX **and** RAICA file-packaging |
+| Marker→visual rendering (STYLE) | NewX chat renderer (charts) | **NewX owns it** — extend to image/file; add a NewX "render answer+markers → self-contained styled HTML" endpoint for deliverables. RAICA emits markers only, never styles. |
 | Decompose split | `_decompose_request` (`pipeline.py:218`) | policy edit: strip delivery only, keep content/artifacts |
 | Delivery | `_run_dr_delivery` (`:7582`), `secure_email_sender`, `authorize_delivery` (`policy.py:42`) | call the shared renderer before packaging |
 | Inbound register | `set_image_context` (`:528`), vision (`:2204`) | register inbound artifacts into (A) + emit `[[image:]]` |
@@ -136,12 +144,19 @@ artifact markers are already rendered by (B), and packages/emails it.
 - **Fail-closed:** no trusted artifact → no marker; a marker whose artifact is missing renders as nothing,
   never as broken/raw text.
 
-## 8. Open decisions (resolve before/within build)
-1. **Renderer placement:** RAICA renders markers→HTML before file-packaging AND NewX renders for chat
-   (two callers of one shared spec) vs a single service. Leaning: shared pure function, both call it.
-2. **Inbound echo policy:** auto-register every attachment vs only when the prompt references it.
-3. **`[[file:]]` affordance in NewX chat** (download chip vs inline preview) — NewX-side render work.
-4. **Marker grammar for non-image files** (mime, filename, size in the marker).
+## 8. Decisions (RESOLVED 2026-07-20)
+1. **Renderer placement → NewX owns all rendering/style.** RAICA (the agent) decides whether/when/which
+   artifact and emits a placement marker; NewX (the UI) renders it — for chat AND for delivered files (via a
+   new NewX "render answer+markers → self-contained styled HTML" endpoint). RAICA never styles. (See §3B, §6.)
+2. **Inbound echo → only when the prompt references it.** An attachment is registered for recognition
+   (vision/doc), but echoed to output (chat/email body) ONLY when the prompt refers to it (e.g. "the attached
+   photo") — not auto-echoed.
+3. **`[[file:]]` chat affordance → inline preview** (not a download chip). NewX picks the preview by mime.
+4. **Marker grammar for non-image files → DECIDED:** one grammar across kinds —
+   `[[<kind>:<same-origin-url>|caption="…"|align=center|w=…]]` for chart/image; files add descriptive
+   attributes NewX needs for an inline preview:
+   `[[file:<url>|name="report.pdf"|mime="application/pdf"|size=74556|caption="…"]]`. NewX chooses the inline
+   affordance from `mime` (pdf preview, image, etc.); RAICA only fills the attributes (facts, not style).
 
 ## 9. Incremental build plan (each step verified through the REAL entry point, per the gate)
 1. **Content-vs-delivery split (C) + Issue A** — smallest fix that makes prompt 3 (chart in chat) work
