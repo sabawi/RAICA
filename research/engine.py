@@ -32,6 +32,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -197,6 +198,11 @@ def _data_charts_cfg() -> Dict[str, Any]:
 
 
 def _data_charts_enabled() -> bool:
+    # .env override (like RAICA_CHARTS_ENABLED) takes precedence over the yaml, so a per-environment
+    # toggle (e.g. enable on prod for testing) needs no config-file edit and survives a git pull.
+    _env = os.getenv("RAICA_DATA_CHARTS_ENABLED")
+    if _env is not None:
+        return _env.strip().lower() == "true"
     return bool(_data_charts_cfg().get("enabled", False))
 
 

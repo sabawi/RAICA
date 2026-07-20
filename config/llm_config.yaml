@@ -220,6 +220,8 @@ deep_research:
   # Master flag. When false (default) the pipeline is UNCHANGED — search_datasets is NOT offered to the
   # planner (not added to engine.sources.allowed) and the tool self-disables even if called. Isolated on
   # branch feature/data-charts; flip to true only after live end-to-end validation.
+  # .env override (precedence): RAICA_DATA_CHARTS_ENABLED=true — per-environment toggle without editing this
+  # file (survives git pull), mirroring RAICA_CHARTS_ENABLED. Use it to enable on prod for testing.
   data_charts:
     enabled: false
     sources:
