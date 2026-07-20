@@ -80,15 +80,23 @@ class DeclarativeAdapter(DataSourceAdapter):
     def _endpoint(self, request: DatasetRequest) -> str:
         return self.cfg["endpoint"].format(**self._fmt(request))
 
-    def _http_get(self, request: DatasetRequest) -> Any:
-        """Generic live fetch. Not exercised by offline tests (they inject fetch_json)."""
-        import requests
+    def _build_params(self, request: DatasetRequest) -> Dict[str, Any]:
+        """Query params from cfg.params, substituted + cleaned. Drops empty OR malformed PARTIAL ranges
+        (e.g. '1970:' when to_year is absent, ':2024' when from is) — _build still filters by from/to, so
+        dropping the param and fetching the full series is safe and correct."""
         fmt = self._fmt(request)
         params: Dict[str, Any] = {}
         for key, tmpl in (self.cfg.get("params") or {}).items():
-            val = str(tmpl).format(**fmt)
-            if val and "{" not in val and val not in (":", ""):   # drop params whose substitutions were empty
-                params[key] = val
+            val = str(tmpl).format(**fmt).strip()
+            if (not val) or ("{" in val) or val == ":" or val.startswith(":") or val.endswith(":"):
+                continue
+            params[key] = val
+        return params
+
+    def _http_get(self, request: DatasetRequest) -> Any:
+        """Generic live fetch. Not exercised by offline tests (they inject fetch_json)."""
+        import requests
+        params = self._build_params(request)
         auth = self.cfg.get("auth") or {"type": "none"}
         if auth.get("type") == "query_key":
             key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)

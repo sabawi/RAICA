@@ -111,3 +111,15 @@ def test_world_bank_value_kind_defaults_and_bad_envelope():
     with pytest.raises(DatasetError):
         get_adapter("world_bank").extract(DatasetRequest(measure="population"),
                                           fetch_json=lambda r: [{"message": "bad"}])   # not [meta, data]
+
+
+# ── param building: partial ranges must be dropped (regression: LLM gave from_year only → "1970:") ──
+def test_build_params_drops_malformed_partial_range():
+    wb = get_adapter("world_bank")
+    from datasources.base import DatasetRequest as DR
+    assert wb._build_params(DR(measure="population", geo="USA", from_year=1970, to_year=2024)) == {"date": "1970:2024"}
+    assert wb._build_params(DR(measure="population", geo="USA", from_year=1970)) == {}   # "1970:" dropped
+    assert wb._build_params(DR(measure="population", geo="USA", to_year=2024)) == {}     # ":2024" dropped
+    fbi = get_adapter("fbi_cde")
+    assert fbi._build_params(DR(measure="violent-crime", from_year=1990, to_year=2020)) == {"from": "1990", "to": "2020"}
+    assert fbi._build_params(DR(measure="violent-crime", from_year=1990)) == {"from": "1990"}   # 'to' empty → dropped
