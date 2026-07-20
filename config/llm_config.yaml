@@ -226,7 +226,8 @@ deep_research:
       # Curated authoritative adapters the planner may route search_datasets to. KEY-AGNOSTIC: keyless
       # open sources (world_bank, owid, …) are first-class alongside key-required ones (fbi_cde, fred).
       allowed:
-        - fbi_cde
+        - world_bank      # keyless — usable with no API key
+        - fbi_cde         # needs DATA_GOV_API_KEY / FBI_CDE_API_KEY
     max_per_response: 4           # cap on data charts per answer (fail-closed budget)
     render:
       width_px: 760

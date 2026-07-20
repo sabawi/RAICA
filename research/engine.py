@@ -186,6 +186,30 @@ async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs
             raise
 
 
+# ── data-charting feature hooks (deep_research.data_charts sibling config; see docs/DESIGN_data_charts.md) ──
+def _data_charts_cfg() -> Dict[str, Any]:
+    """Read deep_research.data_charts directly (it is a sibling of engine config, not inside it)."""
+    try:
+        from utils.config_loader import config_loader
+        return (config_loader.load_config() or {}).get("deep_research", {}).get("data_charts", {}) or {}
+    except Exception:  # noqa: BLE001 — config trouble → feature OFF (fail safe)
+        return {}
+
+
+def _data_charts_enabled() -> bool:
+    return bool(_data_charts_cfg().get("enabled", False))
+
+
+def _data_source_catalogs() -> List[Dict[str, Any]]:
+    """Registry catalogs, filtered to data_charts.sources.allowed — what the planner shows the LLM."""
+    try:
+        from datasources.registry import all_catalogs
+        allowed = set(_data_charts_cfg().get("sources", {}).get("allowed", []) or [])
+        return [c for c in all_catalogs() if (not allowed or c.get("name") in allowed)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 class ResearchPlanner:
     """
     Stage 1, piece #1: turn a user research request into a structured plan.
@@ -210,7 +234,12 @@ class ResearchPlanner:
 
     @property
     def _allowed_sources(self) -> List[str]:
-        return list(self._cfg.get("sources", {}).get("allowed", []))
+        base = list(self._cfg.get("sources", {}).get("allowed", []))
+        # data-charting: offer search_datasets ONLY when enabled (and per-source queries are on, since the
+        # tool needs a JSON arg via the queries map). Off by default → prod source list unchanged.
+        if _data_charts_enabled() and self._per_source_queries and "search_datasets" not in base:
+            base.append("search_datasets")
+        return base
 
     @property
     def _max_sub_questions(self) -> int:
@@ -286,6 +315,30 @@ class ResearchPlanner:
             "news for current events, wikipedia for background, search_web for general/web coverage, "
             "get_sec_filings for company filings, document_search for the user's own documents.\n"
         )
+        # Data-charting (deep_research.data_charts): when enabled, teach the planner to route explicit
+        # chart/plot requests to search_datasets and hand it the catalog to pick a real source+measure
+        # (numbers-by-reference). Empty string when the feature is off → planner prompt is unchanged.
+        _dc_guidance = ""
+        if _data_charts_enabled() and _psq:
+            _cats = _data_source_catalogs()
+            if _cats:
+                _cat_lines = "\n".join(
+                    f"    - {c['name']} (tier {c.get('source_tier')}, geo {c.get('geo')}, "
+                    f"{c.get('coverage_years', '')}): {', '.join(sorted(c.get('measures', {}).keys()))}"
+                    for c in _cats)
+                _dc_guidance = (
+                    "- CHART / PLOT / GRAPH REQUESTS — REAL DATA VIA search_datasets: if the user asks to "
+                    "chart/plot/graph numeric data (a trend over time, a comparison, or a relationship), add a "
+                    "sub-question routed to search_datasets. It fetches a REAL series from a curated "
+                    "authoritative source and renders the chart itself — it NEVER invents numbers. Choose the "
+                    "SINGLE best-matching source+measure from the DATA SOURCES CATALOG below (prefer a keyless "
+                    "source at comparable quality). Put a search_datasets entry in that sub-question's "
+                    "`queries` map whose value is a JSON request: {\"source\":\"<catalog source>\","
+                    "\"measure\":\"<catalog measure>\",\"geo\":\"<code, optional>\",\"from_year\":<int opt>,"
+                    "\"to_year\":<int opt>,\"value_kind\":\"<rate|count|value>\",\"chart_kind\":"
+                    "\"line|bar|scatter|auto\"}. Use ONLY sources/measures listed here; if none fits, do NOT "
+                    "route to search_datasets (the chart is omitted, never faked):\n"
+                    f"{_cat_lines}\n")
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
@@ -311,6 +364,7 @@ class ResearchPlanner:
             "e.g. World Bank, energy/economic data) when it is in the allowed list, and ALSO write search_web "
             "queries that NAME the specific figure/series and target sources that PUBLISH data (statistical "
             "agencies, datasets, data portals) rather than pure news narrative.\n"
+            + _dc_guidance +
             "- Assign each sub-question a priority (1 = highest).\n"
             "- ENUMERATION REQUESTS: if the request asks to LIST/TABULATE/ENUMERATE a set of items "
             "(a table, 'all the …', 'the earliest/oldest/first …', a catalog), make sure the "
@@ -478,7 +532,10 @@ class DeepResearchEngine:
 
     @property
     def _allowed_sources(self) -> set:
-        return set(self._cfg.get("sources", {}).get("allowed", []))
+        base = set(self._cfg.get("sources", {}).get("allowed", []))
+        if _data_charts_enabled():          # dispatch filter must also allow search_datasets when enabled
+            base.add("search_datasets")
+        return base
 
     @property
     def _wall_clock(self) -> float:
