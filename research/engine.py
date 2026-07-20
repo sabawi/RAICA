@@ -32,7 +32,6 @@ import asyncio
 import contextvars
 import json
 import logging
-import os
 import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -189,21 +188,15 @@ async def _collect_stream(generate_stream: GenerateStream, prompt: str, **kwargs
 
 # ── data-charting feature hooks (deep_research.data_charts sibling config; see docs/DESIGN_data_charts.md) ──
 def _data_charts_cfg() -> Dict[str, Any]:
-    """Read deep_research.data_charts directly (it is a sibling of engine config, not inside it)."""
-    try:
-        from utils.config_loader import config_loader
-        return (config_loader.load_config() or {}).get("deep_research", {}).get("data_charts", {}) or {}
-    except Exception:  # noqa: BLE001 — config trouble → feature OFF (fail safe)
-        return {}
+    """Delegate to the SINGLE source of truth (datasources.data_charts_cfg) so planner + tool never diverge."""
+    from datasources import data_charts_cfg
+    return data_charts_cfg()
 
 
 def _data_charts_enabled() -> bool:
-    # .env override (like RAICA_CHARTS_ENABLED) takes precedence over the yaml, so a per-environment
-    # toggle (e.g. enable on prod for testing) needs no config-file edit and survives a git pull.
-    _env = os.getenv("RAICA_DATA_CHARTS_ENABLED")
-    if _env is not None:
-        return _env.strip().lower() == "true"
-    return bool(_data_charts_cfg().get("enabled", False))
+    """Delegate to the SINGLE source of truth (datasources.data_charts_enabled) — env override + config."""
+    from datasources import data_charts_enabled
+    return data_charts_enabled()
 
 
 def _data_source_catalogs() -> List[Dict[str, Any]]:

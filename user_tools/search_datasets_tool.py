@@ -26,11 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 def _feature_enabled() -> bool:
+    # SINGLE source of truth (shared with the planner via research/engine.py) — env override + config.
     try:
-        from utils.config_loader import config_loader
-        cfg = config_loader.load_config() or {}
-        return bool(cfg.get("deep_research", {}).get("data_charts", {}).get("enabled", False))
-    except Exception:  # noqa: BLE001 — config trouble → fail safe (disabled)
+        from datasources import data_charts_enabled
+        return data_charts_enabled()
+    except Exception:  # noqa: BLE001 — trouble → fail safe (disabled)
         return False
 
 
@@ -44,11 +44,12 @@ class SearchDatasetsTool(BaseUserTool):
         cats = all_catalogs()
         names = ", ".join(sorted(c["name"] for c in cats)) or "(none)"
         return (
-            "Fetch a REAL numeric dataset from a curated authoritative data source and render an actual "
-            "chart of it — use this when the user asks to plot/chart/graph numeric data (trends over time, "
-            "comparisons, relationships). It returns a chart marker plus a data digest; it NEVER invents "
-            "numbers (the data comes straight from the source). Pick the `source` and `measure` from the "
-            f"advertised catalogs (available sources: {names}). Not for opinion/prose — only real datasets."
+            "RESEARCH/GATHER source (runs DURING research, NOT a delivery/packaging action): fetch a REAL "
+            "numeric dataset from a curated authoritative data source and render an actual chart, embedding "
+            "it as CONTENT in the report. Use it when the user asks to plot/chart/graph numeric data (trends "
+            "over time, comparisons, relationships). Returns a chart marker + a data digest; it NEVER invents "
+            "numbers (data comes straight from the source). Pick `source` and `measure` from the advertised "
+            f"catalogs (available sources: {names}). Not a file/email/deliverable step — only real datasets."
         )
 
     @property
