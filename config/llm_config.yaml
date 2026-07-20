@@ -216,6 +216,21 @@ deep_research:
     # If disabled or unreachable, the system fails SAFE to research=True
     # (maximum context preservation) — it never silently drops accuracy.
     enabled: true
+  # ---- Data-charting: chart REAL datasets a query asks for (see docs/DESIGN_data_charts.md) ----
+  # Master flag. When false (default) the pipeline is UNCHANGED — search_datasets is NOT offered to the
+  # planner (not added to engine.sources.allowed) and the tool self-disables even if called. Isolated on
+  # branch feature/data-charts; flip to true only after live end-to-end validation.
+  data_charts:
+    enabled: false
+    sources:
+      # Curated authoritative adapters the planner may route search_datasets to. KEY-AGNOSTIC: keyless
+      # open sources (world_bank, owid, …) are first-class alongside key-required ones (fbi_cde, fred).
+      allowed:
+        - fbi_cde
+    max_per_response: 4           # cap on data charts per answer (fail-closed budget)
+    render:
+      width_px: 760
+      height_px: 430
   # ---- Stage 1: Deep Research Engine ----
   engine:
     enabled: true

@@ -100,11 +100,21 @@ search_datasets(spec) =
 **Extraction-fidelity tiering** (new trust dimension): a structured API response can't be garbled the way a
 scraped table can, so retrieval fidelity ranks alongside publisher reputation when picking the primary source.
 
+**KEY-AGNOSTIC — open sources are first-class.** Curated does NOT mean key-gated. Source selection ranks by
+**reliability + extraction fidelity**, never by whether an API key is required. Many of the best statistical
+series are **keyless open** — World Bank, Our World in Data, Eurostat, OECD, direct government CSV downloads —
+and at equal quality a **keyless source is PREFERRED** (no key dependency, no barrier, works out of the box).
+Key-required sources (FBI CDE via data.gov, FRED) are included too, gated on the key being present; when a
+keyed source's key is absent, the enumerator falls back to a keyless source covering the same measure rather
+than failing. So the registry mixes both, and coverage is not limited to closed APIs.
+
 **Initial curated adapters** (each a thin, testable client returning a normalized series + meta):
-- **MVP: FBI Crime Data Explorer (CDE) API** — directly serves the `post/5955` case with a clean series and
-  the SRS/NIBRS methodology metadata (so the discontinuity is *known*, not guessed).
-- Next: FRED (economics), World Bank, Our World in Data, Census. Each added behind config; absent adapter →
-  that topic simply isn't chartable yet (fail-closed).
+- **MVP (key-required): FBI Crime Data Explorer (CDE)** — directly serves the `post/5955` case with a clean
+  series and the SRS/NIBRS methodology metadata (so the discontinuity is *known*, not guessed).
+- **Keyless (add early to prove the open path + unblock live testing without a key): World Bank API** —
+  keyless JSON, thousands of reliable indicators (GDP, population, CO₂, …), ideal for time-series AND X-vs-Y.
+- Next: Our World in Data (keyless), OECD/Eurostat (keyless), FRED (keyed), Census (keyed). Each behind
+  config; absent adapter/key → that topic falls back or simply isn't chartable yet (fail-closed).
 
 ## 6. `data_chart_generator` (new, general)
 
