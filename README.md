@@ -10,6 +10,7 @@ An advanced AI-powered server with multi-LLM orchestration, tool calling, docume
 ## 🚀 Features
 
 - **🔬 NEW: Deep Research Mode**: Auto-detected for thorough/comprehensive requests — plans sub-questions, searches many sources over multiple rounds, grades source credibility, synthesizes across multiple models with arbitration, and verifies every claim against the gathered evidence. Streams live progress and an answer with a source-credibility + claim-verification audit.
+- **📈 NEW: Data-charting (opt-in)**: when a request asks to plot/chart numeric data, RAICA fetches a REAL dataset from a curated authoritative source (World Bank keyless, FBI Crime Data Explorer, …) and renders an actual chart into the answer — never inventing the numbers (numbers-by-reference; fail-closed if no trusted dataset). Off by default; enable with `RAICA_DATA_CHARTS_ENABLED=true`. See `docs/DESIGN_data_charts.md`.
 - **⚙️ NEW: POST-LLM Workflow Engine**: Executes complex, multi-step tasks like file creation and email sending *after* the primary LLM has generated its final, polished response.
 - **🔌 NEW: Plugin System**: Create custom LLM tools in 5 minutes - just 2 files (YAML + Python)
 - **🚀 Intelligent Email Management**: Advanced email retrieval and optimization with 84% context reduction
