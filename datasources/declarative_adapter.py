@@ -156,11 +156,13 @@ class DeclarativeAdapter(DataSourceAdapter):
         import requests
         params = self._build_params(request)
         auth = self.cfg.get("auth") or {"type": "none"}
+        _secret_param = None
         if auth.get("type") == "query_key":
             key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)
             if not key:
                 raise DatasetError(f"{self.name}: no API key (set one of {auth.get('env')})")
-            params[auth.get("param", "api_key")] = key
+            _secret_param = auth.get("param", "api_key")
+            params[_secret_param] = key
         from datasources import data_charts_cfg
         _fcfg = data_charts_cfg()
         # Some sources (World Bank via Cloudflare) have BIMODAL latency: the same URL answers in ~0.2s most
@@ -175,7 +177,11 @@ class DeclarativeAdapter(DataSourceAdapter):
         last_err = None
         import time as _t
         _url = self._endpoint(request)
-        logger.info("🔎 data_chart fetch START %s params=%s timeout=%ss attempts=%d", _url, params, timeout, attempts)
+        # NEVER log the auth key: redact the secret query param before logging the params dict.
+        _log_params = dict(params)
+        if _secret_param and _secret_param in _log_params:
+            _log_params[_secret_param] = "***REDACTED***"
+        logger.info("🔎 data_chart fetch START %s params=%s timeout=%ss attempts=%d", _url, _log_params, timeout, attempts)
         for _i in range(attempts):
             _t0 = _t.time()
             sess = requests.Session()
