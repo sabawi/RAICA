@@ -77,6 +77,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
@@ -3147,6 +3148,121 @@ _NEG_DELIVERY_AWARENESS = (
     "- NEVER claim or imply that an email was sent, a file was created or attached, or anything was posted — you did NOT perform any action."
 )
 
+# Inline artifact markers ([[chart:...]] / [[image:...]] / [[file:...]]) are pre-rendered assets a tool
+# already produced and placed at a fixed URL; the display platform (NewX) renders them in place. The model's
+# ONLY job is to reproduce the marker unchanged — re-typing, re-hosting, or "helpfully" converting it to a
+# markdown image invents a URL and breaks the asset (observed: the LLM rewrote a [[chart:/static/...]] marker
+# as ![](https://<hallucinated-CDN>/...) → 404). Policy language (not parsing); no conflict with delivery
+# awareness (a marker is in-answer CONTENT, not an outbound action). Applied to every tools-executed path.
+_ARTIFACT_MARKER_RELAY = (
+    "\nINLINE ARTIFACT MARKERS (MANDATORY, VERBATIM):\n"
+    "- If a tool result contains an inline artifact marker of the form [[chart:...]], [[image:...]] or "
+    "[[file:...]], reproduce that marker EXACTLY as-is — character-for-character, including its full URL/path, "
+    "align, caption and width — at the point in your answer where that visual belongs.\n"
+    "- NEVER convert such a marker into a markdown image ![alt](url) or an <img> tag, and NEVER alter, shorten, "
+    "re-host, guess, or re-type its URL. The marker already points to a rendered asset that the platform "
+    "displays in place; changing the URL in any way breaks the asset. Copy the marker; do not rewrite it.\n"
+    "- You CANNOT create a chart, plot, graph or image yourself. A visual appears ONLY when a tool has already "
+    "produced one and handed you its [[chart:...]]/[[image:...]] marker. If the user asked for a chart but NO "
+    "such marker is present in the tool results, then a chart could not be generated this time: describe the "
+    "data in prose or a markdown TABLE instead, and (if relevant) note briefly that a chart wasn't available. "
+    "You must NEVER fabricate a chart — do NOT invent or hand-write a [[chart:...]] marker, do NOT emit "
+    "matplotlib/plotly/quickchart or any chart code or chart URL, and do NOT put data values inside a marker. "
+    "Charts come only from real tool output; never from you."
+)
+
+# Structural repair for inline chart markers on the standard (non-deep-research) synthesis path. Even with the
+# verbatim-relay directive, the writer LLM occasionally CORRUPTS a marker's opaque URL while copying it —
+# observed: dropping the '/media/' path segment, or dropping one hex digit from the 32-char id — yielding a
+# 404 image. The DR path already guards marker COMPLETENESS via an LLM re-place loop (research/synthesis.py);
+# here we do a DETERMINISTIC repair: the tool output carries the AUTHORITATIVE markers, so we replace each
+# marker the LLM emitted with its authoritative counterpart. No meaning/placement is decided here — it's a
+# mechanical set-align over exact tokens (mirrors the CARDINAL-RULE-compliant structural check in synthesis).
+_CHART_MARKER_RE_SRV = re.compile(r'\[\[chart:.*?\]\]', re.IGNORECASE | re.DOTALL)
+_CHART_HASH_RE_SRV = re.compile(r'/media/([0-9a-fA-F]+)\.', re.IGNORECASE)
+_CHART_CAPTION_RE_SRV = re.compile(r'caption=(?:"([^"]*)"|\\"(.*?)\\")', re.IGNORECASE | re.DOTALL)
+
+
+def _extract_chart_markers(text: str):
+    """Authoritative `[[chart:...]]` markers present in tool output, de-duplicated in first-seen order."""
+    seen, out = set(), []
+    for m in _CHART_MARKER_RE_SRV.findall(text or ""):
+        if m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _caption_of(marker: str) -> str:
+    m = _CHART_CAPTION_RE_SRV.search(marker or "")
+    return ((m.group(1) or m.group(2)) if m else "").strip()
+
+
+def _repair_answer_chart_markers(answer: str, auth_markers):
+    """Replace every `[[chart:...]]` the answer contains with its AUTHORITATIVE counterpart from tool evidence,
+    and append any authoritative marker the answer dropped entirely. Deterministic; never raises — returns
+    (possibly_repaired_answer, num_changes). Matching (single dataset dominates): 1 authoritative marker →
+    every answer marker becomes it; multiple → match by caption, else by longest-common-hash, else by order."""
+    try:
+        if not answer or not auth_markers:
+            return answer, 0
+        present = _CHART_MARKER_RE_SRV.findall(answer)
+        changes = 0
+
+        def _pick(ans_marker: str) -> str:
+            if len(auth_markers) == 1:
+                return auth_markers[0]
+            if ans_marker in auth_markers:
+                return ans_marker
+            cap = _caption_of(ans_marker)
+            if cap:
+                for a in auth_markers:
+                    if _caption_of(a) == cap:
+                        return a
+            hm = _CHART_HASH_RE_SRV.search(ans_marker)
+            if hm:
+                ah = hm.group(1)
+                best, best_score = None, -1
+                for a in auth_markers:
+                    am = _CHART_HASH_RE_SRV.search(a)
+                    if not am:
+                        continue
+                    bh = am.group(1)
+                    score = len(os.path.commonprefix([ah, bh]))
+                    if score > best_score:
+                        best, best_score = a, score
+                if best is not None:
+                    return best
+            return ans_marker  # no confident match → leave unchanged
+
+        # 1) correct every emitted marker in place
+        idx = 0
+        def _sub(match):
+            nonlocal changes, idx
+            emitted = match.group(0)
+            if len(auth_markers) > 1 and emitted not in auth_markers:
+                # positional fallback if nothing else matched below
+                chosen = _pick(emitted)
+                if chosen == emitted and idx < len(auth_markers):
+                    chosen = auth_markers[idx]
+            else:
+                chosen = _pick(emitted)
+            idx += 1
+            if chosen != emitted:
+                changes += 1
+            return chosen
+        repaired = _CHART_MARKER_RE_SRV.sub(_sub, answer)
+
+        # 2) any authoritative marker still entirely absent → append it (a chart at the end beats no chart)
+        missing = [a for a in auth_markers if a not in repaired]
+        if missing:
+            repaired = repaired.rstrip() + "\n\n" + "\n\n".join(missing) + "\n"
+            changes += len(missing)
+        return repaired, changes
+    except Exception as _e:  # noqa: BLE001 — repair must never break a response
+        logger.warning(f"chart-marker repair skipped: {_e}")
+        return answer, 0
+
 
 def _build_enhanced_primary_system_prompt(original_system, tools_were_executed=False, tools_results_summary="", tools_called: List[str] = None, allow_delivery: bool = True):
     """
@@ -3237,6 +3353,10 @@ Remember: Use data from search/research tools to create comprehensive responses.
     if original_system and original_system.strip():
         full_system += f"\n\nADDITIONAL USER INSTRUCTIONS:\n{original_system}"
     full_system += enhanced_instructions
+    # Whenever tools ran, any [[chart|image|file:...]] marker they emitted MUST be relayed verbatim (the
+    # standard synthesis path had no such rule, so the LLM rewrote a chart marker into a hallucinated
+    # markdown-image URL). Harmless when no marker is present.
+    full_system += "\n" + _ARTIFACT_MARKER_RELAY
     return full_system
 
 
@@ -11224,6 +11344,15 @@ END OF CONTEXT
 
                         logger.info(f"📏 CONTEXT SIZE: {char_count:,} chars (~{token_estimate:,} tokens) → Primary LLM: {stream_payload.get('model', 'unknown')}")
 
+                        # 📊 Chart-marker repair gate: ONLY when the tool evidence carries authoritative
+                        # [[chart:...]] markers do we BUFFER this answer (to deterministically fix a marker the
+                        # LLM corrupts while copying). Every other answer streams token-by-token EXACTLY as
+                        # before — no streaming/UX change for the overwhelmingly-common non-chart case.
+                        _auth_chart_markers = _extract_chart_markers(tools_results) if tools_results else []
+                        _buffer_chart = bool(_auth_chart_markers)
+                        if _buffer_chart:
+                            logger.info(f"📊 CHART REPAIR: buffering answer to verify {len(_auth_chart_markers)} authoritative chart marker(s)")
+
                         # Use LLM Manager for provider-agnostic primary model call
                         async for chunk in llm_manager.generate_stream(stream_payload['prompt'], **manager_kwargs):
                             if chunk:
@@ -11237,7 +11366,8 @@ END OF CONTEXT
                                         "done": False
                                     }
                                     formatted_chunk = json.dumps(json_chunk) + '\n'
-                                    yield formatted_chunk.encode('utf-8')
+                                    if not _buffer_chart:
+                                        yield formatted_chunk.encode('utf-8')
                                 else:
                                     # Handle bytes - convert to JSON format
                                     chunk_text = chunk.decode('utf-8') if isinstance(chunk, bytes) else str(chunk)
@@ -11247,7 +11377,8 @@ END OF CONTEXT
                                         "done": False
                                     }
                                     formatted_chunk = json.dumps(json_chunk) + '\n'
-                                    yield formatted_chunk.encode('utf-8')
+                                    if not _buffer_chart:
+                                        yield formatted_chunk.encode('utf-8')
 
                                 # 🎯 PHASE 3 FIX: Unified streaming interface
                                 # LLM Manager providers already return clean text content
@@ -11262,6 +11393,16 @@ END OF CONTEXT
                                 except Exception as chunk_error:
                                     logger.warning(f"⚠️ Chunk processing error: {chunk_error}")
                                     pass  # Skip malformed chunks
+
+                        # 📊 In buffer mode, repair any corrupted chart marker against the authoritative
+                        # evidence markers, then emit the corrected full answer as a single response chunk.
+                        if _buffer_chart:
+                            _repaired, _nfix = _repair_answer_chart_markers(complete_llm_response, _auth_chart_markers)
+                            if _nfix:
+                                logger.info(f"📊 CHART REPAIR: corrected {_nfix} chart marker(s) in the final answer")
+                            complete_llm_response = _repaired
+                            _emit = {"model": stream_payload.get('model', model), "response": _repaired, "done": False}
+                            yield (json.dumps(_emit) + '\n').encode('utf-8')
 
                         # 🎯 STREAMING FIX: Send completion chunk
                         final_chunk = {

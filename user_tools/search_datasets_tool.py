@@ -47,9 +47,13 @@ class SearchDatasetsTool(BaseUserTool):
             "RESEARCH/GATHER source (runs DURING research, NOT a delivery/packaging action): fetch a REAL "
             "numeric dataset from a curated authoritative data source and render an actual chart, embedding "
             "it as CONTENT in the report. Use it when the user asks to plot/chart/graph numeric data (trends "
-            "over time, comparisons, relationships). Returns a chart marker + a data digest; it NEVER invents "
-            "numbers (data comes straight from the source). Pick `source` and `measure` from the advertised "
-            f"catalogs (available sources: {names}). Not a file/email/deliverable step — only real datasets."
+            "over time, comparisons, relationships) — e.g. population, GDP, GDP per capita, inflation, "
+            "unemployment, life expectancy, CO2 emissions, crime rates and similar official statistics. This "
+            "is the RIGHT tool (not analytical_visualizer) whenever the data is a known public statistic: it "
+            "FETCHES the authentic numbers so you never supply or transcribe them. Returns a chart marker + a "
+            "data digest; it NEVER invents numbers (data comes straight from the source). Pick `source` and "
+            f"`measure` from the advertised catalogs (available sources: {names}). Not a file/email/deliverable "
+            "step — only real datasets."
         )
 
     @property

@@ -47,7 +47,7 @@ class DeclarativeAdapter(DataSourceAdapter):
         return {
             "name": self.name,
             "source_tier": self.source_tier,
-            "geo": [self.cfg.get("geo_label") or self.cfg.get("geo_default", "national")],
+            "geo": self.cfg.get("geo_hint") or [self.cfg.get("geo_label") or self.cfg.get("geo_default", "national")],
             "coverage_years": self.cfg.get("coverage", ""),
             "measures": {code: m.get("label", code) for code, m in self.cfg["measures"].items()},
             "value_kinds": self._value_kinds(),
@@ -58,21 +58,79 @@ class DeclarativeAdapter(DataSourceAdapter):
         return list(self.cfg.get("value_kinds") or ["value"])
 
     # -- extraction -----------------------------------------------------------
+    @staticmethod
+    def _norm(s: str) -> str:
+        """Lowercase and strip everything but alphanumerics — for tolerant identifier matching. NFKC-normalize
+        first so unicode presentation forms fold to ASCII (e.g. subscript '₂' → '2'), letting the LLM's plain
+        'CO2 emissions per capita' match a catalog label written with the subscript 'CO₂'."""
+        import unicodedata
+        s = unicodedata.normalize("NFKC", s or "")
+        return "".join(ch for ch in s.lower() if ch.isalnum())
+
+    def _resolve_measure(self, measure: str) -> Optional[str]:
+        """Map the caller's measure string to a catalog CODE. The LLM sometimes passes the human LABEL
+        ('CO2 emissions per capita') or a lightly-varied code instead of the exact key ('co2-per-capita').
+        Resolve by matching, in order: exact key → normalized key → normalized label → substring on either.
+        This is deterministic DATA resolution against the catalog (like the geo resolver), not intent
+        classification. Returns the catalog key, or None if nothing matches (caller fails closed)."""
+        measures = self.cfg["measures"]
+        if measure in measures:
+            return measure
+        nm = self._norm(measure)
+        if not nm:
+            return None
+        # normalized exact match on key or label
+        for key, spec in measures.items():
+            if self._norm(key) == nm or self._norm(spec.get("label", "")) == nm:
+                return key
+        # substring either direction (e.g. 'co2 per capita' ⊂ label, or label ⊂ a longer phrase)
+        for key, spec in measures.items():
+            nk, nl = self._norm(key), self._norm(spec.get("label", ""))
+            if nk and (nk in nm or nm in nk):
+                return key
+            if nl and (nl in nm or nm in nl):
+                return key
+        return None
+
     def extract(self, request: DatasetRequest,
                 fetch_json: Optional[Callable[["DatasetRequest"], Any]] = None) -> DatasetSeries:
-        if request.measure not in self.cfg["measures"]:
+        resolved = self._resolve_measure(request.measure)
+        if resolved is None:
             raise DatasetError(f"{self.name}: unknown measure {request.measure!r} "
                                f"(known: {sorted(self.cfg['measures'])})")
+        if resolved != request.measure:
+            logger.info("🔎 data_chart measure resolved %r → %r", request.measure, resolved)
+            request.measure = resolved
         raw = (fetch_json or self._http_get)(request)
         records = get_shape(self.cfg.get("shape", "flat_json"))(raw, self.cfg)
         return self._build(records, request)
 
     # -- URL / params / auth (declarative) ------------------------------------
+    def _resolve_geo(self, geo: str) -> str:
+        """Normalize a geography to the source's expected code. For geo_resolver=iso3 (World Bank), map a
+        country NAME or code to an ISO-3166 alpha-3 code — so 'Egypt', 'egypt' and 'EGY' all work. The LLM
+        won't reliably emit codes, so the adapter resolves it (a data lookup, not intent classification).
+        Fail-open: an unrecognized value passes through (fails closed downstream if the API rejects it)."""
+        g = (geo or "").strip()
+        if self.cfg.get("geo_resolver") != "iso3" or not g:
+            return g
+        if g.upper() in ("WLD", "WORLD", "ALL"):
+            return "WLD"
+        try:
+            import pycountry
+            c = (pycountry.countries.get(alpha_3=g.upper()) or pycountry.countries.get(alpha_2=g.upper()))
+            if c is None:
+                c = pycountry.countries.lookup(g)      # name lookup: 'Egypt', 'United States', …
+            return c.alpha_3
+        except Exception:  # noqa: BLE001 — unresolved → as-given
+            return g
+
     def _fmt(self, request: DatasetRequest) -> Dict[str, Any]:
-        geo = request.geo if request.geo and request.geo != "national" else self.cfg.get("geo_default", "")
+        geo_in = request.geo if request.geo and request.geo != "national" else self.cfg.get("geo_default", "")
+        geo = self._resolve_geo(geo_in) or self.cfg.get("geo_default", "")
         return {
             "measure_path": self.cfg["measures"][request.measure].get("path", request.measure),
-            "geo_path": geo or self.cfg.get("geo_default", ""),
+            "geo_path": geo,
             "from_year": request.from_year if request.from_year is not None else "",
             "to_year": request.to_year if request.to_year is not None else "",
         }
@@ -103,9 +161,40 @@ class DeclarativeAdapter(DataSourceAdapter):
             if not key:
                 raise DatasetError(f"{self.name}: no API key (set one of {auth.get('env')})")
             params[auth.get("param", "api_key")] = key
-        resp = requests.get(self._endpoint(request), params=params, timeout=25)
-        resp.raise_for_status()
-        return resp.json()
+        from datasources import data_charts_cfg
+        _fcfg = data_charts_cfg()
+        # Some sources (World Bank via Cloudflare) have BIMODAL latency: the same URL answers in ~0.2s most
+        # of the time but occasionally hangs 30-40s in a transient CDN burst — verified with both curl and
+        # requests. A long single timeout therefore stalls the whole gather round. Strategy: a SHORT per-attempt
+        # timeout that abandons a slow connection fast, with SEVERAL retries on a FRESH connection each time
+        # (Connection: close, new Session) so each try independently re-rolls for a fast edge. Short backoff
+        # between tries. Config-driven; defaults tuned for the WB burst pattern.
+        timeout = float(_fcfg.get("fetch_timeout_seconds", 10))
+        attempts = max(1, int(_fcfg.get("fetch_retries", 4)) + 1)   # fail-fast tries, fresh conn each
+        backoff = float(_fcfg.get("fetch_retry_backoff_seconds", 0.5))
+        last_err = None
+        import time as _t
+        _url = self._endpoint(request)
+        logger.info("🔎 data_chart fetch START %s params=%s timeout=%ss attempts=%d", _url, params, timeout, attempts)
+        for _i in range(attempts):
+            _t0 = _t.time()
+            sess = requests.Session()
+            try:
+                # fresh connection each attempt (no keep-alive reuse) → a new try can land on a healthy edge
+                resp = sess.get(_url, params=params, timeout=timeout, headers={"Connection": "close"})
+                logger.info("🔎 data_chart fetch OK on attempt %d in %.1fs (%d bytes, HTTP %s)",
+                            _i + 1, _t.time() - _t0, len(resp.content), resp.status_code)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.RequestException as e:
+                logger.warning("🔎 data_chart fetch attempt %d/%d FAILED in %.1fs: %s",
+                               _i + 1, attempts, _t.time() - _t0, e)
+                last_err = e
+                if _i + 1 < attempts and backoff > 0:
+                    _t.sleep(backoff)
+            finally:
+                sess.close()
+        raise last_err
 
     # -- parse → DatasetSeries ------------------------------------------------
     def _value_kind(self, request: DatasetRequest) -> str:

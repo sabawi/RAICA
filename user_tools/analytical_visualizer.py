@@ -36,7 +36,7 @@ class AnalyticalVisualizerTool(BaseUserTool):
     def __init__(self):
         super().__init__()
         self._name = "analytical_visualizer"
-        self._description = "Generate and automatically save analytical visualizations (plots, charts, tables) as PNG files. Creates publication-quality charts using LLM-driven code generation and saves them to sandbox_workspace. DO NOT use sandboxed_executor to save - files are saved automatically."
+        self._description = "Generate and automatically save analytical visualizations (plots, charts, tables) as PNG files from data YOU ALREADY HAVE. Creates publication-quality charts using LLM-driven code generation and saves them to sandbox_workspace. DO NOT use sandboxed_executor to save - files are saved automatically. Use this ONLY for one-off/bespoke visuals of data the user supplied or data already gathered in-context (you must pass the `data`). For charting a REAL-WORLD public numeric dataset by name — population, GDP, GDP per capita, inflation, unemployment, life expectancy, CO2 emissions, crime rates, and similar official statistics over time or across places — do NOT use this tool; use `search_datasets`, which FETCHES the authentic data from an authoritative source (you must never supply or transcribe those numbers yourself)."
         self.working_dir = "/home/sabawi/Development/flaskserver/sandbox_workspace"
         self.visualization_llm_config = self._load_visualization_llm_config()
 

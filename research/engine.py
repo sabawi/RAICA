@@ -336,8 +336,11 @@ class ResearchPlanner:
                     "`queries` map whose value is a JSON request: {\"source\":\"<catalog source>\","
                     "\"measure\":\"<catalog measure>\",\"geo\":\"<code, optional>\",\"from_year\":<int opt>,"
                     "\"to_year\":<int opt>,\"value_kind\":\"<rate|count|value>\",\"chart_kind\":"
-                    "\"line|bar|scatter|auto\"}. Use ONLY sources/measures listed here; if none fits, do NOT "
-                    "route to search_datasets (the chart is omitted, never faked):\n"
+                    "\"line|bar|scatter|auto\"}. `source` and `measure` MUST be COPIED VERBATIM from the "
+                    "catalog below — do NOT pluralize, append (e.g. '-total'), abbreviate, or reword a measure "
+                    "code. `geo` is the source's geography code (see each source's geo note; for world_bank an "
+                    "ISO-3166 country code such as USA, EGY, CHN — WLD = world). If no listed source/measure "
+                    "fits, do NOT route to search_datasets (the chart is omitted, never faked):\n"
                     f"{_cat_lines}\n")
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "

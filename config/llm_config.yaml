@@ -279,6 +279,8 @@ deep_research:
           params: { date: "{from_year}:{to_year}" }   # WB accepts a date RANGE; dropped if both years absent
           shape: worldbank
           geo_default: "USA"
+          geo_resolver: iso3      # adapter maps a country NAME or code → ISO-3166 alpha-3 (so 'Egypt' and 'EGY' both work)
+          geo_hint: "country name OR ISO-3166 code (e.g. Egypt/EGY, United States/USA, China/CHN; WLD=world; default USA)"
           coverage: "1960–present (varies by indicator)"
           value_kinds: [value]
           x: { field: [date], type: temporal, name: year }
@@ -287,11 +289,17 @@ deep_research:
             population:        { label: "population",                 path: "SP.POP.TOTL",     unit: "people" }
             gdp:               { label: "GDP (current US$)",          path: "NY.GDP.MKTP.CD",  unit: "current US$" }
             gdp-per-capita:    { label: "GDP per capita (current US$)", path: "NY.GDP.PCAP.CD", unit: "current US$" }
-            co2-per-capita:    { label: "CO₂ emissions per capita",   path: "EN.ATM.CO2E.PC",  unit: "t per capita" }
+            co2-per-capita:    { label: "CO₂ emissions per capita",   path: "EN.GHG.CO2.PC.CE.AR5",  unit: "t CO₂e per capita" }  # WB archived the old EN.ATM.CO2E.PC; AR5/EDGAR series (excl. LULUCF), source=2/WDI
             life-expectancy:   { label: "life expectancy at birth",   path: "SP.DYN.LE00.IN",  unit: "years" }
             unemployment:      { label: "unemployment rate",          path: "SL.UEM.TOTL.ZS",  unit: "% of labor force" }
             inflation:         { label: "inflation (CPI)",            path: "FP.CPI.TOTL.ZG",  unit: "% annual" }
     max_per_response: 4           # cap on data charts per answer (fail-closed budget)
+    fetch_timeout_seconds: 10     # SHORT per-attempt timeout: World Bank/Cloudflare latency is bimodal (~0.2s
+                                  # normally, but transient 30-40s CDN bursts) — abandon a slow connection fast
+                                  # and re-roll on a fresh one, rather than stalling the whole gather round.
+    fetch_retries: 4              # several fail-fast attempts, each on a NEW connection (Connection: close), so
+                                  # a retry can land on a healthy edge; a slow burst shouldn't kill the chart.
+    fetch_retry_backoff_seconds: 0.5   # brief pause between attempts
     render:
       width_px: 760
       height_px: 430
