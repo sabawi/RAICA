@@ -90,6 +90,48 @@ def _draw_discontinuities(ax, series: DatasetSeries):
                     color="#ffd54f", fontsize=7, rotation=90, va="top", ha="left")
 
 
+def _set_fitted_title(fig, ax, title: str, width_px: int,
+                      base_size: float = 10.5, min_size: float = 7.5, max_lines: int = 3) -> None:
+    """Set the chart title so it ALWAYS fits the figure width.
+
+    Matplotlib neither wraps nor shrinks a title, so a long one is silently sliced off at BOTH edges
+    (observed on a 4-series cross-source chart, and reproducible for any verbose title — an LLM-supplied
+    one, or a template with a long measure label + geography). Fixing it only where a title is *composed*
+    would leave every other path broken, so the guard lives here at the single point every chart passes
+    through: MEASURE the real rendered text, wrap it onto up to ``max_lines``, and only if it still
+    overflows step the font down to ``min_size``. Purely cosmetic — never alters the data."""
+    title = (title or "").strip()
+    if not title:
+        return
+    import textwrap
+    canvas = fig.canvas
+    canvas.draw()                      # a renderer is needed to measure text
+    r = canvas.get_renderer()
+    avail = width_px * 0.94            # keep a small margin inside the figure
+
+    def _fits(text: str, size: float) -> bool:
+        t = ax.set_title(text, color=_TXT, fontsize=size, fontweight="bold")
+        widest = max((r.get_text_width_height_descent(ln, t.get_fontproperties(), False)[0]
+                      for ln in text.split("\n")), default=0)
+        return widest <= avail
+
+    size = base_size
+    while True:
+        # try progressively more lines at this font size
+        for lines in range(1, max_lines + 1):
+            wrapped = "\n".join(textwrap.wrap(title, max(10, len(title) // lines + 1))) if lines > 1 else title
+            if _fits(wrapped, size):
+                ax.set_title(wrapped, color=_TXT, fontsize=size, fontweight="bold")
+                return
+        if size <= min_size:
+            break
+        size = max(min_size, size - 1.0)
+
+    # still too wide at the smallest size → wrap to max_lines and accept (never leave it unset)
+    wrapped = "\n".join(textwrap.wrap(title, max(10, len(title) // max_lines + 1))[:max_lines])
+    ax.set_title(wrapped, color=_TXT, fontsize=min_size, fontweight="bold")
+
+
 def generate_data_chart(series: DatasetSeries, kind: str = "auto",
                         width_px: int = 760, height_px: int = 430, dpi: int = 110) -> Optional[bytes]:
     """Render ``series`` to PNG bytes. ``kind``: 'auto' | 'line' | 'bar' | 'scatter'. None on any failure."""
@@ -136,7 +178,7 @@ def generate_data_chart(series: DatasetSeries, kind: str = "auto",
             _draw_discontinuities(ax, series)
 
         # labels / title / source footer
-        ax.set_title(series.title, color=_TXT, fontsize=10.5, fontweight="bold")
+        _set_fitted_title(fig, ax, series.title, width_px)
         ax.set_xlabel(series.x_name, color=_TXT, fontsize=9)
         ylab = series.series[0].get("unit") or series.series[0]["name"]
         ax.set_ylabel(ylab, color=_TXT, fontsize=9)
@@ -146,7 +188,9 @@ def generate_data_chart(series: DatasetSeries, kind: str = "auto",
         src = series.source + (f" · retrieved {series.retrieved}" if series.retrieved else "")
         fig.text(0.995, 0.006, f"Source: {src}", color=_MUTE, fontsize=6.5, ha="right", va="bottom")
 
-        fig.subplots_adjust(left=0.1, right=0.97, top=0.9, bottom=0.16)
+        # a wrapped (multi-line) title needs more headroom or it collides with the plot
+        _title_lines = (ax.get_title() or "").count("\n") + 1
+        fig.subplots_adjust(left=0.1, right=0.97, top=0.9 - 0.045 * (_title_lines - 1), bottom=0.16)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", facecolor=_BG)
         return buf.getvalue()
