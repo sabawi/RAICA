@@ -40,7 +40,53 @@ def worldbank(raw: Any, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     raise DatasetError("shape worldbank: expected [metadata, data] envelope")
 
 
-_SHAPES = {"flat_json": flat_json, "worldbank": worldbank}
+def fbi_cde_summarized(raw: Any, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """FBI Crime Data Explorer `summarized/national/{offense}` envelope (discovered live 2026-07-21; the old
+    `estimate/national` endpoint + all public docs are dead — see SUSPECTED_ISSUES SI-004). Shape:
+        {"offenses": {"rates":   {"United States Offenses": {"MM-YYYY": rate_per_100k_monthly, ...}, ...},
+                      "actuals": {"United States Offenses": {"MM-YYYY": absolute_count_monthly,  ...}, ...}}}
+    The series is MONTHLY; we AGGREGATE to ANNUAL (sum the 12 monthly values → annual rate per 100k / annual
+    count) and emit one record per COMPLETE (12-month) year, so a partial current year never shows as a cliff.
+    Coverage ~1985–present. Returns records {year, rate, count} the declarative field maps then pick from."""
+    if not isinstance(raw, dict):
+        raise DatasetError("shape fbi_cde_summarized: expected a JSON object")
+    off = raw.get("offenses")
+    if not isinstance(off, dict):
+        raise DatasetError("shape fbi_cde_summarized: no 'offenses' block")
+    rates = ((off.get("rates") or {}).get("United States Offenses")) or {}
+    actuals = ((off.get("actuals") or {}).get("United States Offenses")) or {}
+    if not rates and not actuals:
+        raise DatasetError("shape fbi_cde_summarized: no 'United States Offenses' series")
+
+    def _year(mkey: str):
+        try:
+            _mm, yyyy = str(mkey).split("-")
+            return int(yyyy)
+        except (ValueError, AttributeError):
+            return None
+
+    by_year: Dict[int, Dict[str, Any]] = {}
+    for mkey, val in rates.items():
+        y = _year(mkey)
+        if y is None or val is None:
+            continue
+        d = by_year.setdefault(y, {"rate": 0.0, "count": 0.0, "months": 0})
+        d["rate"] += float(val)
+        d["months"] += 1                      # completeness tracked on the rate series
+    for mkey, val in actuals.items():
+        y = _year(mkey)
+        if y is None or val is None:
+            continue
+        by_year.setdefault(y, {"rate": 0.0, "count": 0.0, "months": 0})["count"] += float(val)
+
+    records = [{"year": y, "rate": round(d["rate"], 2), "count": int(d["count"])}
+               for y, d in sorted(by_year.items()) if d["months"] == 12]
+    if len(records) < 2:
+        raise DatasetError("shape fbi_cde_summarized: fewer than 2 complete years of data")
+    return records
+
+
+_SHAPES = {"flat_json": flat_json, "worldbank": worldbank, "fbi_cde_summarized": fbi_cde_summarized}
 
 
 def get_shape(name: str):

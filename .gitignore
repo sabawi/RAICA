@@ -166,3 +166,7 @@ config/communication_hub_newx.yaml
 .obsidian/
 archive/
 tests/data/intent_eval_results.jsonl
+
+# env backups (never commit secrets); .env.example stays tracked
+.env.*
+!.env.example

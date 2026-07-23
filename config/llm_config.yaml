@@ -237,25 +237,24 @@ deep_research:
           source_name: "FBI UCR / Crime Data Explorer"
           home_url: "https://cde.ucr.cjis.gov/"
           title_template: "U.S. {label} {value_kind}, {x_min}–{x_max}"
-          endpoint: "https://api.usa.gov/crime/fbi/cde/estimate/national/{measure_path}"
+          # LIVE endpoint discovered 2026-07-21 (the documented `estimate/national` path + all public docs/
+          # Swagger are dead/404 — see SUSPECTED_ISSUES SI-004). `summarized/national/{offense}` returns
+          # MONTHLY national offense rates + actual counts; the fbi_cde_summarized shape aggregates → annual.
+          endpoint: "https://api.usa.gov/crime/fbi/cde/summarized/national/{measure_path}"
           auth: { type: query_key, param: API_KEY, env: [FBI_CDE_API_KEY, DATA_GOV_API_KEY] }
-          params: { from: "{from_year}", to: "{to_year}" }
-          shape: flat_json
-          records_path: results
+          params: { type: "counts", from: "01-{from_year}", to: "12-{to_year}" }   # dates are MM-YYYY
+          shape: fbi_cde_summarized
           geo_label: "US-national"
-          coverage: "~1979–present (SRS through 2020; NIBRS 2021+)"
+          min_year: 1985           # API 400s on an earlier start; clamp from_year here (and default a missing to_year to current year)
+          coverage: "~1985–present (monthly, aggregated to annual)"
           value_kinds: [rate, count]
-          x: { field: [data_year, year], type: temporal, name: year }
+          x: { field: [year, data_year], type: temporal, name: year }
           value:
-            field: [rate, rate_per_100000]          # direct value for value_kind=rate
-            count_field: [count, value, actual, estimate]
-            population_field: [population, pop]
-            rate_per: 100000                          # rate = count / pop * rate_per
+            field: [rate, rate_per_100000]          # annual rate/100k (sum of 12 monthly rates)
+            count_field: [count, actual, value, estimate]   # annual count (sum of 12 monthly actuals)
             unit_rate: "per 100,000"
             unit_count: "offenses"
-          methodology: "FBI UCR estimates: Summary Reporting System (SRS) through 2020, NIBRS 2021–present."
-          discontinuities:
-            - { at: 2021, note: "SRS→NIBRS", requires_span: true }
+          methodology: "FBI UCR Crime Data Explorer, national summarized offenses; monthly values summed to annual (complete years only)."
           measures:
             violent-crime:        { label: "violent crime",        path: "violent-crime" }
             homicide:             { label: "homicide",             path: "homicide" }

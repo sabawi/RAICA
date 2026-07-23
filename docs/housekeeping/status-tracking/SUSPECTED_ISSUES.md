@@ -11,24 +11,6 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-004 — data-charts `fbi_cde` source endpoint is dead (404) — configured FBI CDE API path moved  [P2]
-- **Observed (2026-07-20):** with a valid `DATA_GOV_API_KEY` (40 chars) loaded, the catalog's configured
-  endpoint `https://api.usa.gov/crime/fbi/cde/estimate/national/{measure}` returns **HTTP 404** (HTML
-  `<title>CDE</title> Not Found`) for every offense. Probed alternates: `crime/fbi/sapi/api/estimates/
-  national/{from}/{to}` and `crime/fbi/cde/summarized/national/{offense}/{from}/{to}` also 404 (they
-  returned 403 API_KEY_MISSING only when the `?` separator was malformed — i.e. path exists at proxy
-  layer but the resource shape has changed).
-- **Impact:** the `fbi_cde` data source (US crime charts, e.g. the original post/5955 request) cannot
-  fetch — no chart renders for FBI measures. **World Bank source is unaffected and fully working.** The
-  fail-closed policy (v1.0.0.210) prevents hallucination when fbi_cde fails, so this degrades safely
-  (honest prose, no fabricated chart) rather than emitting bad data.
-- **Evidence:** curl probes above; `EN.ATM.CO2E.PC` archival (WB) is a SEPARATE, already-FIXED issue.
-- **Next step to resolve:** rediscover the current FBI Crime Data Explorer national-estimate endpoint +
-  response shape (the CDE API was reorganized), update the `fbi_cde` block (`endpoint`, `records_path`,
-  `x`/`value` field paths, `params`) in `config/llm_config.yaml`, and re-validate wire-shape with the key.
-- **Priority rationale:** P2 — the headline crime-chart use case depends on it, but WB covers the
-  acceptance tests and nothing crashes; safe to fix in a follow-up.
-
 ### SI-002 — aiohttp `Unclosed client session / connector` warnings under direct tool calls  [P3]
 - **Observed (2026-07-12):** running `tests/smoke/tool_smoke.py` (imports the module, calls tools
   directly, then exits) printed several `Unclosed client session` / `Unclosed connector` warnings.
@@ -99,7 +81,29 @@ verbatim on sign-off.
 
 ---
 
-## Resolved (kept for the audit trail)
+## Resolved
+
+### SI-004 — data-charts `fbi_cde` endpoint dead (404)  →  **RESOLVED 2026-07-23** (endpoint rediscovered + rewired)
+- **Was:** the configured `https://api.usa.gov/crime/fbi/cde/estimate/national/{measure}` returned HTTP 404
+  for every offense, so US crime charts could not render (the original post/5955 use case).
+- **Root cause (evidence):** the FBI reorganized the CDE API. ALL public documentation is stale — the
+  documented `sapi` base, the `fbi-cde/crime-data-api` + `crime-data-frontend` repos, the `jacobkap/fbiAPI`
+  R wrapper and every Swagger/cloud.gov host (`crime-data-api.fr.cloud.gov/swagger-ui/`) return 404. Even a
+  developer blog's verbatim working example (`sapi/api/summarized/agencies/{ORI}/{offense}`) now 404s.
+- **Fix:** deep web research + empirical probing by analogy from a live route found the CURRENT endpoint:
+  `https://api.usa.gov/crime/fbi/cde/summarized/national/{offense}?type=counts&from=MM-YYYY&to=MM-YYYY&api_key=`
+  Rewired `config/llm_config.yaml` (`endpoint`, `params` MM-YYYY, `shape: fbi_cde_summarized`, `min_year: 1985`)
+  + new `datasources/shapes.py::fbi_cde_summarized` handler (nested `offenses.rates|actuals →
+  "United States Offenses" → {MM-YYYY: v}`; aggregates MONTHLY→ANNUAL, complete 12-month years only) +
+  `_fmt` `min_year` clamping (the API 400s on a pre-1985 start instead of clamping).
+- **Verified (2026-07-23):** live extract = 41 annual points 1985–2025, peak **1991 = 798.1/100k**, low
+  **2025 = 328.6/100k** (matches the known US violent-crime curve). violent-crime/property-crime/homicide all
+  build markers in ~1s, images served 200 by NewX. **End-to-end through `/v1`** on "show me the change in
+  crime rate in the USA in the last 50 years" → 1 real chart marker, cited values match the dataset exactly
+  (1985=570.27, 2025=328.64), 0 fabrication signals.
+- **Residual:** coverage starts 1985, so a "last 50 years" ask renders ~40 years (clamped, not an error).
+
+ (kept for the audit trail)
 
 ### SI-001 — `database: unavailable` on local AND prod  →  NOT a functional bug  (resolved 2026-07-12)
 - **Concern was:** silent memory-cache fallback might be degrading a DB-backed feature everywhere.

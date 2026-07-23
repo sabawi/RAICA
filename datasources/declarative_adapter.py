@@ -128,11 +128,23 @@ class DeclarativeAdapter(DataSourceAdapter):
     def _fmt(self, request: DatasetRequest) -> Dict[str, Any]:
         geo_in = request.geo if request.geo and request.geo != "national" else self.cfg.get("geo_default", "")
         geo = self._resolve_geo(geo_in) or self.cfg.get("geo_default", "")
+        # Some sources (FBI CDE) 400 on an out-of-coverage start year instead of clamping. When the source
+        # declares `min_year`, clamp from_year to it (and default it there if absent), and default a missing
+        # to_year to the current year, so a "last 50 years" ask maps to the available window rather than erroring.
+        min_year = self.cfg.get("min_year")
+        if min_year is not None:
+            import datetime as _dt
+            fy = request.from_year if request.from_year is not None else int(min_year)
+            from_year_out: Any = max(int(fy), int(min_year))
+            to_year_out: Any = request.to_year if request.to_year is not None else _dt.date.today().year
+        else:
+            from_year_out = request.from_year if request.from_year is not None else ""
+            to_year_out = request.to_year if request.to_year is not None else ""
         return {
             "measure_path": self.cfg["measures"][request.measure].get("path", request.measure),
             "geo_path": geo,
-            "from_year": request.from_year if request.from_year is not None else "",
-            "to_year": request.to_year if request.to_year is not None else "",
+            "from_year": from_year_out,
+            "to_year": to_year_out,
         }
 
     def _endpoint(self, request: DatasetRequest) -> str:
@@ -182,6 +194,13 @@ class DeclarativeAdapter(DataSourceAdapter):
         if _secret_param and _secret_param in _log_params:
             _log_params[_secret_param] = "***REDACTED***"
         logger.info("🔎 data_chart fetch START %s params=%s timeout=%ss attempts=%d", _url, _log_params, timeout, attempts)
+        # requests puts query params (incl. the auth key) into the exception's URL — redact it from any
+        # error text before logging OR raising, so the key never reaches a log or an upstream error message.
+        _secret_val = params.get(_secret_param) if _secret_param else None
+
+        def _scrub(msg: str) -> str:
+            return msg.replace(_secret_val, "***REDACTED***") if _secret_val else msg
+
         for _i in range(attempts):
             _t0 = _t.time()
             sess = requests.Session()
@@ -194,13 +213,14 @@ class DeclarativeAdapter(DataSourceAdapter):
                 return resp.json()
             except requests.exceptions.RequestException as e:
                 logger.warning("🔎 data_chart fetch attempt %d/%d FAILED in %.1fs: %s",
-                               _i + 1, attempts, _t.time() - _t0, e)
+                               _i + 1, attempts, _t.time() - _t0, _scrub(str(e)))
                 last_err = e
                 if _i + 1 < attempts and backoff > 0:
                     _t.sleep(backoff)
             finally:
                 sess.close()
-        raise last_err
+        # re-raise with a scrubbed message (never leak the key up the stack / into build_data_chart's log)
+        raise DatasetError(f"{self.name}: fetch failed: {_scrub(str(last_err))}")
 
     # -- parse → DatasetSeries ------------------------------------------------
     def _value_kind(self, request: DatasetRequest) -> str:
