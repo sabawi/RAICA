@@ -238,6 +238,10 @@ class ResearchPlanner:
         # tool needs a JSON arg via the queries map). Off by default → prod source list unchanged.
         if _data_charts_enabled() and self._per_source_queries and "search_datasets" not in base:
             base.append("search_datasets")
+        # compare_datasets = the CROSS-SOURCE variant (2+ indicators, possibly different sources, on ONE
+        # chart) — offered under the same gate so relationship questions can be answered with one visual.
+        if _data_charts_enabled() and self._per_source_queries and "compare_datasets" not in base:
+            base.append("compare_datasets")
         return base
 
     @property
@@ -341,7 +345,19 @@ class ResearchPlanner:
                     "code. `geo` is the source's geography code (see each source's geo note; for world_bank an "
                     "ISO-3166 country code such as USA, EGY, CHN — WLD = world). If no listed source/measure "
                     "fits, do NOT route to search_datasets (the chart is omitted, never faked):\n"
-                    f"{_cat_lines}\n")
+                    f"{_cat_lines}\n"
+                    "- MULTI-INDICATOR / RELATIONSHIP QUESTIONS — USE compare_datasets INSTEAD: when the "
+                    "question is about how indicators MOVE TOGETHER, or is a socioeconomic/sociopolitical "
+                    "issue that several indicators illuminate (e.g. 'did crime track unemployment and "
+                    "inequality?', 'compare growth with poverty'), route ONE sub-question to "
+                    "compare_datasets rather than several separate search_datasets calls. It puts 2-6 real "
+                    "series — ACROSS DIFFERENT SOURCES if useful — on ONE chart with a shared time axis "
+                    "(auto-indexing them when their units differ), which is what makes the relationship "
+                    "readable. Its `queries` value is a JSON request: {\"series\":[{\"source\":\"<catalog "
+                    "source>\",\"measure\":\"<catalog measure>\",\"geo\":\"<code opt>\",\"value_kind\":"
+                    "\"<rate|count|value>\"}, ...],\"title\":\"<short title, <55 chars>\","
+                    "\"from_year\":<int opt>,\"to_year\":<int opt>}. The same VERBATIM source/measure rule "
+                    "applies to every entry.\n")
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
@@ -538,6 +554,7 @@ class DeepResearchEngine:
         base = set(self._cfg.get("sources", {}).get("allowed", []))
         if _data_charts_enabled():          # dispatch filter must also allow search_datasets when enabled
             base.add("search_datasets")
+            base.add("compare_datasets")    # …and its cross-source multi-series counterpart
         return base
 
     @property

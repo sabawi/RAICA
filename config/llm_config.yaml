@@ -230,7 +230,39 @@ deep_research:
       allowed:
         - world_bank      # keyless — usable with no API key
         - fbi_cde         # needs DATA_GOV_API_KEY / FBI_CDE_API_KEY
+        - fred            # needs FRED_API_KEY — U.S. macro-economic series
       catalog:   # data-source definitions (moved from datasources/sources.yaml per single-config rule)
+
+        fred:
+          tier: structured_api
+          source_name: "FRED — Federal Reserve Bank of St. Louis"
+          home_url: "https://fred.stlouisfed.org/"
+          title_template: "U.S. {label}, {x_min}–{x_max}"
+          # series_id is a QUERY param here (not a path segment), unlike the other sources.
+          endpoint: "https://api.stlouisfed.org/fred/series/observations"
+          auth: { type: query_key, param: api_key, env: [FRED_API_KEY, FRED_API_KEY_RAICABAKER] }
+          params:
+            series_id: "{measure_path}"
+            file_type: "json"
+            observation_start: "{from_year}-01-01"
+            observation_end: "{to_year}-12-31"
+          shape: fred_observations     # mixed frequencies (M/Q/W/A) → aggregated to annual MEAN
+          geo_label: "United States"
+          min_year: 1947               # floor so the date params always resolve; FRED returns from series start
+          coverage: "varies by series (mostly 1947–present); aggregated to annual"
+          value_kinds: [value]
+          x: { field: [year], type: temporal, name: year }
+          value: { field: [value] }    # unit comes from the measure below
+          methodology: "FRED series, aggregated to annual means from the published frequency."
+          measures:
+            unemployment:              { label: "unemployment rate",              path: "UNRATE",         unit: "% of labor force" }
+            labor-force-participation: { label: "labor force participation rate", path: "CIVPART",        unit: "%" }
+            inflation-cpi:             { label: "consumer price index (CPI)",     path: "CPIAUCSL",       unit: "index 1982-84=100" }
+            gdp:                       { label: "GDP",                            path: "GDP",            unit: "billions of US$" }
+            fed-funds-rate:            { label: "federal funds rate",             path: "FEDFUNDS",       unit: "%" }
+            mortgage-30yr:             { label: "30-year fixed mortgage rate",    path: "MORTGAGE30US",   unit: "%" }
+            median-household-income:   { label: "real median household income",   path: "MEHOINUSA672N",  unit: "constant US$" }
+            income-inequality-gini:    { label: "income Gini ratio (families)",   path: "GINIALLRF",      unit: "Gini ratio" }
 
         fbi_cde:
           tier: structured_api

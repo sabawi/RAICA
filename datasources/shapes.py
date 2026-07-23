@@ -86,7 +86,44 @@ def fbi_cde_summarized(raw: Any, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     return records
 
 
-_SHAPES = {"flat_json": flat_json, "worldbank": worldbank, "fbi_cde_summarized": fbi_cde_summarized}
+def fred_observations(raw: Any, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """FRED (St. Louis Fed) `series/observations` envelope:
+        {"observations": [{"date": "YYYY-MM-DD", "value": "3.6"}, ...]}
+    Two source quirks the generic field-maps can't absorb: `date` is a full ISO date (the adapter's x is an
+    integer year) and `value` is a STRING with "." meaning missing. FRED series also arrive at mixed
+    frequencies (monthly/quarterly/weekly/annual), so we aggregate to ANNUAL by **MEAN** — correct for the
+    levels/rates/indexes FRED publishes (unemployment %, CPI index, GDP level), and deliberately NOT the SUM
+    used for FBI offence *flows*. Emits {year, value} records."""
+    if isinstance(raw, dict) and isinstance(raw.get("error_message"), str):
+        raise DatasetError(f"shape fred_observations: FRED error: {raw['error_message'][:120]}")
+    obs = raw.get("observations") if isinstance(raw, dict) else None
+    if not isinstance(obs, list):
+        raise DatasetError("shape fred_observations: no 'observations' list")
+
+    sums: Dict[int, float] = {}
+    counts: Dict[int, int] = {}
+    for o in obs:
+        if not isinstance(o, dict):
+            continue
+        d, v = o.get("date"), o.get("value")
+        if not isinstance(d, str) or len(d) < 4:
+            continue
+        try:
+            year = int(d[:4])
+            val = float(v)              # "." (missing) and None raise → skipped
+        except (TypeError, ValueError):
+            continue
+        sums[year] = sums.get(year, 0.0) + val
+        counts[year] = counts.get(year, 0) + 1
+
+    records = [{"year": y, "value": round(sums[y] / counts[y], 4)} for y in sorted(sums) if counts[y]]
+    if len(records) < 2:
+        raise DatasetError("shape fred_observations: fewer than 2 usable annual points")
+    return records
+
+
+_SHAPES = {"flat_json": flat_json, "worldbank": worldbank,
+           "fbi_cde_summarized": fbi_cde_summarized, "fred_observations": fred_observations}
 
 
 def get_shape(name: str):
