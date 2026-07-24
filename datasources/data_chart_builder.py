@@ -43,33 +43,63 @@ def _pearson(a, b):
     return cov / (va ** 0.5 * vb ** 0.5)
 
 
+def _strength(r):
+    a = abs(r)
+    return ("very strong" if a >= 0.8 else "strong" if a >= 0.6 else "moderate" if a >= 0.4
+            else "weak" if a >= 0.2 else "negligible")
+
+
 def _correlation_block(xs, combined_series):
-    """Compute the REAL pairwise Pearson correlation for every series pair over the years BOTH cover, so the
-    LLM cites measured numbers instead of eyeballing a chart. NUMBERS-BY-REFERENCE: RAICA computes r from the
-    full stored series; the LLM never derives it. Correlation ≠ causation is stated for the model to relay."""
+    """Real pairwise correlation for every series pair, so the LLM cites measured numbers instead of eyeballing
+    a chart. NUMBERS-BY-REFERENCE: RAICA computes it from the stored series; the LLM never derives it.
+
+    TWO measures per pair, because a plain (level) Pearson r on trending economic time series is often
+    SPURIOUS — two series that merely drift upward for decades correlate ~+0.9 with no real link, and a level r
+    can even carry the WRONG SIGN vs the true co-movement (verified: income↔house-price level +0.90 but
+    year-over-year +0.08; mortgage↔house-price level −0.62 but year-over-year +0.46). So we report the
+    CO-MOVEMENT r (Pearson on year-over-year CHANGES — detrended, the meaningful one) as the headline, and the
+    TREND r (levels) only as context, explicitly flagged as trend-dominated. Change r uses CONSECUTIVE years
+    only (a true annual change)."""
+    def _diffs(years, vals):                     # first differences between consecutive years only
+        out = []
+        for k in range(1, len(years)):
+            if years[k] - years[k - 1] == 1:
+                out.append(vals[k] - vals[k - 1])
+            else:
+                out.append(None)                 # gap → not a 1-yr change; drop this pair below
+        return out
+
     lines = []
     m = len(combined_series)
     for i in range(m):
         for j in range(i + 1, m):
             si, sj = combined_series[i], combined_series[j]
-            pairs = [(vi, vj) for vi, vj in zip(si["y"], sj["y"]) if vi is not None and vj is not None]
-            yrs = [x for x, vi, vj in zip(xs, si["y"], sj["y"]) if vi is not None and vj is not None]
-            if len(pairs) < 3:
+            trip = [(x, vi, vj) for x, vi, vj in zip(xs, si["y"], sj["y"])
+                    if vi is not None and vj is not None]
+            if len(trip) < 3:
                 lines.append(f"  {si['name']} vs {sj['name']}: not enough overlapping years to correlate")
                 continue
-            r = _pearson([p[0] for p in pairs], [p[1] for p in pairs])
-            if r is None:
-                lines.append(f"  {si['name']} vs {sj['name']}: correlation undefined (no variance)")
-                continue
-            strength = ("very strong" if abs(r) >= 0.8 else "strong" if abs(r) >= 0.6 else
-                        "moderate" if abs(r) >= 0.4 else "weak" if abs(r) >= 0.2 else "negligible")
-            direction = "positive" if r > 0 else "negative"
-            lines.append(f"  {si['name']} vs {sj['name']}: r = {r:+.2f} ({strength} {direction}); "
-                         f"n = {len(pairs)} yrs ({yrs[0]}–{yrs[-1]})")
+            yrs = [t[0] for t in trip]
+            va = [t[1] for t in trip]
+            vb = [t[2] for t in trip]
+            r_lvl = _pearson(va, vb)
+            da, db = _diffs(yrs, va), _diffs(yrs, vb)
+            paired = [(x, y) for x, y in zip(da, db) if x is not None and y is not None]
+            r_chg = _pearson([p[0] for p in paired], [p[1] for p in paired]) if len(paired) >= 3 else None
+            head = (f"co-movement r = {r_chg:+.2f} ({_strength(r_chg)} {'positive' if r_chg > 0 else 'negative'})"
+                    if r_chg is not None else "co-movement r = n/a")
+            tail = f"trend r = {r_lvl:+.2f}" if r_lvl is not None else "trend r = n/a"
+            lines.append(f"  {si['name']} vs {sj['name']}: {head}; {tail}; n = {len(trip)} yrs "
+                         f"({yrs[0]}–{yrs[-1]})")
     if not lines:
         return ""
-    return ("\n\nPAIRWISE CORRELATIONS (Pearson r, computed by RAICA over the overlapping years — cite these "
-            "REAL values; do NOT invent a coefficient. Correlation is NOT causation):\n" + "\n".join(lines))
+    return ("\n\nPAIRWISE CORRELATIONS (RAICA-computed — cite these REAL values, never invent a coefficient; "
+            "correlation is NOT causation). Two measures per pair: 'co-movement r' is Pearson on YEAR-OVER-YEAR "
+            "CHANGES — it removes the shared time trend and is the MEANINGFUL one for whether the series truly "
+            "move together (it can differ in magnitude OR SIGN from the level correlation). 'trend r' is Pearson "
+            "on the raw LEVELS — for two trending series this largely reflects a common drift and is often "
+            "spuriously high, so LEAD WITH co-movement r and treat a high trend r as 'they both trended', not a "
+            "relationship:\n" + "\n".join(lines))
 
 
 def build_data_chart(
