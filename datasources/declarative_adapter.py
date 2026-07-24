@@ -107,24 +107,29 @@ class DeclarativeAdapter(DataSourceAdapter):
         holds: the LLM supplies only a search intent; the tool finds the id and fetches the data. Populates
         self._discovered with the resolved spec and returns its id (or None → caller fails closed)."""
         disc = self.cfg.get("discovery") or {}
-        if disc.get("type") != "fred_search":
-            return None
-        auth = self.cfg.get("auth") or {}
-        key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)
-        if not key:
-            return None
+        dtype = disc.get("type")
         try:
-            from datasources.discovery import fred_search
-            spec = fred_search(request.measure, request.from_year, request.to_year, key, disc)
+            if dtype == "fred_search":
+                auth = self.cfg.get("auth") or {}
+                key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)
+                if not key:
+                    return None
+                from datasources.discovery import fred_search
+                spec = fred_search(request.measure, request.from_year, request.to_year, key, disc)
+            elif dtype == "wb_search":            # World Bank is keyless
+                from datasources.discovery import wb_search
+                spec = wb_search(request.measure, request.from_year, request.to_year, disc)
+            else:
+                return None
         except Exception as e:  # noqa: BLE001 — discovery must never break the run
-            logger.warning("🔎 fred discovery error for %r: %s", request.measure, e)
+            logger.warning("🔎 %s discovery error for %r: %s", dtype, request.measure, e)
             return None
         if not spec:
             return None
         sid = spec["path"]
         self._discovered[sid] = spec
-        logger.info("🔎 fred discovery: %r → %s (%s; coverage %s)",
-                    request.measure, sid, spec.get("label"), spec.get("coverage"))
+        logger.info("🔎 %s discovery: %r → %s (%s; coverage %s)",
+                    dtype, request.measure, sid, spec.get("label"), spec.get("coverage"))
         return sid
 
     def extract(self, request: DatasetRequest,

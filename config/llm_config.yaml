@@ -325,6 +325,20 @@ deep_research:
           geo_default: "USA"
           geo_resolver: iso3      # adapter maps a country NAME or code → ISO-3166 alpha-3 (so 'Egypt' and 'EGY' both work)
           geo_hint: "country name OR ISO-3166 code (e.g. Egypt/EGY, United States/USA, China/CHN; WLD=world; default USA)"
+          # DYNAMIC DISCOVERY: reliable via CODE (WB has no popularity/search signal, so a description is only
+          # best-effort matched over the WDI list, fail-closed when weak). See datasources/discovery.py::wb_search.
+          discovery:
+            type: wb_search
+            base: "https://api.worldbank.org/v2"
+            min_score: 1.5
+          note: >-
+            DISCOVERY ENABLED: the measures below are shortcuts, but you may reach ANY World Bank indicator.
+            PREFER giving the exact WB indicator CODE — you know these (e.g. FP.CPI.TOTL.ZG = CPI inflation,
+            SL.UEM.TOTL.ZS = unemployment, EG.ELC.ACCS.ZS = electricity access, SP.DYN.LE00.IN = life
+            expectancy, IT.NET.USER.ZS = internet users) — a code is resolved EXACTLY. You may instead pass a
+            plain description, but WB has no search ranking so that is BEST-EFFORT (the tool reports which
+            indicator it picked; verify it matches the intent) and fails closed if uncertain. Use the code
+            whenever you know it.
           coverage: "1960–present (varies by indicator)"
           value_kinds: [value]
           x: { field: [date], type: temporal, name: year }

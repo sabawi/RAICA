@@ -90,3 +90,96 @@ def fred_search(search_text: str, from_year: Optional[int], to_year: Optional[in
         "coverage": cov,
         "frequency": best.get("frequency_short"),
     }
+
+
+# ── World Bank ────────────────────────────────────────────────────────────────────────────────────────
+# WB has NO usable full-text search and NO popularity signal (unlike FRED), and thousands of near-duplicate
+# indicators — so name-matching a description cannot RELIABLY pick the canonical indicator. The reliable path
+# is the CODE: the LLM knows standard WB indicator codes (FP.CPI.TOTL.ZG, SL.UEM.TOTL.ZS, …) from training,
+# and /v2/indicator/{code} validates them exactly. A description is BEST-EFFORT: IDF-ranked over the WDI list,
+# accepted only above a relevance floor, and always reported (a wrong pick is visible in the chart caption),
+# else fail-closed. So the honest contract: give a code for accuracy; describe for convenience.
+_WB_CODE_RE = None
+_WDI_CACHE: Dict[str, Any] = {"inds": None}
+
+
+def _unit_from_name(name: str) -> Optional[str]:
+    import re
+    m = re.search(r"\(([^)]*(?:%|US\$|per |years|people|index|kg|sq\.|current|constant)[^)]*)\)", name or "")
+    return m.group(1) if m else None
+
+
+def _wdi_indicators(base: str):
+    """WDI (source=2) indicator list with canonical dotted codes, fetched once and cached per process."""
+    if _WDI_CACHE["inds"] is None:
+        import re
+        import requests
+        std = re.compile(r"^[A-Za-z]{2,4}\.[A-Za-z0-9.]+$")
+        try:
+            r = requests.get(f"{base}/indicator", params={"source": 2, "format": "json", "per_page": 25000},
+                             timeout=40, headers={"Connection": "close"})
+            data = r.json()
+            inds = data[1] if isinstance(data, list) and len(data) > 1 else []
+            _WDI_CACHE["inds"] = [it for it in inds if std.match(it.get("id", ""))]
+        except Exception:  # noqa: BLE001
+            _WDI_CACHE["inds"] = []
+    return _WDI_CACHE["inds"]
+
+
+def wb_search(search_text: str, from_year: Optional[int], to_year: Optional[int],
+              disc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve a World Bank indicator from a CODE (exact, reliable) or a DESCRIPTION (best-effort). Returns
+    {path,label,unit,coverage} or None (fail-closed)."""
+    import re
+    import requests
+    text = (search_text or "").strip()
+    if not text:
+        return None
+    base = disc.get("base", "https://api.worldbank.org/v2")
+
+    # 1) exact code path — the reliable one
+    if re.match(r"^[A-Za-z]{2,4}\.[A-Za-z0-9.]+$", text):
+        try:
+            r = requests.get(f"{base}/indicator/{text}", params={"format": "json"},
+                             timeout=float(disc.get("timeout_seconds", 15)), headers={"Connection": "close"})
+            d = r.json()
+            if isinstance(d, list) and len(d) > 1 and d[1]:
+                name = d[1][0].get("name") or text
+                return {"path": text, "label": name, "unit": _unit_from_name(name), "coverage": ""}
+        except Exception:  # noqa: BLE001 — invalid code → fall through to name search
+            pass
+
+    # 2) description path — best-effort IDF match over the WDI list
+    import math
+    from collections import Counter
+    inds = _wdi_indicators(base)
+    if not inds:
+        return None
+    tok = lambda s: re.findall(r"[a-z0-9]+", (s or "").lower())  # noqa: E731
+    df: Counter = Counter()
+    for it in inds:
+        for t in set(tok(it["name"])):
+            df[t] += 1
+    n = len(inds)
+    idf = lambda t: math.log((n + 1) / (df.get(t, 0) + 1)) + 1  # noqa: E731
+    qs = set(tok(text))
+    if not qs:
+        return None
+    best, best_score = None, 0.0
+    for it in inds:
+        ns = set(tok(it["name"]))
+        matched = qs & ns
+        if not matched:
+            continue
+        score = sum(idf(t) for t in matched) * (len(matched) / len(qs))
+        if "total" in ns:                # nudge toward the headline "total" form over disaggregations
+            score += 0.5
+        score -= 0.08 * len(ns)          # prefer concise headline names
+        if score > best_score:
+            best, best_score = it, score
+    floor = float(disc.get("min_score", 1.5))
+    if best is None or best_score < floor:
+        logger.info("🔎 wb discovery: no confident match for %r (best_score=%.2f < %.2f) — fail-closed",
+                    text, best_score, floor)
+        return None
+    return {"path": best["id"], "label": best["name"], "unit": _unit_from_name(best["name"]), "coverage": ""}
