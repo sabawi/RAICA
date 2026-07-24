@@ -329,6 +329,7 @@ class ResearchPlanner:
                     f"    - {c['name']} (tier {c.get('source_tier')}, geo {c.get('geo')}, "
                     f"{c.get('coverage_years', '')}; value_kind ∈ {c.get('value_kinds')}): "
                     f"measures = {', '.join(sorted(c.get('measures', {}).keys()))}"
+                    + (f"\n        {c['note'].strip()}" if c.get('note') else "")
                     for c in _cats)
                 _dc_guidance = (
                     "- CHART / PLOT / GRAPH REQUESTS — REAL DATA VIA search_datasets: if the user asks to "

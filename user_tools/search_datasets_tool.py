@@ -52,8 +52,10 @@ class SearchDatasetsTool(BaseUserTool):
             "is the RIGHT tool (not analytical_visualizer) whenever the data is a known public statistic: it "
             "FETCHES the authentic numbers so you never supply or transcribe them. Returns a chart marker + a "
             "data digest; it NEVER invents numbers (data comes straight from the source). Pick `source` and "
-            f"`measure` from the advertised catalogs (available sources: {names}). Not a file/email/deliverable "
-            "step — only real datasets."
+            f"`measure` from the advertised catalogs (available sources: {names}). For the `fred` source, "
+            "`measure` may ALSO be a plain DESCRIPTION of any U.S. economic/financial/housing/labor series "
+            "(e.g. 'home price index', 'homeownership rate') — resolved by searching FRED, so you are not "
+            "limited to the listed measures. Not a file/email/deliverable step — only real datasets."
         )
 
     @property

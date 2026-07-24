@@ -41,6 +41,9 @@ class DeclarativeAdapter(DataSourceAdapter):
         self.name = name
         self.cfg = cfg
         self.source_tier = cfg.get("tier", "unknown")
+        # Series resolved at runtime by dynamic discovery (e.g. FRED search), keyed by resolved id →
+        # a synthesized measure spec {path,label,unit,coverage}. Idempotent cache; safe to share.
+        self._discovered: Dict[str, Dict[str, Any]] = {}
 
     # -- advertisement --------------------------------------------------------
     def catalog(self) -> Dict[str, Any]:
@@ -92,12 +95,46 @@ class DeclarativeAdapter(DataSourceAdapter):
                 return key
         return None
 
+    def _spec(self, measure_key: str) -> Dict[str, Any]:
+        """The measure spec for a key — a catalog entry OR a runtime-discovered series. One accessor so
+        _fmt/_build resolve both transparently."""
+        return self.cfg["measures"].get(measure_key) or self._discovered.get(measure_key) or {}
+
+    def _discover_measure(self, request: DatasetRequest) -> Optional[str]:
+        """DYNAMIC DISCOVERY fallback (when a source declares `discovery`): the caller's `measure` is a plain
+        DESCRIPTION (or a provider series id) rather than a catalog code, and we resolve it to a real series
+        via the provider's own search — so the catalog need not hand-list every series. Numbers-by-reference
+        holds: the LLM supplies only a search intent; the tool finds the id and fetches the data. Populates
+        self._discovered with the resolved spec and returns its id (or None → caller fails closed)."""
+        disc = self.cfg.get("discovery") or {}
+        if disc.get("type") != "fred_search":
+            return None
+        auth = self.cfg.get("auth") or {}
+        key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)
+        if not key:
+            return None
+        try:
+            from datasources.discovery import fred_search
+            spec = fred_search(request.measure, request.from_year, request.to_year, key, disc)
+        except Exception as e:  # noqa: BLE001 — discovery must never break the run
+            logger.warning("🔎 fred discovery error for %r: %s", request.measure, e)
+            return None
+        if not spec:
+            return None
+        sid = spec["path"]
+        self._discovered[sid] = spec
+        logger.info("🔎 fred discovery: %r → %s (%s; coverage %s)",
+                    request.measure, sid, spec.get("label"), spec.get("coverage"))
+        return sid
+
     def extract(self, request: DatasetRequest,
                 fetch_json: Optional[Callable[["DatasetRequest"], Any]] = None) -> DatasetSeries:
         resolved = self._resolve_measure(request.measure)
         if resolved is None:
+            resolved = self._discover_measure(request)      # dynamic discovery (e.g. FRED search)
+        if resolved is None:
             raise DatasetError(f"{self.name}: unknown measure {request.measure!r} "
-                               f"(known: {sorted(self.cfg['measures'])})")
+                               f"(known: {sorted(self.cfg['measures'])}; discovery found nothing)")
         if resolved != request.measure:
             logger.info("🔎 data_chart measure resolved %r → %r", request.measure, resolved)
             request.measure = resolved
@@ -141,7 +178,7 @@ class DeclarativeAdapter(DataSourceAdapter):
             from_year_out = request.from_year if request.from_year is not None else ""
             to_year_out = request.to_year if request.to_year is not None else ""
         return {
-            "measure_path": self.cfg["measures"][request.measure].get("path", request.measure),
+            "measure_path": self._spec(request.measure).get("path", request.measure),
             "geo_path": geo,
             "from_year": from_year_out,
             "to_year": to_year_out,
@@ -251,7 +288,7 @@ class DeclarativeAdapter(DataSourceAdapter):
 
     def _build(self, records: List[Dict[str, Any]], request: DatasetRequest) -> DatasetSeries:
         cfg, xcfg = self.cfg, self.cfg["x"]
-        measure = cfg["measures"][request.measure]
+        measure = self._spec(request.measure)
         vk = self._value_kind(request)
         rows: Dict[int, Optional[float]] = {}
         for rec in records:

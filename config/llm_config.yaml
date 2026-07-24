@@ -254,6 +254,19 @@ deep_research:
           x: { field: [year], type: temporal, name: year }
           value: { field: [value] }    # unit comes from the measure below
           methodology: "FRED series, aggregated to annual means from the published frequency."
+          # DYNAMIC DISCOVERY: anything not in `measures` below is resolved by searching FRED itself, so the
+          # catalog need not hand-list every series (FRED has 800k+). See datasources/discovery.py.
+          discovery:
+            type: fred_search
+            search_endpoint: "https://api.stlouisfed.org/fred/series/search"
+            limit: 12
+          note: >-
+            DISCOVERY ENABLED: the measures below are common shortcuts, but you may also set `measure` to a
+            plain DESCRIPTION of ANY U.S. economic / financial / housing / labor / demographic series (e.g.
+            "Case-Shiller home price index", "homeownership rate", "30-year mortgage rate", "real median house
+            price") or a FRED series id — the tool searches FRED and resolves the single best real series,
+            reporting which id + coverage it used. For a LONG history, describe the underlying quantity (e.g.
+            "home price index", available since 1987) rather than a derived index that may only be recent.
           measures:
             unemployment:              { label: "unemployment rate",              path: "UNRATE",         unit: "% of labor force" }
             labor-force-participation: { label: "labor force participation rate", path: "CIVPART",        unit: "%" }

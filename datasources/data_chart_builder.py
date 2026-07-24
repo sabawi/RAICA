@@ -29,6 +29,49 @@ def _marker(url: str, caption: str, align: str = "center") -> str:
     return f'[[chart:{url}|align={align}|caption="{cap}"]]'
 
 
+def _pearson(a, b):
+    """Pearson r over paired numeric values (already aligned, no None). None if <3 points or zero variance."""
+    n = len(a)
+    if n < 3:
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0 or vb <= 0:
+        return None
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    return cov / (va ** 0.5 * vb ** 0.5)
+
+
+def _correlation_block(xs, combined_series):
+    """Compute the REAL pairwise Pearson correlation for every series pair over the years BOTH cover, so the
+    LLM cites measured numbers instead of eyeballing a chart. NUMBERS-BY-REFERENCE: RAICA computes r from the
+    full stored series; the LLM never derives it. Correlation ≠ causation is stated for the model to relay."""
+    lines = []
+    m = len(combined_series)
+    for i in range(m):
+        for j in range(i + 1, m):
+            si, sj = combined_series[i], combined_series[j]
+            pairs = [(vi, vj) for vi, vj in zip(si["y"], sj["y"]) if vi is not None and vj is not None]
+            yrs = [x for x, vi, vj in zip(xs, si["y"], sj["y"]) if vi is not None and vj is not None]
+            if len(pairs) < 3:
+                lines.append(f"  {si['name']} vs {sj['name']}: not enough overlapping years to correlate")
+                continue
+            r = _pearson([p[0] for p in pairs], [p[1] for p in pairs])
+            if r is None:
+                lines.append(f"  {si['name']} vs {sj['name']}: correlation undefined (no variance)")
+                continue
+            strength = ("very strong" if abs(r) >= 0.8 else "strong" if abs(r) >= 0.6 else
+                        "moderate" if abs(r) >= 0.4 else "weak" if abs(r) >= 0.2 else "negligible")
+            direction = "positive" if r > 0 else "negative"
+            lines.append(f"  {si['name']} vs {sj['name']}: r = {r:+.2f} ({strength} {direction}); "
+                         f"n = {len(pairs)} yrs ({yrs[0]}–{yrs[-1]})")
+    if not lines:
+        return ""
+    return ("\n\nPAIRWISE CORRELATIONS (Pearson r, computed by RAICA over the overlapping years — cite these "
+            "REAL values; do NOT invent a coefficient. Correlation is NOT causation):\n" + "\n".join(lines))
+
+
 def build_data_chart(
     source: str,
     request: DatasetRequest,
@@ -183,7 +226,7 @@ def build_combined_data_chart(
         source_tier=("structured_api" if all(t == "structured_api" for t in tiers) else "unknown"))
 
     dataset_id = register_dataset(raw)
-    digest = format_digest(raw, dataset_id)
+    digest = format_digest(raw, dataset_id) + _correlation_block(xs, combined_series)
     result.update(ok=True, dataset_id=dataset_id, digest=digest, content=digest)
 
     # render: raw when units match, else an indexed COPY (raw stays the cited truth)

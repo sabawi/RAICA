@@ -53,9 +53,13 @@ class CompareDatasetsTool(BaseUserTool):
             "growth', 'crime vs poverty vs income'), or any socioeconomic/sociopolitical issue best answered "
             "by several indicators together rather than one. Prefer this over calling search_datasets "
             "repeatedly, because it puts the indicators on ONE chart so trends can actually be compared. "
-            "Series with different units are automatically indexed to a common base year for comparability; "
+            "Series with different units are automatically indexed to a common base year for comparability, "
+            "and it computes the REAL pairwise correlations (Pearson r) so you can cite measured values; "
             "it NEVER invents numbers (all data comes straight from the sources). Pick each `source` and "
-            f"`measure` from the advertised catalogs (available sources: {names})."
+            f"`measure` from the advertised catalogs (available sources: {names}). For the `fred` source, "
+            "`measure` may ALSO be a plain DESCRIPTION of any U.S. economic/financial/housing/labor series "
+            "(e.g. 'home price index', 'homeownership rate', '30-year mortgage rate') — it is resolved by "
+            "searching FRED, so you are not limited to the listed measures."
         )
 
     @property
