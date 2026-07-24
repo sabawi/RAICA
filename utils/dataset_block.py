@@ -230,6 +230,11 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
     if _any_index:
         _g += (" An INDEX series (unit contains 'index') measures RELATIVE change from a base period — it is "
                "NOT a dollar/price level: never treat it as a price, never derive a price-to-income or "
-               "affordability MULTIPLE from it, and never compare an index value directly to a dollar figure.")
+               "affordability MULTIPLE from it, and never compare an index value directly to a dollar figure. "
+               "If the analysis needs a true price-to-income ratio or an interpretable price LEVEL, do NOT "
+               "divide this index by income — instead fetch a DOLLAR-denominated level series (e.g. a median "
+               "sales-price series in $) via search_datasets and form the ratio from that, so the result is a "
+               "real, interpretable multiple (e.g. 'home costs 5x income') rather than an uninterpretable "
+               "index/income quotient.")
     lines.append(_g)
     return "\n".join(lines)
