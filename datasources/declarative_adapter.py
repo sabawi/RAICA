@@ -219,15 +219,18 @@ class DeclarativeAdapter(DataSourceAdapter):
             params[_secret_param] = key
         from datasources import data_charts_cfg
         _fcfg = data_charts_cfg()
-        # Some sources (World Bank via Cloudflare) have BIMODAL latency: the same URL answers in ~0.2s most
-        # of the time but occasionally hangs 30-40s in a transient CDN burst — verified with both curl and
-        # requests. A long single timeout therefore stalls the whole gather round. Strategy: a SHORT per-attempt
-        # timeout that abandons a slow connection fast, with SEVERAL retries on a FRESH connection each time
-        # (Connection: close, new Session) so each try independently re-rolls for a fast edge. Short backoff
-        # between tries. Config-driven; defaults tuned for the WB burst pattern.
-        timeout = float(_fcfg.get("fetch_timeout_seconds", 10))
-        attempts = max(1, int(_fcfg.get("fetch_retries", 4)) + 1)   # fail-fast tries, fresh conn each
-        backoff = float(_fcfg.get("fetch_retry_backoff_seconds", 0.5))
+        # Fetch tuning is PER-SOURCE-overridable (source cfg wins over the global default), because latency
+        # patterns differ: World Bank via Cloudflare is BIMODAL (~0.2s or a 30-40s burst) → a SHORT per-attempt
+        # timeout + retries on a FRESH connection re-rolls for a fast edge. But FBI CDE's big multi-decade fetch
+        # is SLOW-BUT-COMPLETES (~20s when busy; verified a 40yr fetch that succeeded at 20.5s) — a short 10s
+        # timeout wrongly abandons it, so crime silently drops from a combined chart. FBI therefore sets a
+        # LONGER fetch_timeout_seconds in its config. Each attempt still uses a fresh Connection: close session.
+        def _fcfgval(key, default):
+            v = self.cfg.get(key)          # per-source override
+            return v if v is not None else _fcfg.get(key, default)
+        timeout = float(_fcfgval("fetch_timeout_seconds", 10))
+        attempts = max(1, int(_fcfgval("fetch_retries", 4)) + 1)
+        backoff = float(_fcfgval("fetch_retry_backoff_seconds", 0.5))
         last_err = None
         import time as _t
         _url = self._endpoint(request)

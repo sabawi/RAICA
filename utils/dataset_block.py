@@ -199,14 +199,37 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
     xr = (f"{_fmt_x(min(series.x))} → {_fmt_x(max(series.x))}"
           if series.x_type != "categorical" else f"{len(series.x)} categories")
     lines.append(f"  X: {series.x_name} ({series.x_type}), {series.n_points()} points, {xr}")
+    # For a modest temporal series (annual socioeconomic data is ≤ ~66 points) give the LLM the FULL series,
+    # not 4 samples — otherwise it writes a year-by-year narrative and INVENTS the values for years it wasn't
+    # shown, recalling them from training (observed: a housing answer cited Case-Shiller "220 in 2020",
+    # mortgage "2.7% in 2021", starts ">2M in 2005-06" — none in the 4-sample digest; the verifier flagged 11
+    # such claims). Real numbers in-context = grounded citations AND a verifier that can actually check them.
+    # Numbers-by-reference is preserved: the CHART still renders from the stored payload; this just lets the
+    # LLM cite the true values instead of hallucinating them.
+    _full = (series.x_type != "categorical") and series.n_points() <= 80
+    _any_index = False
     for s in series.series:
         unit = f" [{s['unit']}]" if s.get("unit") else ""
-        sp = _sample_points(series, s)
-        lines.append(f"  Series '{s['name']}'{unit}: sample " + ", ".join(sp))
+        if s.get("unit") and "index" in str(s["unit"]).lower():
+            _any_index = True
+        if _full:
+            pts = [f"({_fmt_x(x)}, {y:g})" for x, y in zip(series.x, s["y"]) if y is not None]
+            lines.append(f"  Series '{s['name']}'{unit} — FULL series, {len(pts)} pts: " + ", ".join(pts))
+        else:
+            lines.append(f"  Series '{s['name']}'{unit}: sample of {series.n_points()} pts "
+                         + ", ".join(_sample_points(series, s)))
     if series.methodology:
         lines.append(f"  Methodology: {series.methodology}")
     if series.discontinuities:
         ds = "; ".join(f"{_fmt_x(d['at'])}"
                        + (f" ({d['note']})" if d.get("note") else "") for d in series.discontinuities)
         lines.append(f"  Discontinuities (do NOT bridge — annotate/segment): {ds}")
+    # Grounding: cite ONLY the values given, and never mistake an index for a price.
+    _g = ("  GROUNDING — cite ONLY the values above: give a number for a year ONLY if it is listed here; do "
+          "NOT state a value for any year not shown, and do NOT fill gaps from memory (that is fabrication).")
+    if _any_index:
+        _g += (" An INDEX series (unit contains 'index') measures RELATIVE change from a base period — it is "
+               "NOT a dollar/price level: never treat it as a price, never derive a price-to-income or "
+               "affordability MULTIPLE from it, and never compare an index value directly to a dollar figure.")
+    lines.append(_g)
     return "\n".join(lines)

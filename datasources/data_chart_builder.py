@@ -211,6 +211,12 @@ def build_combined_data_chart(
         if len(joined) > 58:
             joined = f"{len(combined_series)} indicators"
         base_title = ("U.S. " if us_only else "") + f"{joined}, {span}"
+    # Title honesty: never let the title claim a series that was DROPPED. If any requested series failed to
+    # fetch (e.g. a flaky FBI crime series), say so in the title so the chart doesn't advertise data it lacks
+    # (observed: a chart titled "…Crime, Housing Affordability" that contained neither).
+    if result["skipped"]:
+        _excl = ", ".join(dict.fromkeys(sp.split(":")[0].split("/")[-1] for sp in result["skipped"]))
+        base_title += f" (excl. {_excl}: unavailable)"
 
     meth = f"Combined from {len(combined_series)} sources ({src_label}); x = union of available years."
     raw = DatasetSeries(

@@ -291,6 +291,11 @@ deep_research:
           shape: fbi_cde_summarized
           geo_label: "US-national"
           min_year: 1985           # API 400s on an earlier start; clamp from_year here (and default a missing to_year to current year)
+          # FBI's big multi-decade fetch is SLOW-BUT-COMPLETES (~20s when the API is busy), so the global 10s
+          # timeout wrongly abandons it → crime silently drops from a combined chart. Give it room + more tries.
+          fetch_timeout_seconds: 28
+          fetch_retries: 5
+          fetch_retry_backoff_seconds: 1.0
           coverage: "~1985–present (monthly, aggregated to annual)"
           value_kinds: [rate, count]
           x: { field: [year, data_year], type: temporal, name: year }
