@@ -820,6 +820,17 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                                 _hist = None
                             tech = technicals.get_indicators(ticker, history=_hist)
                             tech_block = technicals.format_for_llm(tech, ticker)
+                            # Anti-fabrication caveat travelling WITH the data (both standard + DR paths):
+                            # these are CURRENT-snapshot indicator values + DATED events only. Observed
+                            # (AVGO, 2026-07): the writer invented volume history, prior support/resistance
+                            # levels and multi-week RSI history the analyzer never returned. Name what is
+                            # absent so synthesis doesn't fill the gap with confident guesses.
+                            tech_block += (
+                                "\n\nGROUNDING — the above are POINT-IN-TIME indicator values and the listed "
+                                "DATED events ONLY. This analyzer does NOT provide historical volume trends, "
+                                "prior support/resistance price levels/zones, multi-week RSI/MACD history, or "
+                                "past daily prices. Do NOT state any of those as fact; if needed, say the data "
+                                "isn't available. Labelled forward-looking opinion is fine; invented history is not.")
                             # v1.0.0.170/.171 — inline chart card (Option B Phase 3, flag-gated): generate the
                             # main technical chart, upload it to NewX, and PREPEND a [[chart:...]] marker so the
                             # synthesis can place it in the technical section. get_or_publish_chart adds a

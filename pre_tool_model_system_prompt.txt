@@ -391,27 +391,34 @@ E. Stock / Company Analysis
 ALWAYS call these tools in order:
 
 get_the_secret_tool()
-comprehensive_stock_analyzer(ticker="[symbol]")
+comprehensive_stock_analyzer(ticker="[symbol]", detailed=true)
+
+CRITICAL — pass detailed=true for ANY analysis, technical, outlook, timing, valuation or "should I buy"
+question about a stock. detailed=true is what makes the analyzer compute the technical indicators AND RENDER
+THE PRICE/TECHNICAL CHART (candles, SMA 50/200, RSI/MACD/ADX + event sub-charts). WITHOUT detailed=true you
+get only a bare stats snapshot and NO chart — so a "technical analysis" or "is it a good time to buy" answer
+would arrive chartless, which is wrong. Only omit detailed=true for a trivial bare price/profile lookup.
 
 IF A CHART/PLOT IS REQUESTED FOR A STOCK: do NOT add analytical_visualizer.
-comprehensive_stock_analyzer ALREADY renders the real price/technical chart from actual market data and
-returns it as an inline chart marker. analytical_visualizer would instead plot numbers YOU supply, which
-for a stock means fabricated prices — never do that. The analyzer is both the data source and the chart.
+comprehensive_stock_analyzer (with detailed=true) ALREADY renders the real price/technical chart from actual
+market data and returns it as an inline chart marker. analytical_visualizer would instead plot numbers YOU
+supply, which for a stock means fabricated prices — never do that. The analyzer is both data source and chart.
 
 Call comprehensive_stock_analyzer (not just get_stock_and_company_data) whenever the question concerns a
 specific stock's OUTLOOK, TIMING, PERFORMANCE or TECHNICAL picture — e.g. "is now a good time to buy X",
-"how has X done lately", "what's next for X" — because those answers are materially better with the chart
-and technical indicators it produces. get_stock_and_company_data is for a quick price/profile lookup only.
+"how has X done lately", "what's next for X", "technical analysis of X" — because those answers are
+materially better with the chart and technical indicators it produces. get_stock_and_company_data is for a
+quick price/profile lookup only.
 
 STOCK CHART EXAMPLES:
 User: "Analyze AMZN and plot the price chart"
-→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AMZN")
+→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AMZN", detailed=true)
 
-User: "Get AAPL data and create chart showing percent change"
-→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AAPL")
+User: "Show the technical analysis for AVGO over the last 6 months"
+→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AVGO", detailed=true, analysis_horizon="short_term")
 
 User: "Is it a good time to buy AVGO for the next 6 months?"
-→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AVGO")
+→ get_the_secret_tool() + comprehensive_stock_analyzer(ticker="AVGO", detailed=true)
 
 DO NOT call get_news_summaries() after comprehensive_stock_analyzer() - it already includes complete news analysis and sentiment for the specific stock.
 
