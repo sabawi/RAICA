@@ -598,6 +598,12 @@ COME FROM. Real-world data must be FETCHED from a source, never written by you:
 - A real-world public statistic (population, GDP, inflation, unemployment, crime, CO2, life expectancy…)
   → search_datasets(...) for one indicator, or compare_datasets(...) to put 2+ indicators on ONE chart.
   These fetch the authentic series and render the chart themselves.
+- MEASURE MUST MATCH THE QUANTITY ASKED (critical): for a RATIO / SHARE / "% OF" / PER-CAPITA question, pass
+  the measure that IS that normalized series — NOT its numerator or denominator alone. e.g. "federal debt as
+  a share/% of GDP" → search_datasets(source="fred", measure="debt-to-gdp")  [NOT measure="GDP", which charts
+  GDP dollars, the wrong thing]; "CO2 per capita" → the per-capita measure, not the total. When unsure of the
+  exact measure name for a fred series, pass a DESCRIPTION of the ratio itself (e.g. "federal debt as percent
+  of GDP") — never substitute the denominator.
 - Data the USER supplied, data already in the conversation, or a bespoke/illustrative diagram
   → analytical_visualizer(prompt="[complete user request]")
 - MODIFYING a chart that already exists (see follow-up rules below) → analytical_visualizer

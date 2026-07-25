@@ -272,6 +272,7 @@ deep_research:
             labor-force-participation: { label: "labor force participation rate", path: "CIVPART",        unit: "%" }
             inflation-cpi:             { label: "consumer price index (CPI)",     path: "CPIAUCSL",       unit: "index 1982-84=100" }
             gdp:                       { label: "GDP",                            path: "GDP",            unit: "billions of US$" }
+            debt-to-gdp:               { label: "federal debt as % of GDP",       path: "GFDEGDQ188S",    unit: "% of GDP" }   # Federal Debt: Total Public Debt as Percent of GDP (the RATIO, not GDP or debt alone)
             fed-funds-rate:            { label: "federal funds rate",             path: "FEDFUNDS",       unit: "%" }
             mortgage-30yr:             { label: "30-year fixed mortgage rate",    path: "MORTGAGE30US",   unit: "%" }
             median-household-income:   { label: "real median household income",   path: "MEHOINUSA672N",  unit: "constant US$" }

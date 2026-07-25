@@ -86,14 +86,39 @@ class DeclarativeAdapter(DataSourceAdapter):
         for key, spec in measures.items():
             if self._norm(key) == nm or self._norm(spec.get("label", "")) == nm:
                 return key
-        # substring either direction (e.g. 'co2 per capita' ⊂ label, or label ⊂ a longer phrase)
+        # Partial (token) match — direction-aware. `_norm` CONCATENATES (drops spaces), so a raw substring
+        # test wrongly matched a SHORT generic key BURIED in a longer, more-specific description: 'federal debt
+        # as percent of GDP' contains 'gdp' → matched the 'gdp' key and charted GDP, not the debt-to-GDP ratio.
+        # Tokenize the ORIGINAL strings instead and accept only two SAFE cases: (a) the QUERY is a shorter
+        # partial NAME of a measure (query tokens ⊆ candidate tokens, ≥2 tokens so a lone generic word can't
+        # match) — e.g. 'life expectancy' ⊆ label 'life expectancy at birth'; (b) the candidate is buried in the
+        # query but the query adds almost nothing (coverage ≥ 0.75) — a light wording variant, e.g. label
+        # 'federal debt as % of GDP' ⊆ 'federal debt as percent of GDP'. A generic key incidental to a more
+        # specific query (gdp ⊂ 'federal debt … gdp', coverage 1/6) matches NEITHER → falls through to discovery,
+        # which finds the real series. Deterministic string→code resolution (not intent classification).
+        def _tok(s: str) -> set:
+            import re as _re
+            import unicodedata as _ud
+            s = _ud.normalize("NFKC", s or "").lower()
+            return {t for t in _re.split(r"[^a-z0-9]+", s) if t}
+        qt = _tok(measure)
+        best_key, best_score = None, 0.0
         for key, spec in measures.items():
-            nk, nl = self._norm(key), self._norm(spec.get("label", ""))
-            if nk and (nk in nm or nm in nk):
-                return key
-            if nl and (nl in nm or nm in nl):
-                return key
-        return None
+            for cand in (key, spec.get("label", "")):
+                ct = _tok(cand)
+                if not ct or not qt:
+                    continue
+                if qt < ct and len(qt) >= 2:                 # query is a shorter partial name of the measure
+                    score = len(qt) / len(ct)
+                elif ct <= qt:                                # candidate buried in query — light variant only
+                    score = len(ct) / len(qt)
+                    if score < 0.75:
+                        continue
+                else:
+                    continue
+                if score > best_score:
+                    best_key, best_score = key, score
+        return best_key
 
     def _spec(self, measure_key: str) -> Dict[str, Any]:
         """The measure spec for a key — a catalog entry OR a runtime-discovered series. One accessor so
