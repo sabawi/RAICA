@@ -273,6 +273,10 @@ deep_research:
             inflation-cpi:             { label: "consumer price index (CPI)",     path: "CPIAUCSL",       unit: "index 1982-84=100" }
             gdp:                       { label: "GDP",                            path: "GDP",            unit: "billions of US$" }
             debt-to-gdp:               { label: "federal debt as % of GDP",       path: "GFDEGDQ188S",    unit: "% of GDP" }   # Federal Debt: Total Public Debt as Percent of GDP (the RATIO, not GDP or debt alone)
+            gdp-per-capita:            { label: "real GDP per capita",            path: "A939RX0Q048SBEA", unit: "chained 2017 US$" }  # living-standards measure — distinguishes "poorer" (per-capita) from "smaller" (total GDP)
+            dollar-index:              { label: "trade-weighted US dollar index", path: "DTWEXBGS",       unit: "index Jan 2006=100" }  # value of the US dollar (broad, 2006+)
+            net-exports:               { label: "net exports (trade balance)",    path: "NETEXP",         unit: "billions of US$" }  # exports − imports; the trade balance (1947+)
+            nonfarm-payrolls:          { label: "total nonfarm employment",       path: "PAYEMS",         unit: "thousands of persons" }  # total US jobs (1939+)
             fed-funds-rate:            { label: "federal funds rate",             path: "FEDFUNDS",       unit: "%" }
             mortgage-30yr:             { label: "30-year fixed mortgage rate",    path: "MORTGAGE30US",   unit: "%" }
             median-household-income:   { label: "real median household income",   path: "MEHOINUSA672N",  unit: "constant US$" }

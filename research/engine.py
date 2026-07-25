@@ -364,7 +364,15 @@ class ResearchPlanner:
                     "source>\",\"measure\":\"<catalog measure>\",\"geo\":\"<code opt>\",\"value_kind\":"
                     "\"<rate|count|value>\"}, ...],\"title\":\"<short title, <55 chars>\","
                     "\"from_year\":<int opt>,\"to_year\":<int opt>}. The same VERBATIM source/measure rule "
-                    "applies to every entry.\n")
+                    "applies to every entry.\n"
+                    "- ONE CHART PER DIMENSION — USE THE CHART BUDGET (up to ~4 charts per answer): a data-rich "
+                    "analytical request whose argument rests on SEVERAL DISTINCT quantitative dimensions (e.g. "
+                    "GDP, debt-to-GDP, the dollar, employment, trade) deserves a SEPARATE chart sub-question for "
+                    "EACH major dimension the analysis leans on — do NOT settle for a single chart when the "
+                    "question spans many. Fold together with compare_datasets ONLY series that illuminate ONE "
+                    "relationship; put DISTINCT concepts on SEPARATE charts — never cram a % ratio, a price "
+                    "index, and a dollar level onto one axis. Plan charts up to the per-answer budget, "
+                    "prioritising the dimensions most central to the conclusion.\n")
         system = (
             "You are the planner for a deep-research engine. Decompose the user's request "
             "into focused, non-overlapping SUB-QUESTIONS that, answered together, fully "
