@@ -1143,6 +1143,14 @@ class ResearchSynthesizer:
             "from primary OHLCV data and such web figures legitimately differ; keep the verdict 'supported' "
             "(at most note the minor discrepancy). Reserve 'contradicted' for a MATERIAL, substantive "
             "disagreement, not rounding or window nuance.\n\n"
+            "DATASET blocks are the SAME authoritative class: a SOURCE block headed 'DATASET (RAICA-fetched "
+            "numeric data …)' is a REAL series RAICA pulled DIRECTLY from an authoritative data provider "
+            "(World Bank, FRED, FBI, etc.) via search_datasets/compare_datasets — numbers-by-reference, NOT a "
+            "web assertion and NOT model-generated. A claim that FAITHFULLY RELAYS a value, year, trend, or a "
+            "RAICA-computed correlation shown IN a DATASET block is 'supported' by THAT block ALONE — do NOT "
+            "mark it 'unverified'/'not_in_evidence' merely because web sources don't repeat the exact figure "
+            "(they never will — RAICA fetched it directly). Flag ONLY if the answer MISQUOTES the DATASET "
+            "block (a value/year that differs from what the block lists) → 'contradicted'.\n\n"
             "Respond with STRICT JSON only:\n"
             '{"claims": [{"text": "...", "verdict": "supported", "flag_reason": null, "confidence": 0.9, '
             '"citations": ["https://..."], "note": "..."}]}'
