@@ -353,6 +353,7 @@ deep_research:
             gdp:               { label: "GDP (current US$)",          path: "NY.GDP.MKTP.CD",  unit: "current US$" }
             gdp-per-capita:    { label: "GDP per capita (current US$)", path: "NY.GDP.PCAP.CD", unit: "current US$" }
             co2-per-capita:    { label: "CO₂ emissions per capita",   path: "EN.GHG.CO2.PC.CE.AR5",  unit: "t CO₂e per capita" }  # WB archived the old EN.ATM.CO2E.PC; AR5/EDGAR series (excl. LULUCF), source=2/WDI
+            co2-total:         { label: "CO₂ emissions (total)",      path: "EN.GHG.CO2.MT.CE.AR5",  unit: "Mt CO₂e" }              # total national CO₂; AR5/EDGAR (excl. LULUCF), source=2/WDI. WB archived the old EN.ATM.CO2E.KT
             life-expectancy:   { label: "life expectancy at birth",   path: "SP.DYN.LE00.IN",  unit: "years" }
             unemployment:      { label: "unemployment rate",          path: "SL.UEM.TOTL.ZS",  unit: "% of labor force" }
             inflation:         { label: "inflation (CPI)",            path: "FP.CPI.TOTL.ZG",  unit: "% annual" }

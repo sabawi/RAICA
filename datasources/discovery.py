@@ -126,10 +126,40 @@ def _wdi_indicators(base: str):
     return _WDI_CACHE["inds"]
 
 
+def _wb_code_has_data(base: str, code: str, from_year: Optional[int], to_year: Optional[int],
+                      disc: Dict[str, Any]) -> bool:
+    """True unless WB DEFINITIVELY returns no usable data for this code (archived/invalid). CONSERVATIVE:
+    any network/timeout/parse ambiguity returns True (assume live — NEVER heal a good code over a transient
+    hiccup). Only a clean error envelope ('Invalid value') or an all-null data page counts as dataless. USA
+    is the canary (an archived indicator is archived for every country); source=2/WDI mirrors the adapter."""
+    import requests
+    params: Dict[str, Any] = {"format": "json", "source": 2, "per_page": 120}
+    if from_year and to_year:
+        params["date"] = f"{int(from_year)}:{int(to_year)}"
+    try:
+        r = requests.get(f"{base}/country/USA/indicator/{code}", params=params,
+                         timeout=float(disc.get("timeout_seconds", 15)), headers={"Connection": "close"})
+        d = r.json()
+    except Exception:  # noqa: BLE001 — transient → assume live, do NOT heal a possibly-good code
+        return True
+    if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get("message"):
+        return False                                   # error envelope (e.g. 'Invalid value') → dataless
+    if isinstance(d, list) and len(d) > 1 and isinstance(d[1], list):
+        return any(x.get("value") is not None for x in d[1])   # live iff ≥1 real value in range
+    return True                                        # unexpected shape → assume live
+
+
 def wb_search(search_text: str, from_year: Optional[int], to_year: Optional[int],
               disc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve a World Bank indicator from a CODE (exact, reliable) or a DESCRIPTION (best-effort). Returns
-    {path,label,unit,coverage} or None (fail-closed)."""
+    {path,label,unit,coverage} or None (fail-closed).
+
+    SELF-HEALING (v1.0.0.228): a code can be metadata-VALID yet ARCHIVED — WB keeps the definition but drops
+    the data (e.g. EN.ATM.CO2E.KT/.PC were superseded by the EN.GHG.CO2.* AR5 series). Accepting such a code
+    fails-closed SILENTLY downstream (empty series → skipped → no chart, no explanation). So when a code has no
+    live data we re-resolve it to a LIVE sibling by its OWN metadata name — dimension-guarded (a 'per capita'
+    code never heals to a 'total' series, and vice-versa) and re-verified to actually carry data, so the heal
+    is either a correct live series or fail-closed, never a silently wrong one."""
     import re
     import requests
     text = (search_text or "").strip()
@@ -137,17 +167,27 @@ def wb_search(search_text: str, from_year: Optional[int], to_year: Optional[int]
         return None
     base = disc.get("base", "https://api.worldbank.org/v2")
 
-    # 1) exact code path — the reliable one
+    # 1) exact code path — the reliable one (with archived-code self-heal)
+    heal_dimension: Optional[str] = None    # None=normal; 'percapita'/'absolute' to preserve when re-resolving
     if re.match(r"^[A-Za-z]{2,4}\.[A-Za-z0-9.]+$", text):
+        meta_name = None
         try:
             r = requests.get(f"{base}/indicator/{text}", params={"format": "json"},
                              timeout=float(disc.get("timeout_seconds", 15)), headers={"Connection": "close"})
             d = r.json()
             if isinstance(d, list) and len(d) > 1 and d[1]:
-                name = d[1][0].get("name") or text
-                return {"path": text, "label": name, "unit": _unit_from_name(name), "coverage": ""}
+                meta_name = d[1][0].get("name") or text
         except Exception:  # noqa: BLE001 — invalid code → fall through to name search
-            pass
+            meta_name = None
+        if meta_name is not None:
+            if _wb_code_has_data(base, text, from_year, to_year, disc):
+                return {"path": text, "label": meta_name, "unit": _unit_from_name(meta_name), "coverage": ""}
+            # metadata-valid but ARCHIVED → re-resolve its own name to a live sibling, preserving dimension.
+            logger.info("🔎 wb discovery: code %r (%s) archived/dataless — re-resolving to a live series",
+                        text, meta_name)
+            text = meta_name
+            heal_dimension = "percapita" if "per capita" in meta_name.lower() else "absolute"
+        # else: unknown code → fall through to name search with the original text
 
     # 2) description path — best-effort IDF match over the WDI list
     import math
@@ -167,6 +207,12 @@ def wb_search(search_text: str, from_year: Optional[int], to_year: Optional[int]
         return None
     best, best_score = None, 0.0
     for it in inds:
+        nm = it["name"].lower()
+        # dimension guard (heal only): never swap a per-capita measure for a total one or vice-versa
+        if heal_dimension == "percapita" and "per capita" not in nm:
+            continue
+        if heal_dimension == "absolute" and "per capita" in nm:
+            continue
         ns = set(tok(it["name"]))
         matched = qs & ns
         if not matched:
@@ -182,4 +228,10 @@ def wb_search(search_text: str, from_year: Optional[int], to_year: Optional[int]
         logger.info("🔎 wb discovery: no confident match for %r (best_score=%.2f < %.2f) — fail-closed",
                     text, best_score, floor)
         return None
+    # when healing, the re-resolved pick must itself be LIVE — never heal one archived code into another.
+    if heal_dimension is not None and not _wb_code_has_data(base, best["id"], from_year, to_year, disc):
+        logger.info("🔎 wb discovery: heal candidate %s also dataless — fail-closed", best["id"])
+        return None
+    if heal_dimension is not None:
+        logger.info("🔎 wb discovery: healed archived code → %s (%s)", best["id"], best["name"])
     return {"path": best["id"], "label": best["name"], "unit": _unit_from_name(best["name"]), "coverage": ""}
