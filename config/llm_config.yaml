@@ -304,7 +304,11 @@ deep_research:
             count_field: [count, actual, value, estimate]   # annual count (sum of 12 monthly actuals)
             unit_rate: "per 100,000"
             unit_count: "offenses"
-          methodology: "FBI UCR Crime Data Explorer, national summarized offenses; monthly values summed to annual (complete years only)."
+          methodology: "FBI UCR Crime Data Explorer, national summarized offenses; monthly values summed to annual (complete years only). NOTE: the FBI retired the Summary Reporting System (SRS) and moved to NIBRS-only on 2021-01-01; 2021 agency participation fell to ~63% (vs ~95%+ under SRS), so 2021 and the SRS↔NIBRS boundary are less comparable to prior years (FBI resumed accepting both systems in 2022)."
+          # SRS→NIBRS methodology break: the renderer SEGMENTS the line at 2021 and marks it; the digest tells the
+          # model to annotate rather than silently bridge. requires_span → only shown when the series crosses 2021.
+          discontinuities:
+            - { at: 2021, requires_span: true, note: "SRS→NIBRS transition — 2021 coverage ~63% (vs ~95%+), less comparable to prior years" }
           measures:
             violent-crime:        { label: "violent crime",        path: "violent-crime" }
             homicide:             { label: "homicide",             path: "homicide" }
