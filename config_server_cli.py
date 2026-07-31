@@ -237,8 +237,17 @@ class ModelAliasManager:
                   think: Optional[bool] = None,
                   no_think: Optional[bool] = None,
                   description: Optional[str] = None,
-                  fallback_model: Optional[str] = None):
-        """Add a new model alias"""
+                  fallback_model: Optional[str] = None,
+                  base_url: Optional[str] = None,
+                  api_key_env: Optional[str] = None):
+        """Add a new model alias.
+
+        `base_url` overrides the provider default. Without it the tool cannot
+        express an OpenAI-compatible endpoint that is not OpenAI's own — e.g.
+        Google's https://generativelanguage.googleapis.com/v1beta/openai, which
+        is the only way to get Gemini models onto the tool_calling lane (the
+        native gemini provider has no function-calling support).
+        """
 
         # Validate provider
         provider = provider.lower()
@@ -260,7 +269,7 @@ class ModelAliasManager:
         config = {
             "provider": provider,
             "model": model,
-            "base_url": defaults.get("base_url"),
+            "base_url": base_url if base_url is not None else defaults.get("base_url"),
             "timeout": timeout if timeout is not None else defaults.get("timeout"),
             "temperature": temperature if temperature is not None else defaults.get("temperature"),
             "max_tokens": max_tokens if max_tokens is not None else defaults.get("max_tokens"),
@@ -284,8 +293,16 @@ class ModelAliasManager:
         if fallback_model:
             config["fallback_model"] = fallback_model
 
-        # Add API key reference if needed
-        api_key_var = API_KEY_ENV_VARS.get(provider)
+        # Add API key reference if needed.
+        # The provider name selects the PROTOCOL, not necessarily the credentials:
+        # an `openai` alias aimed at Google's OpenAI-compatible endpoint speaks the
+        # OpenAI protocol but must authenticate with GEMINI_API_KEY. Defaulting to
+        # the provider's env var silently produced ${OPENAI_API_KEY} against Google,
+        # which is a 401 that no static check would explain. So: honour an explicit
+        # --api-key-env, otherwise infer from the endpoint host, and only then fall
+        # back to the provider default.
+        api_key_var = api_key_env or self._api_key_env_for_endpoint(
+            config.get("base_url")) or API_KEY_ENV_VARS.get(provider)
         if api_key_var:
             config["api_key"] = f"${{{api_key_var}}}"
 
@@ -314,7 +331,8 @@ class ModelAliasManager:
 
         for key, value in kwargs.items():
             if value is not None and key in ['model', 'timeout', 'temperature', 'max_tokens',
-                                              'context_window', 'description', 'fallback_model']:
+                                              'context_window', 'description', 'fallback_model',
+                                              'base_url']:
                 if key == 'context_window':
                     config['context_window_size'] = value
                 else:
@@ -389,8 +407,19 @@ class ModelAliasManager:
 
         print()
 
-    def set_alias(self, alias: str, role: str):
-        """Set an alias as primary, tool_calling, or arbitrator"""
+    def set_alias(self, alias: str, role: str, with_dependents: bool = False,
+                  force: bool = False):
+        """Set an alias as primary, tool_calling, or arbitrator.
+
+        Switching PRIMARY also silently re-points every lane that has no
+        base_url of its own (deep_research, the convergence classifiers,
+        code_generation…). Their model names stay put while the endpoint under
+        them changes, so they start returning
+            404 models/<name> is not found
+        at runtime with nothing at config time to warn you. This refuses to make
+        that change blindly: use --with-dependents to move them too, or --force
+        to accept the breakage knowingly.
+        """
         if alias not in self.aliases:
             print(f"{Colors.FAIL}Error: Alias '{alias}' not found.{Colors.ENDC}")
             sys.exit(1)
@@ -438,6 +467,71 @@ class ModelAliasManager:
         if "think" in alias_config:
             new_config["config"]["think"] = alias_config["think"]
 
+        # The tool_calling lane is the one role with a hard provider requirement:
+        # the provider must actually implement function calling. Assigning one that
+        # does not leaves a config that looks correct and fails only when a tool is
+        # first needed — which, for a citation-required bot, surfaces as replies
+        # being discarded for "missing sources" rather than as a tool error.
+        if role == "tool_calling" and not force:
+            supports_tools = self._provider_supports_tools(alias_config["provider"])
+            if supports_tools is False:
+                print(f"\n{Colors.FAIL}{Colors.BOLD}Refusing: provider "
+                      f"'{alias_config['provider']}' cannot do tool calling.{Colors.ENDC}")
+                print(f"llm_providers/{alias_config['provider']}.py declares "
+                      f"supports_function_calling: False, so this lane would fail on the")
+                print(f"first tool call regardless of which model you pick.\n")
+                print(f"{Colors.BOLD}Workaround{Colors.ENDC} — reach the same models through an "
+                      f"OpenAI-compatible endpoint,")
+                print(f"which RAICA's openai provider drives with full tool support:")
+                print(f"  ./config_server_cli.py add --alias {alias}_openai --provider openai \\")
+                print(f"      --model {alias_config['model']} \\")
+                print(f"      --base-url https://generativelanguage.googleapis.com/v1beta/openai")
+                print(f"  ./config_server_cli.py set --alias {alias}_openai --as tool_calling\n")
+                print(f"Or re-run with {Colors.BOLD}--force{Colors.ENDC} to assign it anyway.\n")
+                sys.exit(1)
+
+        # Switching primary drags every endpoint-less lane along with it — resolve
+        # that BEFORE writing anything, so a refusal leaves the config untouched.
+        dependent_updates = []
+        if role == "primary":
+            # Resolve through the provider block, not just the lane — Ollama aliases
+            # carry no base_url of their own (see _resolve_endpoint).
+            new_endpoint = self._resolve_endpoint(llm_config,
+                                                  alias_config["provider"],
+                                                  new_config["config"])
+            broken = [
+                lane for lane in self._dependent_lanes(llm_config)
+                if self._lane_mismatch(lane['model'], new_endpoint)
+            ]
+
+            if broken and not (with_dependents or force):
+                print(f"\n{Colors.FAIL}{Colors.BOLD}Refusing: {len(broken)} lane(s) would break."
+                      f"{Colors.ENDC}")
+                print(f"These lanes have no endpoint of their own, so they follow primary to")
+                print(f"{Colors.BOLD}{new_endpoint or '(none)'}{Colors.ENDC} — where their model "
+                      f"names are not valid:\n")
+                for lane in broken:
+                    print(f"  {Colors.FAIL}✗{Colors.ENDC} {lane['path']:<44} {lane['model']}")
+                print(f"\nChoose one:")
+                print(f"  {Colors.BOLD}--with-dependents{Colors.ENDC}  also set them to "
+                      f"'{alias_config['model']}' (then tune individually)")
+                print(f"  {Colors.BOLD}--force{Colors.ENDC}            switch anyway and leave "
+                      f"them broken")
+                print(f"\nRun '{Colors.BOLD}lanes{Colors.ENDC}' to see every lane, "
+                      f"'{Colors.BOLD}doctor{Colors.ENDC}' to re-check afterwards.\n")
+                sys.exit(1)
+
+            if broken and with_dependents:
+                for lane in broken:
+                    dependent_updates.append((lane['path'], lane['model'],
+                                              alias_config['model']))
+                    self._set_lane_model(llm_config, lane['path'], alias_config['model'])
+            elif broken and force:
+                print(f"\n{Colors.WARNING}⚠ --force: leaving {len(broken)} dependent lane(s) "
+                      f"pointing at models this endpoint does not serve.{Colors.ENDC}")
+                for lane in broken:
+                    print(f"    {lane['path']:<44} {lane['model']}")
+
         # Update appropriate section
         if role == "arbitrator":
             llm_config["arbitrator"] = new_config
@@ -450,6 +544,12 @@ class ModelAliasManager:
 
         # Save updated config
         self._save_llm_config(llm_config)
+
+        if dependent_updates:
+            print(f"\n{Colors.OKGREEN}✓ Moved {len(dependent_updates)} dependent lane(s) "
+                  f"with primary:{Colors.ENDC}")
+            for path, old_model, new_model in dependent_updates:
+                print(f"    {path:<44} {old_model}  →  {new_model}")
 
         print(f"{Colors.OKGREEN}✓ Set '{alias}' as {role.upper()} LLM{Colors.ENDC}")
         print(f"\nCurrent {role} configuration:")
@@ -489,6 +589,424 @@ class ModelAliasManager:
 
         print()
 
+    # ------------------------------------------------------------------
+    # Lane inventory & health check
+    #
+    # llm_config.yaml drives MANY independent LLM lanes, not just the four
+    # `status` reports. Crucially, a lane with no `base_url` of its own
+    # INHERITS llm.primary's endpoint — so its model name must belong to
+    # whatever provider primary currently points at. Switching primary
+    # without updating those lanes yields, at runtime and only at runtime:
+    #     404 models/<ollama-name> is not found for API version v1main
+    # which silently disables deep research while everything else looks fine.
+    #
+    # The lane list is WALKED FROM THE YAML rather than hardcoded, so adding a
+    # lane to the config surfaces it here automatically instead of quietly
+    # creating a blind spot.
+    # ------------------------------------------------------------------
+
+    # Path segments that mark a model entry as a MENU rather than an active lane:
+    # presets and fallback chains are inert until something selects them.
+    _INERT_SEGMENTS = {'model_presets', 'fallback', 'providers'}
+
+    # Advisory only — naming conventions per endpoint host. `doctor --probe`
+    # is the authoritative check; this table just gives instant feedback.
+    _ENDPOINT_MODEL_PREFIXES = {
+        'generativelanguage.googleapis.com': ('gemini-',),
+        'api.openai.com': ('gpt-', 'o1-', 'o3-', 'o4-'),
+        'dashscope.aliyuncs.com': ('qwen',),
+    }
+
+    def _discover_lanes(self, llm_config):
+        """Walk the config for every model-bearing lane.
+
+        Returns a list of dicts: path, model, container, own_endpoint, inert.
+        A lane is 'own_endpoint' when its own block (or its nested `config`)
+        supplies base_url; otherwise it resolves through llm.primary.
+        """
+        lanes = []
+
+        def container_endpoint(container):
+            if not isinstance(container, dict):
+                return None
+            if 'base_url' in container:
+                return container.get('base_url')
+            cfg = container.get('config')
+            if isinstance(cfg, dict) and 'base_url' in cfg:
+                return cfg.get('base_url')
+            return None
+
+        def walk(node, path=(), parents=()):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if isinstance(value, str) and (
+                        key == 'model' or key.endswith('_model') or key == 'selected_model'
+                    ):
+                        # Nearest enclosing block that could carry an endpoint.
+                        endpoint = container_endpoint(node)
+                        if endpoint is None and parents:
+                            endpoint = container_endpoint(parents[-1])
+                        lanes.append({
+                            'path': '.'.join(path + (key,)),
+                            'model': value,
+                            'own_endpoint': endpoint,
+                            'inert': bool(set(path) & self._INERT_SEGMENTS),
+                        })
+                    else:
+                        walk(value, path + (key,), parents + (node,))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, path + (f'[{index}]',), parents + (node,))
+
+        walk(llm_config)
+        return lanes
+
+    def _resolve_endpoint(self, llm_config, provider_type, lane_config=None):
+        """Effective endpoint for a lane, mirroring how the loader merges config.
+
+        utils/config_loader.py:113 starts from llm.providers.<type> and lets the
+        lane's own `config` override it — so a lane with no base_url of its own
+        still HAS an endpoint, inherited from its provider block. Reading only
+        the lane's base_url reports '' for every Ollama lane (the CLI never
+        writes one for Ollama), which made an earlier version of the dependent
+        check silently pass on exactly the switch it exists to catch.
+        """
+        if lane_config and lane_config.get('base_url'):
+            return lane_config['base_url']
+        provider = (llm_config.get('llm', {})
+                    .get('providers', {})
+                    .get(provider_type, {}))
+        return provider.get('base_url', '')
+
+    def _primary_endpoint(self, llm_config):
+        primary = llm_config.get('llm', {}).get('primary', {})
+        return self._resolve_endpoint(llm_config,
+                                      primary.get('type', ''),
+                                      primary.get('config', {}))
+
+    def _lane_mismatch(self, model, endpoint):
+        """Return a reason string if `model` does not belong to `endpoint`, else None.
+
+        Advisory naming check shared by `doctor` and `set` so the two can never
+        disagree about what counts as a broken lane. `doctor --probe` is the
+        authoritative test; this is the instant one.
+        """
+        endpoint = endpoint or ''
+        for host, prefixes in self._ENDPOINT_MODEL_PREFIXES.items():
+            if host in endpoint:
+                if not model.startswith(prefixes):
+                    return f"model does not look like a {prefixes[0]}* model for this endpoint"
+                return None
+
+        # Ollama addresses models as name:tag; a bare cloud-style name here is
+        # usually a lane whose endpoint moved but whose model name did not.
+        if '11434' in endpoint and ':' not in model:
+            return "Ollama endpoint but model has no :tag"
+        return None
+
+    # Endpoint host -> the env var whose credentials that host accepts. Consulted
+    # when a lane speaks one provider's protocol against another vendor's endpoint.
+    _ENDPOINT_KEY_ENV = {
+        'generativelanguage.googleapis.com': 'GEMINI_API_KEY',
+        'api.openai.com': 'OPENAI_API_KEY',
+        'openrouter.ai': 'OPENROUTER_API_KEY',
+        'dashscope.aliyuncs.com': 'DASHSCOPE_API_KEY',
+    }
+
+    def _api_key_env_for_endpoint(self, base_url):
+        """Env var name whose key the given endpoint accepts, or None if unknown."""
+        for host, env_var in self._ENDPOINT_KEY_ENV.items():
+            if host in (base_url or ''):
+                return env_var
+        return None
+
+    def _provider_supports_tools(self, provider_type):
+        """Does llm_providers/<provider_type>.py declare function-calling support?
+
+        Returns True / False, or None when it cannot be determined.
+
+        Read from the PROVIDER'S OWN declaration so this can never disagree with
+        the implementation: each provider reports `supports_function_calling` in
+        its get_provider_info() dict (gemini.py:213 = False, openai/ollama/qwen =
+        True). We parse rather than import because constructing a provider needs
+        real credentials and has side effects (GeminiProvider.__init__ calls
+        genai.configure). Note the base class defaults the method to True, so the
+        dict literal — not the method — is the authoritative signal.
+
+        Unknown returns None and the caller allows the change: this guard exists
+        to catch a KNOWN incompatibility, not to block on ignorance.
+        """
+        import ast
+
+        module = Path(__file__).parent / 'llm_providers' / f'{provider_type}.py'
+        if not module.exists():
+            return None
+
+        try:
+            tree = ast.parse(module.read_text())
+        except (SyntaxError, OSError):
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if (isinstance(key, ast.Constant)
+                        and key.value == 'supports_function_calling'
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, bool)):
+                    return value.value
+        return None
+
+    def _dependent_lanes(self, llm_config):
+        """Active lanes with no endpoint of their own — they follow llm.primary.
+
+        These are the lanes that break silently when primary switches provider,
+        because their model name stays valid-looking while the endpoint beneath
+        them changes. Returned so `set` can offer to move them together.
+        """
+        return [lane for lane in self._discover_lanes(llm_config)
+                if not lane['inert'] and not lane['own_endpoint']
+                and not lane['path'].startswith('llm.primary')]
+
+    def _set_lane_model(self, llm_config, dotted_path, model):
+        """Write `model` into a lane addressed by its dotted discovery path."""
+        node = llm_config
+        parts = dotted_path.split('.')
+        for part in parts[:-1]:
+            if part.startswith('[') and part.endswith(']'):
+                node = node[int(part[1:-1])]
+            else:
+                node = node[part]
+        node[parts[-1]] = model
+
+    def show_lanes(self):
+        """Print every model-bearing lane and how its endpoint resolves."""
+        llm_config = self._load_llm_config()
+        lanes = self._discover_lanes(llm_config)
+        primary_endpoint = self._primary_endpoint(llm_config)
+
+        print(f"\n{Colors.HEADER}{Colors.BOLD}LLM Lane Inventory{Colors.ENDC}")
+        print("=" * 100)
+        print(f"{Colors.BOLD}llm.primary endpoint:{Colors.ENDC} {primary_endpoint or 'not set'}")
+        print(f"Lanes WITHOUT their own base_url inherit that endpoint.\n")
+
+        active = [lane for lane in lanes if not lane['inert']]
+        inert = [lane for lane in lanes if lane['inert']]
+
+        print(f"{Colors.BOLD}{'LANE':<48} {'MODEL':<26} ENDPOINT{Colors.ENDC}")
+        print("-" * 100)
+        for lane in active:
+            if lane['own_endpoint']:
+                where = f"own: {lane['own_endpoint']}"
+                color = Colors.OKGREEN
+            else:
+                where = f"{Colors.WARNING}INHERITS primary{Colors.ENDC}"
+                color = Colors.OKCYAN
+            print(f"{color}{lane['path']:<48}{Colors.ENDC} {lane['model']:<26} {where}")
+
+        if inert:
+            print(f"\n{Colors.BOLD}Inert (menus/fallback chains — only used if selected):{Colors.ENDC}")
+            for lane in inert:
+                print(f"  {lane['path']:<58} {lane['model']}")
+
+        print(f"\n{len(active)} active lane(s), {len(inert)} inert entry(ies).")
+        print(f"Run '{Colors.BOLD}doctor{Colors.ENDC}' to check each model against its endpoint.\n")
+
+    def doctor(self, probe=False, check_aliases=False):
+        """Flag lanes whose model name does not match the endpoint it resolves to.
+
+        Static checks are advisory (naming conventions). `--probe` asks each
+        distinct endpoint whether the model actually exists, which is the
+        authoritative answer and catches everything the heuristics miss.
+
+        Returns the number of problems found so callers can use the exit code.
+        """
+        llm_config = self._load_llm_config()
+        lanes = self._discover_lanes(llm_config)
+        primary_endpoint = self._primary_endpoint(llm_config)
+
+        print(f"\n{Colors.HEADER}{Colors.BOLD}LLM Config Doctor{Colors.ENDC}")
+        print("=" * 100)
+
+        problems = []
+        for lane in [lane for lane in lanes if not lane['inert']]:
+            endpoint = lane['own_endpoint'] or primary_endpoint or ''
+            reason = self._lane_mismatch(lane['model'], endpoint)
+            if reason:
+                problems.append((lane['path'], lane['model'], endpoint, reason))
+
+        # Credentials must match the ENDPOINT, not the provider protocol. An
+        # openai-type lane aimed at Google needs GEMINI_API_KEY; taking the
+        # provider default there yields ${OPENAI_API_KEY} and a 401 that looks
+        # nothing like a config error. Checked separately from the model/endpoint
+        # test because a lane can pass that one and still fail to authenticate.
+        problems.extend(self._credential_mismatches(llm_config))
+
+        if problems:
+            print(f"{Colors.FAIL}{Colors.BOLD}{len(problems)} problem(s) found:{Colors.ENDC}\n")
+            for path, model, endpoint, why in problems:
+                print(f"  {Colors.FAIL}✗{Colors.ENDC} {Colors.BOLD}{path}{Colors.ENDC}")
+                print(f"      model:    {model}")
+                print(f"      endpoint: {endpoint or '(unresolved)'}")
+                print(f"      {Colors.WARNING}{why}{Colors.ENDC}\n")
+        else:
+            print(f"{Colors.OKGREEN}✓ Every active lane's model matches its endpoint.{Colors.ENDC}\n")
+
+        if probe:
+            problems.extend(self._probe_endpoints(lanes, primary_endpoint))
+
+        if check_aliases:
+            problems.extend(self._probe_aliases())
+
+        return len(problems)
+
+    def _credential_mismatches(self, llm_config):
+        """Lanes whose api_key env var does not belong to their endpoint's vendor."""
+        problems = []
+        for role, block in (('llm.primary', llm_config.get('llm', {}).get('primary')),
+                            ('llm.tool_calling', llm_config.get('llm', {}).get('tool_calling')),
+                            ('arbitrator', llm_config.get('arbitrator')),
+                            ('vision', llm_config.get('vision'))):
+            if not isinstance(block, dict):
+                continue
+            config = block.get('config', {})
+            endpoint = self._resolve_endpoint(llm_config, block.get('type', ''), config)
+            api_key = config.get('api_key', '')
+            expected = self._api_key_env_for_endpoint(endpoint)
+            if not expected or not api_key:
+                continue
+            if expected not in api_key:
+                problems.append((
+                    f'{role}.config.api_key', api_key, endpoint,
+                    f'endpoint expects ${{{expected}}} — these credentials will not authenticate'
+                ))
+        return problems
+
+    def _probe_aliases(self):
+        """Ask each alias's endpoint whether its model still exists.
+
+        Aliases rot independently of the active config: a provider retires a
+        model and the alias sits there looking valid until someone selects it.
+        Checking against the live endpoint is the only reliable test — a code
+        comment claiming a model was retired proved wrong when actually probed.
+        """
+        import os
+        import subprocess
+        import urllib.request
+        import urllib.error
+
+        if not self.aliases:
+            print(f"{Colors.WARNING}No aliases configured.{Colors.ENDC}\n")
+            return []
+
+        print(f"{Colors.BOLD}Checking aliases against their endpoints…{Colors.ENDC}\n")
+        gemini_compat = 'https://generativelanguage.googleapis.com/v1beta/openai'
+        listings = {}
+        found = []
+
+        for name, config in sorted(self.aliases.items()):
+            provider = config.get('provider', '')
+            model = config.get('model', '')
+            base = config.get('base_url') or (gemini_compat if provider == 'gemini' else '')
+
+            env_var = API_KEY_ENV_VARS.get(provider)
+            api_key = os.environ.get(env_var, '') if env_var else ''
+            if provider == 'gemini' and not api_key:
+                # The server resolves ${GEMINI_API_KEY} from its environment; mirror
+                # that here so the probe is not a false negative on a shell that
+                # simply has not sourced the profile.
+                api_key = subprocess.run(
+                    ['bash', '-lc', f'printf %s "${env_var}"'],
+                    capture_output=True, text=True).stdout.strip()
+
+            if not base:
+                print(f"  {Colors.WARNING}?{Colors.ENDC} {name:<26} {model:<28} no endpoint")
+                continue
+
+            if base not in listings:
+                listings[base] = None
+                for path in ('/models', '/api/tags'):
+                    request = urllib.request.Request(base.rstrip('/') + path)
+                    if api_key:
+                        request.add_header('Authorization', f'Bearer {api_key}')
+                    try:
+                        with urllib.request.urlopen(request, timeout=20) as response:
+                            listings[base] = response.read().decode('utf-8', 'replace')
+                        break
+                    except (urllib.error.URLError, OSError, ValueError):
+                        continue
+
+            body = listings[base]
+            if body is None:
+                print(f"  {Colors.WARNING}?{Colors.ENDC} {name:<26} {model:<28} endpoint unreachable")
+            elif model in body:
+                print(f"  {Colors.OKGREEN}✓{Colors.ENDC} {name:<26} {model:<28} OK")
+            else:
+                print(f"  {Colors.FAIL}✗{Colors.ENDC} {name:<26} {model:<28} not served here")
+                found.append((f"alias:{name}", model, base, 'endpoint no longer serves this model'))
+
+        print()
+        return found
+
+    def _probe_endpoints(self, lanes, primary_endpoint):
+        """Ask each endpoint whether the lane's model actually exists.
+
+        Authoritative, unlike the naming heuristics — this is what would have
+        caught a model/endpoint mismatch before it reached production traffic.
+        """
+        import os
+        import urllib.request
+        import urllib.error
+
+        print(f"{Colors.BOLD}Probing endpoints for model availability…{Colors.ENDC}\n")
+        found = []
+        checked = set()
+
+        for lane in [lane for lane in lanes if not lane['inert']]:
+            endpoint = lane['own_endpoint'] or primary_endpoint or ''
+            model = lane['model']
+            if not endpoint or (endpoint, model) in checked:
+                continue
+            checked.add((endpoint, model))
+
+            # Providers disagree on how to list models: OpenAI-compatible servers
+            # expose /models, Ollama exposes /api/tags. Try both rather than
+            # hardcoding a host->path table that would rot the way the lane list did.
+            base = endpoint.rstrip('/')
+            candidates = [base + '/models', base + '/api/tags']
+            # Expand ${VAR} the same way the loader does, so a probe uses the real key.
+            api_key = os.path.expandvars(
+                '${GEMINI_API_KEY}' if 'googleapis' in endpoint else ''
+            )
+
+            body = None
+            last_error = None
+            for url in candidates:
+                request = urllib.request.Request(url)
+                if api_key and not api_key.startswith('${'):
+                    request.add_header('Authorization', f'Bearer {api_key}')
+                try:
+                    with urllib.request.urlopen(request, timeout=20) as response:
+                        body = response.read().decode('utf-8', 'replace')
+                    break
+                except (urllib.error.URLError, OSError, ValueError) as exc:
+                    last_error = exc
+
+            if body is None:
+                print(f"  {Colors.WARNING}?{Colors.ENDC} {lane['path']:<46} {model:<24} "
+                      f"probe failed: {str(last_error)[:50]}")
+                continue
+
+            available = model in body
+            mark = f"{Colors.OKGREEN}✓{Colors.ENDC}" if available else f"{Colors.FAIL}✗{Colors.ENDC}"
+            print(f"  {mark} {lane['path']:<46} {model:<24} @ {endpoint}")
+            if not available:
+                found.append((lane['path'], model, endpoint, 'endpoint does not list this model'))
+
+        print()
+        return found
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -517,6 +1035,13 @@ Examples:
                            choices=['ollama', 'openai', 'openrouter', 'qwen', 'gemini'],
                            help='LLM provider')
     add_parser.add_argument('--model', required=True, help='Model name')
+    add_parser.add_argument('--api-key-env', dest='api_key_env',
+                           help='Env var holding the credentials for this endpoint '
+                                '(e.g. GEMINI_API_KEY for an openai-protocol alias '
+                                'pointed at Google). Inferred from --base-url if omitted.')
+    add_parser.add_argument('--base-url', dest='base_url',
+                           help='Override the provider default endpoint (e.g. Google\'s '
+                                'OpenAI-compatible URL to get Gemini models onto tool_calling)')
     add_parser.add_argument('--timeout', type=int, help='Timeout in seconds')
     add_parser.add_argument('--temperature', type=float, help='Temperature (0.0-2.0)')
     add_parser.add_argument('--max-tokens', type=int, help='Max tokens to generate')
@@ -530,6 +1055,7 @@ Examples:
     update_parser = subparsers.add_parser('update', help='Update an existing alias')
     update_parser.add_argument('--alias', required=True, help='Alias name')
     update_parser.add_argument('--model', help='New model name')
+    update_parser.add_argument('--base-url', dest='base_url', help='New endpoint URL')
     update_parser.add_argument('--timeout', type=int, help='New timeout')
     update_parser.add_argument('--temperature', type=float, help='New temperature')
     update_parser.add_argument('--max-tokens', type=int, help='New max tokens')
@@ -555,9 +1081,27 @@ Examples:
     set_parser.add_argument('--as', dest='role', required=True,
                            choices=['primary', 'tool_calling', 'arbitrator', 'vision'],
                            help='Role to assign')
+    set_parser.add_argument('--with-dependents', action='store_true',
+                           help='When setting primary, also move the lanes that inherit '
+                                'its endpoint (deep_research, convergence, code_generation)')
+    set_parser.add_argument('--force', action='store_true',
+                           help='When setting primary, switch even though dependent lanes '
+                                'would be left pointing at models the new endpoint lacks')
 
     # Status command
     subparsers.add_parser('status', help='Show current active models')
+
+    # Lanes command — full inventory, walked from the YAML so it cannot go stale
+    subparsers.add_parser('lanes',
+                          help='List EVERY model lane and whether it inherits primary\'s endpoint')
+
+    # Doctor command — catch model/endpoint mismatches before they 404 at runtime
+    doctor_parser = subparsers.add_parser(
+        'doctor', help='Check each lane\'s model against the endpoint it resolves to')
+    doctor_parser.add_argument('--probe', action='store_true',
+                               help='Also ask each endpoint whether the model actually exists')
+    doctor_parser.add_argument('--aliases', action='store_true',
+                               help='Also verify every saved alias still resolves at its endpoint')
 
     args = parser.parse_args()
 
@@ -585,7 +1129,9 @@ Examples:
                 think=args.think,
                 no_think=args.no_think,
                 description=args.description,
-                fallback_model=args.fallback_model
+                fallback_model=args.fallback_model,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env
             )
 
         elif args.command == 'update':
@@ -599,7 +1145,8 @@ Examples:
                 think=args.think,
                 no_think=args.no_think,
                 description=args.description,
-                fallback_model=args.fallback_model
+                fallback_model=args.fallback_model,
+                base_url=args.base_url
             )
 
         elif args.command == 'delete':
@@ -609,10 +1156,20 @@ Examples:
             manager.show_alias(args.alias)
 
         elif args.command == 'set':
-            manager.set_alias(args.alias, args.role)
+            manager.set_alias(args.alias, args.role,
+                              with_dependents=args.with_dependents,
+                              force=args.force)
 
         elif args.command == 'status':
             manager.show_status()
+
+        elif args.command == 'lanes':
+            manager.show_lanes()
+
+        elif args.command == 'doctor':
+            # Non-zero exit on problems so this can gate a deploy/CI step.
+            sys.exit(1 if manager.doctor(probe=args.probe,
+                                         check_aliases=args.aliases) else 0)
 
     except Exception as e:
         print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")

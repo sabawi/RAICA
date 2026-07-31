@@ -497,6 +497,11 @@ async def get_db_connection():
 # TOOL MANAGER (Async version of original)
 # ==============================================================================
 
+# Tool names already reported as duplicated — keeps the de-dupe warning in
+# get_tools_definitions() to once per process instead of once per request.
+_WARNED_DUPLICATE_TOOLS = set()
+
+
 class AsyncToolManager:
     """Async version of the original tool manager"""
 
@@ -757,7 +762,43 @@ class AsyncToolManager:
                 tools_definitions.append(plugin_def)
                 logger.debug(f"🔌 Added plugin tool: {plugin['name']}")
 
-        return tools_definitions
+        # De-duplicate by function name — THIS is the single point where the payload
+        # actually sent to the LLM is assembled (built-ins + user tools + plugins), so
+        # it is the only place a collision between those three sources can be caught.
+        #
+        # Two modules legitimately expose the same tool name: analytical_visualizer.py
+        # defines the implementation class and analytical_visualizer_tool.py wraps it for
+        # LLM use — both subclass BaseUserTool, so both land in self.user_tools. Ollama
+        # tolerated the repeated declaration; Google's OpenAI-compatible endpoint rejects
+        # the entire request with HTTP 400 "Duplicate function declaration found: <name>",
+        # which killed the first tool-calling attempt on every request (it then fell back).
+        #
+        # First occurrence wins, matching the execution-side lookup, which also returns
+        # the first match — so the schema advertised stays consistent with the instance
+        # that runs. Logged at WARNING because a duplicate is a packaging smell to fix at
+        # source, not something to silently paper over.
+        deduped = []
+        seen_names = {}
+        for definition in tools_definitions:
+            name = (definition.get("function") or {}).get("name") or definition.get("name")
+            if name and name in seen_names:
+                # get_tools_definitions() runs on every request, so warn only the first
+                # time per process: enough to surface the packaging smell, without
+                # emitting the same line thousands of times a day.
+                if name not in _WARNED_DUPLICATE_TOOLS:
+                    _WARNED_DUPLICATE_TOOLS.add(name)
+                    logger.warning(
+                        f"⚠️ Duplicate tool definition '{name}' dropped from the LLM payload "
+                        f"(already provided by source #{seen_names[name]}). Providers such as "
+                        f"Gemini reject duplicate function declarations outright. This is logged "
+                        f"once per process — fix the duplication at source."
+                    )
+                continue
+            if name:
+                seen_names[name] = len(deduped)
+            deduped.append(definition)
+
+        return deduped
     
     def _create_plugin_wrapper(self, plugin_name: str):
         """🔌 Create an async wrapper for plugin execution"""

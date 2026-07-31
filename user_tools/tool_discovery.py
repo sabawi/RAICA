@@ -176,14 +176,50 @@ def load_user_tools() -> List[BaseUserTool]:
 def get_user_tools_definitions(tools: List[BaseUserTool]) -> List[Dict[str, Any]]:
     """
     Get function definitions for all user tools.
-    
+
+    De-duplicates by function name. Two modules can legitimately expose the same
+    tool name (e.g. analytical_visualizer.py defines the implementation class AND
+    analytical_visualizer_tool.py wraps it for LLM use — both subclass BaseUserTool,
+    so discovery returns both). Ollama silently accepted the repeated declaration;
+    Google's OpenAI-compatible endpoint rejects the whole request with
+    HTTP 400 "Duplicate function declaration found: <name>", which knocked out the
+    entire tool-calling lane. Emitting each name once keeps every provider happy.
+
+    The FIRST occurrence wins, which matches get_user_tool_by_name() below — that
+    also returns the first match — so the schema advertised to the LLM stays
+    consistent with the instance that will actually execute. A duplicate is a
+    packaging smell worth fixing at the source, so it is logged as a warning
+    rather than dropped silently.
+
     Args:
         tools: List of user tool instances
-        
+
     Returns:
-        List of function definitions for LLM prompt
+        List of function definitions for LLM prompt, one per unique name
     """
-    return [tool.get_function_definition() for tool in tools]
+    definitions: List[Dict[str, Any]] = []
+    seen: Dict[str, str] = {}
+
+    for tool in tools:
+        definition = tool.get_function_definition()
+        # Support both flat ({"name": ...}) and OpenAI-nested
+        # ({"function": {"name": ...}}) definition shapes.
+        name = (definition.get('function') or {}).get('name') or definition.get('name')
+
+        if name and name in seen:
+            print(
+                f"⚠️ Duplicate tool definition '{name}' from {type(tool).__name__} — "
+                f"already provided by {seen[name]}. Keeping the first; the duplicate is "
+                f"NOT sent to the LLM (providers such as Gemini reject duplicate function "
+                f"declarations outright). Fix the duplication at the source."
+            )
+            continue
+
+        if name:
+            seen[name] = type(tool).__name__
+        definitions.append(definition)
+
+    return definitions
 
 
 def get_user_tool_by_name(tools: List[BaseUserTool], name: str) -> Optional[BaseUserTool]:
