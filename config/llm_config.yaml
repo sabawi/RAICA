@@ -816,12 +816,12 @@ code_generation:
 vision:
   type: ollama
   config:
-    model: kimi-k2.7-code:cloud   # was qwen3-vl:235b-cloud — Ollama RETIRED qwen3-vl:235b on 2026-06-16 (HTTP 410), breaking all image input. kimi-k2.7-code:cloud is vision-capable, fast (~5s) and accurate (verified on a real photo). Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
+    model: minimax-m3:cloud   # 2026-07-31: was kimi-k2.7-code:cloud, which Ollama does NOT serve — image input had been failing on the primary AND the fallback (gemma4:31b-cloud, also unserved). minimax-m3 verified by sending a test image (red circle, blue square, the word SEVEN) and confirming the reply named all three, including reading the TEXT — i.e. genuine OCR, not a guess from the prompt. NOTE: qwen3-vl:235b-cloud is still LISTED by /api/tags but returns HTTP 410 (retired 2026-06-16), so a listing check is NOT evidence a model works — verify any replacement with a real image. Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
     timeout: 1800
     temperature: 0.7
     max_tokens: 16384
     base_url: http://127.0.0.1:11434
-    fallback_model: gemma4:31b-cloud   # was gemma3:27b-cloud — Ollama retired gemma3:* (2026-07). gemma4:31b-cloud is a verified vision-capable CLOUD backup (tested: correctly described a test image) in a DIFFERENT family than the kimi primary (survives if either family is retired). Both vision models MUST be cloud: the live box has no GPU.
+    fallback_model: kimi-k2.6:cloud   # 2026-07-31: was gemma4:31b-cloud (unserved). kimi-k2.6 verified vision-capable on the same test image, and is a DIFFERENT family from the minimax primary — so a single vendor retirement cannot take out both, which is exactly what happened to the previous pair. (minimax-m2.7 and glm-5.2 were tested and rejected: HTTP 400 "does not support image input".)
   image_processing:
     max_size_mb: 1.0
     resize_enabled: true

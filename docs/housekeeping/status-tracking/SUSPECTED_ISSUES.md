@@ -11,26 +11,6 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-005 — Vision lane points at TWO retired models: image input fails on primary AND fallback  [P2]
-- **Observed (2026-07-31):** `vision.config.model = kimi-k2.7-code:cloud` with
-  `fallback_model = gemma4:31b-cloud`. Ollama serves **neither**. The fallback exists precisely to survive
-  a model retirement, but both halves are retired, so there is nothing left to fall back to.
-- **Evidence:** `config_server_cli.py doctor --probe` marks both `✗ not served here`; confirmed against
-  the live `/api/tags` listing (40 models, 28 cloud-tagged) — neither name appears. Pre-existing, NOT
-  introduced by the 2026-07-31 Gemini work; that work only made it visible.
-- **Impact if real:** every image a user attaches fails to be described. Silent — the caller sees a
-  generic "couldn't process" rather than a model error.
-- **Blocked on quota:** candidate replacements could not be tested — `minimax-m2.7:cloud`,
-  `kimi-k2.6:cloud` and `glm-5.2:cloud` all return **HTTP 429 weekly usage limit** while the quota is
-  exhausted. Pick and VERIFY one once it resets.
-- **Trap to avoid when choosing:** `qwen3-vl:235b-cloud` **is listed** in `/api/tags` but was retired
-  (HTTP 410 on use, per the config's own history note). So a listing check is NOT sufficient evidence —
-  the replacement must be verified by actually sending an image and confirming the reply describes it.
-  A good test image plants unambiguous cues (e.g. a red circle, a blue square, and the word "SEVEN");
-  a model that reports the word is genuinely reading the image rather than guessing from the prompt.
-- **Note on tooling:** `doctor --probe` currently checks whether a model is LISTED. This case shows that
-  listed ≠ usable; consider upgrading the probe to make a minimal real call.
-
 ### SI-002 — aiohttp `Unclosed client session / connector` warnings under direct tool calls  [P3]
 - **Observed (2026-07-12):** running `tests/smoke/tool_smoke.py` (imports the module, calls tools
   directly, then exits) printed several `Unclosed client session` / `Unclosed connector` warnings.
@@ -102,6 +82,23 @@ verbatim on sign-off.
 ---
 
 ## Resolved
+
+### SI-005 — Vision lane pointed at TWO retired models  →  **RESOLVED 2026-07-31** (verified replacements)
+- **Was:** `vision.config.model = kimi-k2.7-code:cloud`, `fallback_model = gemma4:31b-cloud`. Ollama serves
+  **neither**, so image input failed on the primary AND on the fallback that exists precisely to survive a
+  retirement. Pre-existing; surfaced by `config_server_cli.py doctor --probe`.
+- **Fixed:** primary `minimax-m3:cloud`, fallback `kimi-k2.6:cloud` — chosen by TESTING, not by listing.
+  Each was sent a generated image (red circle, blue square, the word "SEVEN"); minimax-m3 named all three
+  including reading the TEXT (genuine OCR, not a guess from the prompt), kimi-k2.6 named the shapes and
+  colours. They are DIFFERENT families, restoring the property the dead pair had lost — one vendor
+  retirement cannot take out both.
+- **Rejected with evidence:** `qwen3-vl:235b-cloud` HTTP 410 "retired at 2026-06-16";
+  `minimax-m2.7:cloud` and `glm-5.2:cloud` HTTP 400 "this model does not support image input".
+- **Verified end-to-end** through RAICA's real `ImageToTextTool` (not a raw API call) on the canonical
+  Ollama config: all five cues matched.
+- **Lesson kept:** a model can be LISTED in `/api/tags` and still be retired (410). Listing is not
+  evidence. `doctor --probe` checks listings, so it would have reported qwen3-vl as healthy — worth
+  upgrading it to make a minimal real call.
 
 ### SI-004 — data-charts `fbi_cde` endpoint dead (404)  →  **RESOLVED 2026-07-23** (endpoint rediscovered + rewired)
 - **Was:** the configured `https://api.usa.gov/crime/fbi/cde/estimate/national/{measure}` returned HTTP 404
