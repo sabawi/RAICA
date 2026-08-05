@@ -883,26 +883,125 @@ class ModelAliasManager:
                 ))
         return problems
 
+    # Availability can ONLY be established by INVOKING the model. A registry listing
+    # is evidence in NEITHER direction, and this probe used to read one:
+    #   * a cloud model never pulled locally is ABSENT from /api/tags yet answers
+    #     fine (gemma4:31b-cloud, kimi-k2.7-code:cloud);
+    #   * a RETIRED model stays LISTED and returns HTTP 410 on use
+    #     (qwen3-vl:235b-cloud).
+    # Measured 2026-08-05: the listing check PASSED the one genuinely dead model and
+    # FAILED two working ones — wrong in both directions, and blind to the exact
+    # failure it exists to catch. It also put two false "unserved" claims into
+    # llm_config.yaml that were then cited as a root cause (SI-005).
+    # Cost of the real test is one 1-token generation per model, which is why the
+    # whole thing stays behind an explicit --probe.
+    _PROBE_OK = 'ok'
+    _PROBE_DEAD = 'dead'
+    _PROBE_UNREACHABLE = 'unreachable'
+
+    def _probe_model(self, base, model, api_key='', timeout=60):
+        """Invoke `model` at `base` with a 1-token generation.
+
+        Returns (status, detail) where status is _PROBE_OK / _PROBE_DEAD /
+        _PROBE_UNREACHABLE. Only a server that ANSWERS and rejects the model
+        counts as dead — a connection failure or an auth error is a fact about
+        the endpoint, not a verdict on the model, and must never be reported as
+        one.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        base = base.rstrip('/')
+        # Same "try both shapes" idiom the listing probe used: OpenAI-compatible
+        # servers take /chat/completions, Ollama native takes /api/generate. Tried
+        # in order rather than keyed off a host->path table that would rot.
+        attempts = (
+            (base + '/chat/completions', {
+                'model': model,
+                'messages': [{'role': 'user', 'content': 'hi'}],
+                'max_tokens': 1,
+            }),
+            (base + '/api/generate', {
+                'model': model,
+                'prompt': 'hi',
+                'stream': False,
+                'options': {'num_predict': 1},
+            }),
+        )
+
+        def as_object(parsed):
+            """Normalise a decoded JSON body to a dict.
+
+            Google's OpenAI-compat endpoint returns errors as a single-element
+            JSON ARRAY ([{"error": {...}}]) where Ollama returns an object, so
+            indexing straight into .get() blows up on one provider but not the
+            other. Anything unrecognised degrades to an empty dict rather than
+            raising, since a malformed body is not a verdict about the model.
+            """
+            if isinstance(parsed, list):
+                parsed = next((item for item in parsed if isinstance(item, dict)), {})
+            return parsed if isinstance(parsed, dict) else {}
+
+        detail = ''
+        for url, payload in attempts:
+            request = urllib.request.Request(
+                url, data=json.dumps(payload).encode('utf-8'),
+                headers={'Content-Type': 'application/json'})
+            if api_key and not api_key.startswith('${'):
+                request.add_header('Authorization', f'Bearer {api_key}')
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    body = as_object(json.loads(
+                        response.read().decode('utf-8', 'replace') or '{}'))
+                # Ollama can answer HTTP 200 with an error field instead of a status.
+                if body.get('error'):
+                    return self._PROBE_DEAD, str(body['error'])[:70]
+                return self._PROBE_OK, ''
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().decode('utf-8', 'replace')
+                try:
+                    parsed = as_object(json.loads(raw or '{}'))
+                except ValueError:
+                    # Not a JSON API response (e.g. an HTML 404 page) — this endpoint
+                    # shape simply isn't served here. Try the next shape.
+                    detail = f'HTTP {exc.code}'
+                    continue
+                err = parsed.get('error')
+                message = (err.get('message') if isinstance(err, dict) else err) or raw
+                summary = f'HTTP {exc.code}: {str(message)[:70]}'
+                # ONLY a response that is unambiguously about the MODEL is a verdict on
+                # the model. 404/410 mean it is gone. Auth (401/403), billing (402),
+                # rate limits (429) and generic 400s are facts about the ACCOUNT or the
+                # REQUEST — reporting those as "retired" would repeat the exact error
+                # this probe was rewritten to fix, just one layer further out.
+                if exc.code in (404, 410):
+                    return self._PROBE_DEAD, summary
+                return self._PROBE_UNREACHABLE, summary
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                detail = str(exc)[:70]
+                continue
+
+        return self._PROBE_UNREACHABLE, detail or 'no endpoint shape answered'
+
     def _probe_aliases(self):
-        """Ask each alias's endpoint whether its model still exists.
+        """Ask each alias's endpoint whether its model still works.
 
         Aliases rot independently of the active config: a provider retires a
         model and the alias sits there looking valid until someone selects it.
-        Checking against the live endpoint is the only reliable test — a code
-        comment claiming a model was retired proved wrong when actually probed.
+        Invoking the live endpoint is the only reliable test — a code comment
+        claiming a model was retired proved wrong when actually probed.
         """
         import os
         import subprocess
-        import urllib.request
-        import urllib.error
 
         if not self.aliases:
             print(f"{Colors.WARNING}No aliases configured.{Colors.ENDC}\n")
             return []
 
-        print(f"{Colors.BOLD}Checking aliases against their endpoints…{Colors.ENDC}\n")
+        print(f"{Colors.BOLD}Invoking each alias's model at its endpoint…{Colors.ENDC}\n")
         gemini_compat = 'https://generativelanguage.googleapis.com/v1beta/openai'
-        listings = {}
+        seen = {}
         found = []
 
         for name, config in sorted(self.aliases.items()):
@@ -924,42 +1023,34 @@ class ModelAliasManager:
                 print(f"  {Colors.WARNING}?{Colors.ENDC} {name:<26} {model:<28} no endpoint")
                 continue
 
-            if base not in listings:
-                listings[base] = None
-                for path in ('/models', '/api/tags'):
-                    request = urllib.request.Request(base.rstrip('/') + path)
-                    if api_key:
-                        request.add_header('Authorization', f'Bearer {api_key}')
-                    try:
-                        with urllib.request.urlopen(request, timeout=20) as response:
-                            listings[base] = response.read().decode('utf-8', 'replace')
-                        break
-                    except (urllib.error.URLError, OSError, ValueError):
-                        continue
+            # Dedupe so two aliases on the same model cost one generation, not two.
+            if (base, model) not in seen:
+                seen[(base, model)] = self._probe_model(base, model, api_key)
+            status, detail = seen[(base, model)]
 
-            body = listings[base]
-            if body is None:
-                print(f"  {Colors.WARNING}?{Colors.ENDC} {name:<26} {model:<28} endpoint unreachable")
-            elif model in body:
+            if status == self._PROBE_UNREACHABLE:
+                print(f"  {Colors.WARNING}?{Colors.ENDC} {name:<26} {model:<28} "
+                      f"probe failed: {detail}")
+            elif status == self._PROBE_OK:
                 print(f"  {Colors.OKGREEN}✓{Colors.ENDC} {name:<26} {model:<28} OK")
             else:
-                print(f"  {Colors.FAIL}✗{Colors.ENDC} {name:<26} {model:<28} not served here")
-                found.append((f"alias:{name}", model, base, 'endpoint no longer serves this model'))
+                print(f"  {Colors.FAIL}✗{Colors.ENDC} {name:<26} {model:<28} {detail}")
+                found.append((f"alias:{name}", model, base,
+                              detail or 'endpoint rejected this model'))
 
         print()
         return found
 
     def _probe_endpoints(self, lanes, primary_endpoint):
-        """Ask each endpoint whether the lane's model actually exists.
+        """Invoke each lane's model at its endpoint to prove it still answers.
 
-        Authoritative, unlike the naming heuristics — this is what would have
-        caught a model/endpoint mismatch before it reached production traffic.
+        Authoritative, unlike the naming heuristics AND unlike the registry
+        listing this used to read — see _probe_model for why a listing is
+        evidence in neither direction.
         """
         import os
-        import urllib.request
-        import urllib.error
 
-        print(f"{Colors.BOLD}Probing endpoints for model availability…{Colors.ENDC}\n")
+        print(f"{Colors.BOLD}Invoking each lane's model at its endpoint…{Colors.ENDC}\n")
         found = []
         checked = set()
 
@@ -970,39 +1061,26 @@ class ModelAliasManager:
                 continue
             checked.add((endpoint, model))
 
-            # Providers disagree on how to list models: OpenAI-compatible servers
-            # expose /models, Ollama exposes /api/tags. Try both rather than
-            # hardcoding a host->path table that would rot the way the lane list did.
             base = endpoint.rstrip('/')
-            candidates = [base + '/models', base + '/api/tags']
             # Expand ${VAR} the same way the loader does, so a probe uses the real key.
             api_key = os.path.expandvars(
                 '${GEMINI_API_KEY}' if 'googleapis' in endpoint else ''
             )
 
-            body = None
-            last_error = None
-            for url in candidates:
-                request = urllib.request.Request(url)
-                if api_key and not api_key.startswith('${'):
-                    request.add_header('Authorization', f'Bearer {api_key}')
-                try:
-                    with urllib.request.urlopen(request, timeout=20) as response:
-                        body = response.read().decode('utf-8', 'replace')
-                    break
-                except (urllib.error.URLError, OSError, ValueError) as exc:
-                    last_error = exc
+            status, detail = self._probe_model(base, model, api_key)
 
-            if body is None:
+            if status == self._PROBE_UNREACHABLE:
                 print(f"  {Colors.WARNING}?{Colors.ENDC} {lane['path']:<46} {model:<24} "
-                      f"probe failed: {str(last_error)[:50]}")
+                      f"probe failed: {detail}")
                 continue
 
-            available = model in body
-            mark = f"{Colors.OKGREEN}✓{Colors.ENDC}" if available else f"{Colors.FAIL}✗{Colors.ENDC}"
-            print(f"  {mark} {lane['path']:<46} {model:<24} @ {endpoint}")
-            if not available:
-                found.append((lane['path'], model, endpoint, 'endpoint does not list this model'))
+            mark = (f"{Colors.OKGREEN}✓{Colors.ENDC}" if status == self._PROBE_OK
+                    else f"{Colors.FAIL}✗{Colors.ENDC}")
+            suffix = f" — {detail}" if status == self._PROBE_DEAD else ''
+            print(f"  {mark} {lane['path']:<46} {model:<24} @ {endpoint}{suffix}")
+            if status == self._PROBE_DEAD:
+                found.append((lane['path'], model, endpoint,
+                              detail or 'endpoint rejected this model'))
 
         print()
         return found
@@ -1099,9 +1177,11 @@ Examples:
     doctor_parser = subparsers.add_parser(
         'doctor', help='Check each lane\'s model against the endpoint it resolves to')
     doctor_parser.add_argument('--probe', action='store_true',
-                               help='Also ask each endpoint whether the model actually exists')
+                               help='Also INVOKE each lane\'s model (1-token generation, '
+                                    'costs one request per model) to prove it still answers')
     doctor_parser.add_argument('--aliases', action='store_true',
-                               help='Also verify every saved alias still resolves at its endpoint')
+                               help='Also INVOKE every saved alias\'s model at its endpoint '
+                                    '(same 1-token cost per distinct model)')
 
     args = parser.parse_args()
 

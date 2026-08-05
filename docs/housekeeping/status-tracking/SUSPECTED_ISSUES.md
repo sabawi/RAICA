@@ -83,22 +83,38 @@ verbatim on sign-off.
 
 ## Resolved
 
-### SI-005 — Vision lane pointed at TWO retired models  →  **RESOLVED 2026-07-31** (verified replacements)
-- **Was:** `vision.config.model = kimi-k2.7-code:cloud`, `fallback_model = gemma4:31b-cloud`. Ollama serves
-  **neither**, so image input failed on the primary AND on the fallback that exists precisely to survive a
-  retirement. Pre-existing; surfaced by `config_server_cli.py doctor --probe`.
-- **Fixed:** primary `minimax-m3:cloud`, fallback `kimi-k2.6:cloud` — chosen by TESTING, not by listing.
+### SI-005 — Vision lane swapped off two models  →  **CAUSE RETRACTED 2026-08-05; lane works, cause UNKNOWN**
+- **Status:** the vision lane is HEALTHY (verified replacements, below). What is retracted is the
+  *diagnosis*. The original entry claimed Ollama served **neither** `kimi-k2.7-code:cloud` nor
+  `gemma4:31b-cloud`. **BOTH CLAIMS ARE FALSE.**
+- **Refutation (2026-08-05):** re-probed by INVOKING each model. `kimi-k2.7-code:cloud` and
+  `gemma4:31b-cloud` both answer normally, on this machine AND on live `sabawi.net`; `gemma4:31b-cloud`
+  also correctly described a test image, so it is vision-capable. The false claim came from reading
+  `/api/tags`, which lists only models **pulled locally** and is evidence in NEITHER direction.
+  Contrast: genuinely retired models return an explicit `HTTP 410 "… was retired at <date>"`. Neither of
+  these two produces anything of the kind, which is the strongest sign they were never retired at all.
+  (Caveat — this does not *prove* they were reachable on 2026-07-31; cloud availability shifts. But the
+  recorded cause was never established by invocation, so it was never evidence.)
+- **Therefore the real cause of the 2026-07-31 vision break is UNKNOWN** and could recur. Do NOT treat
+  this entry as explaining it. Next step if it recurs: capture the ACTUAL error from
+  `image_to_text.py` at the moment of failure rather than inferring from a model listing.
+- **Fix still stands (independently verified):** primary `minimax-m3:cloud`, fallback `kimi-k2.6:cloud`.
   Each was sent a generated image (red circle, blue square, the word "SEVEN"); minimax-m3 named all three
   including reading the TEXT (genuine OCR, not a guess from the prompt), kimi-k2.6 named the shapes and
-  colours. They are DIFFERENT families, restoring the property the dead pair had lost — one vendor
-  retirement cannot take out both.
-- **Rejected with evidence:** `qwen3-vl:235b-cloud` HTTP 410 "retired at 2026-06-16";
-  `minimax-m2.7:cloud` and `glm-5.2:cloud` HTTP 400 "this model does not support image input".
-- **Verified end-to-end** through RAICA's real `ImageToTextTool` (not a raw API call) on the canonical
-  Ollama config: all five cues matched.
-- **Lesson kept:** a model can be LISTED in `/api/tags` and still be retired (410). Listing is not
-  evidence. `doctor --probe` checks listings, so it would have reported qwen3-vl as healthy — worth
-  upgrading it to make a minimal real call.
+  colours. Different families, so one vendor retirement cannot take out both. Verified end-to-end through
+  RAICA's real `ImageToTextTool` (not a raw API call): all five cues matched.
+- **Rejected with evidence (invocation-based, still valid):** `qwen3-vl:235b-cloud` HTTP 410 "retired at
+  2026-06-16"; `minimax-m2.7:cloud` and `glm-5.2:cloud` HTTP 400 "does not support image input".
+- **Guard installed (2026-08-05):** `doctor --probe` / `--aliases` no longer read a listing — they INVOKE
+  each model with a 1-token generation (`config_server_cli.py::_probe_model`). Measured before the fix,
+  the listing check was wrong in BOTH directions: it PASSED the one genuinely dead model
+  (`qwen3-vl:235b-cloud`, 410) and FAILED two working ones. The new probe classifies 6/6 correctly and,
+  on its first real run, caught a dead alias the old check was blind to — `deepseek_ollama_cloud` →
+  `deepseek-v3.1:671b-cloud`, HTTP 410, retired 2026-07-15. Auth/billing/rate-limit responses are
+  reported as inconclusive `?`, never as "dead model".
+- **Lesson (escalated):** availability is established ONLY by invoking. A registry listing is not
+  evidence — in either direction. The earlier version of this entry already knew listings could produce a
+  false PASS and still reasoned from one to record a false FAIL.
 
 ### SI-004 — data-charts `fbi_cde` endpoint dead (404)  →  **RESOLVED 2026-07-23** (endpoint rediscovered + rewired)
 - **Was:** the configured `https://api.usa.gov/crime/fbi/cde/estimate/national/{measure}` returned HTTP 404
