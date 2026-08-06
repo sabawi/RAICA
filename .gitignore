@@ -170,3 +170,13 @@ tests/data/intent_eval_results.jsonl
 # env backups (never commit secrets); .env.example stays tracked
 .env.*
 !.env.example
+
+# config backups written by config_server_cli / manual edits (e.g.
+# config/llm_config.yaml.bak.20260731-095537). They are snapshots of live config
+# and can contain values that should never be committed.
+*.bak
+*.bak.*
+
+# Generated deliverables dropped in the repo ROOT by tool runs (report PDFs etc.).
+# Scoped to the root on purpose so real documentation under docs/ stays tracked.
+/*.pdf
