@@ -11,6 +11,43 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-006 — 2 academic sources rate-limited without an API key (`semantic_scholar`, `core`)  [P2 — CONFIRMED, not a bug]
+- **Observed (2026-08-06):** after v1.0.0.235 revived pubmed/doaj/biorxiv, `published_papers_search`
+  reaches **9 of 11** databases. The two that stay dark are `semantic_scholar` and `core`.
+- **Confirmed cause (invocation-based, both environments):** HTTP **429 Too Many Requests**, with no
+  API key configured — `CORE_API_KEY` is unset locally AND on live. This is **not** a code defect and
+  **not** environment-specific.
+  ```
+  local: ClientResponseError: 429 … api.core.ac.uk/v3/search/works
+  live : ClientResponseError: 429 … api.core.ac.uk/v3/search/works
+  ```
+- **Falsification note — nearly logged wrong.** CORE first measured 15 URLs locally vs 0 on live, which
+  read as a live-only failure. Probing BOTH environments showed 429 on each: the local run had simply
+  not yet tripped the unauthenticated rate limit after repeated test calls. An environment-specific
+  claim must be checked against the other environment before it is recorded.
+- **Impact:** degrades breadth for **Deep Research** and `@scibot`, both of which call this tool. Not
+  fatal — 9 sources remain, and `europe_pmc` covers the bioRxiv corpus — but CORE and Semantic Scholar
+  are the two broadest cross-disciplinary indexes, so humanities/interdisciplinary queries lose most.
+- **Fix when picked up:** obtain free API keys (CORE: `core.ac.uk/services/api`; Semantic Scholar:
+  `semanticscholar.org/product/api`), put them in `.env` as secrets (**never** in `llm_config.yaml`,
+  per the configuration directive), and read them in `_build_core_url` / `_search_semantic_scholar`.
+  Requires the user to register — cannot be done unattended.
+- **Clear only when:** a keyed request returns results in BOTH environments, or the sources are
+  deliberately dropped from the tool's source list.
+
+### SI-007 — Stray files in repo root violate the documented directory organization  [P3]
+- **Observed (2026-08-06, during the v1.0.0.235 checkpoint):** 10 `.py` files sit in the repo root
+  outside the documented "core modules only" allow-list — `debug_pygobject.py`, `dependency_analyzer.py`,
+  `image_utils.py`, `llm_tools_processor.py`, `main.py`, `RAG_helper.py`, `scratch_puzzle.py`, and three
+  test files (`test_google_news_rss.py`, `test_main.py`, `test_news_sources.py`).
+- **Why it matters:** `CLAUDE.md` states *"NEVER leave test files in root directory"* and *"debug_*.py,
+  analyze_*.py → archive/experimental/"*. Pre-existing debt, not introduced by any recent change.
+- **Deliberately NOT fixed during the deploy:** moving Python files requires comprehensive dependency
+  analysis first (`CLAUDE.md`: *"ALWAYS check dependencies before moving Python files"*), and some of
+  these may be live imports. Bundling that into a production deploy would add unrelated risk.
+- **Clear when:** each file is grep-analysed for importers and either moved to its documented home
+  (`tests/…`, `archive/experimental/`) or explicitly added to the root allow-list with a reason.
+
 ### SI-002 — aiohttp `Unclosed client session / connector` warnings under direct tool calls  [P3]
 - **Observed (2026-07-12):** running `tests/smoke/tool_smoke.py` (imports the module, calls tools
   directly, then exits) printed several `Unclosed client session` / `Unclosed connector` warnings.
