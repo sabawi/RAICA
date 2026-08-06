@@ -54,6 +54,24 @@ root cause of the 2026-07-31 vision-lane break (SI-005). That diagnosis is now r
   image-verified, but the recorded cause was false, so the real cause of the 2026-07-31 break is
   **UNKNOWN** and may recur. Guard installed is documented on the entry.
 
+## Documentation
+
+Surfaced by the new global pre-commit docs/README review mandate, applied to this very release:
+
+- **`README.md` version was 44 builds stale** — `1.0.0.189` in 4 places (title, badge, release link,
+  About section, Version History) while `version.py` was at `1.0.0.233`. Corrected. Same failure class
+  as the NewX badge that sat 60 builds behind.
+- **`doctor` was never documented at all.** The command shipped in `243ac0c` and
+  `docs/CLI_MODEL_MANAGEMENT.md` — the file the Administrator Guide calls "comprehensive CLI
+  documentation" — had **zero** mentions of it. Added a full `doctor` reference there: the three
+  invocation forms, the per-model request cost, why it invokes rather than reading a listing (with the
+  wrong-in-both-directions table), and how to read `✓` / `✗` / `?`.
+- **`docs/production/ADMINISTRATOR_GUIDE.md`**: added `doctor` to the CLI feature list and the Quick
+  Start commands, flagged as a pre-deploy check that exits non-zero on a dead model.
+
+RAICA has **no version-sync test** (NewX has `newx/test_version.py`, which would have caught this drift
+years earlier). Worth adding — noted as a follow-up.
+
 ## Verification
 
 - `_probe_model` classifies **6/6** correctly: `gemma4:31b-cloud` ok, `kimi-k2.7-code:cloud` ok,

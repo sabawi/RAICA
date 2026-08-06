@@ -305,12 +305,22 @@ The `config_server_cli.py` CLI tool provides simplified management of LLM model 
 - **Configuration Database**: Persistent storage in `config/model_aliases.json`
 - **Safety Checks**: Prevents accidental deletion of active models
 - **Color-Coded Output**: Clear visual feedback for all operations
+- **Health Check (`doctor`)**: Verifies every configured lane's model still answers at its endpoint,
+  by INVOKING it — catches a retired/renamed model before it 404s in production
 
 #### Quick Start Commands
 
 ```bash
 # Check current active models
 ./config_server_cli.py status
+
+# Health-check every lane's model against its endpoint (advisory, offline)
+./config_server_cli.py doctor
+
+# ...and actually INVOKE each model to prove it still answers.
+# Costs one 1-token request per distinct model. Run before any deploy
+# that touches an LLM lane. Exits non-zero if a model is dead.
+./config_server_cli.py doctor --probe --aliases
 
 # List all configured model aliases
 ./config_server_cli.py ls

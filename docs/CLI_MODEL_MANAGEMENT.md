@@ -72,6 +72,59 @@ The `config_server_cli.py` CLI tool provides easy management of LLM model config
 
 ## Command Reference
 
+### `doctor` - Check Every Lane's Model Against Its Endpoint
+
+```bash
+./config_server_cli.py doctor                      # static checks only (free, offline)
+./config_server_cli.py doctor --probe              # also INVOKE each active lane's model
+./config_server_cli.py doctor --probe --aliases    # also INVOKE every saved alias's model
+```
+
+Catches a model/endpoint mismatch **before** it 404s in production. Exits non-zero when it finds a
+problem, so it can gate a deploy.
+
+- **Without flags** it runs advisory naming checks only — no network, no cost.
+- **`--probe` / `--aliases`** send a real **1-token generation** to each model. This **costs one
+  request per distinct model** (aliases are deduped by endpoint+model), which is why it is opt-in.
+
+#### Why it invokes instead of reading the model list
+
+Availability can only be established by **invoking** the model. A registry listing (`/api/tags`,
+`/models`) is evidence in **neither** direction, and reading one produces confidently wrong verdicts
+in both:
+
+| Model | What the listing said | Reality |
+|---|---|---|
+| `gemma4:31b-cloud` | absent → "not served" | **works** (never pulled locally; `/api/tags` only lists *pulled* models) |
+| `kimi-k2.7-code:cloud` | absent → "not served" | **works** |
+| `qwen3-vl:235b-cloud` | listed → "healthy" | **HTTP 410, retired 2026-06-16** |
+
+The listing check therefore passed the one genuinely dead model — the exact failure the command
+exists to catch — and failed two working ones. It was replaced with real invocation in v1.0.0.233.
+
+#### Reading the output
+
+| Mark | Meaning |
+|---|---|
+| `✓` | The model generated a token. It works. |
+| `✗` | The endpoint **answered and rejected the model** — HTTP `404` (no such model) or `410` (retired). This is a real verdict and is counted as a problem. |
+| `?` | Inconclusive — the probe could not reach a verdict *about the model*: connection failure, auth (`401`/`403`), billing (`402`), rate limit (`429`), or a generic `400`. The server's message is shown. **Not** counted as a dead model. |
+
+A `?` still deserves attention — it usually means a credential or account problem — but it is
+deliberately never reported as "model retired", because that conflation is what produced the false
+claims above.
+
+**Example:**
+```bash
+$ ./config_server_cli.py doctor --probe --aliases
+  ✓ llm.primary.config.model          deepseek-v4-pro:cloud   @ http://127.0.0.1:11434
+  ✓ vision.config.model               minimax-m3:cloud        @ http://127.0.0.1:11434
+  ✗ deepseek_ollama_cloud  deepseek-v3.1:671b-cloud  HTTP 410: deepseek-v3.1:671b was retired at 2026-07-15
+  ? gemini_pro_25          gemini-2.5-pro            probe failed: HTTP 400: Please pass a valid API key
+```
+
+Run this after any model swap, and before a deploy that touches an LLM lane.
+
 ### `ls` - List All Aliases
 ```bash
 ./config_server_cli.py ls
