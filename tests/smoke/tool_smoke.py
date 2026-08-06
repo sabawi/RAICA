@@ -36,6 +36,17 @@ CHECKS = [
     ("get_news_summaries",         {"query": "technology"}),
     ("get_stock_and_company_data", {"symbol": "AAPL"}),  # tool reads the `symbol` key (fastapi_server_complete.py:952)
     ("lookup_website",             {"url": "https://example.com"}),
+    # Deep Research's academic retrieval path, and the science bot's primary source.
+    # Added v1.0.0.235: it was NOT smoke-covered, and that is exactly how it rotted —
+    # 4 of its 11 databases were silently returning nothing (PubMed had NEVER worked:
+    # `from Bio import Entrez` with biopython missing from requirements.txt entirely).
+    # A tool nothing ever invokes cannot be caught failing.
+    # Pinned to arxiv+pubmed (2.8s). The full 11-database call takes ~85s, well past
+    # PER_CALL_TIMEOUT, and this gate's job is "does the tool crash on invocation",
+    # not "are all 11 databases healthy". PubMed is named deliberately: it is the
+    # source that had never worked, so this check fails if biopython goes missing again.
+    ("published_papers_search",    {"query": "CRISPR gene editing",
+                                    "sources": ["arxiv", "pubmed"], "max_results": 3}),
 ]
 
 # Signatures of a real CODE defect (not ENV). Lowercased match against result + captured stdout.
@@ -55,6 +66,14 @@ PER_CALL_TIMEOUT = 30
 
 
 async def _invoke(name, args):
+    # USER tools (published_papers_search, comprehensive_stock_analyzer, …) are
+    # registered by an ASYNC loader that importing the module does not run, so
+    # available_functions holds only the 7 built-ins until this is awaited — the
+    # smoke suite was blind to the other 17 tools, published_papers_search among
+    # them. Idempotent, so calling it per invocation is safe.
+    if name not in F.tool_manager.available_functions:
+        await F.tool_manager._load_user_tools_async()
+
     fn = F.tool_manager.available_functions[name]
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):

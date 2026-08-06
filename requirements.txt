@@ -9,6 +9,11 @@ async-timeout==5.0.1
 attrs==25.3.0
 babel==2.17.0
 beautifulsoup4==4.13.4
+# biopython: REQUIRED for the PubMed source in published_papers_search
+# (user_tools/published_papers_search_tool.py:18 `from Bio import Entrez`).
+# It was never declared, so PubMed silently logged "BioPython not available,
+# skipping PubMed search" and returned 0 results in EVERY environment.
+biopython==1.85
 certifi==2025.7.14
 cffi==1.17.1
 charset-normalizer==3.4.2

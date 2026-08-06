@@ -8,7 +8,7 @@ import aiohttp
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from urllib.parse import quote
 import logging
@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 # the groundable content of a paper reached by metadata search. The old 200-char cap gave the writer
 # a ~2-sentence teaser, forcing it to backfill the paper's specific findings from memory (unverifiable).
 _ABSTRACT_MAX = 1800
+# bioRxiv has no query API — it serves a date-windowed feed that we filter locally.
+# The endpoint caps a page at 30 rows regardless of what is requested, and cursor 0
+# is the OLDEST row in the window, so reaching current papers means paging backward
+# from `total`. These bound that walk: 8 pages x 30 = up to 240 recent candidates.
+_BIORXIV_ROWS = 30
+_BIORXIV_MAX_PAGES = 8
+_BIORXIV_WINDOW_DAYS = 90
 
 class PublishedPapersSearchTool(BaseUserTool):
     """
@@ -286,6 +293,18 @@ class PublishedPapersSearchTool(BaseUserTool):
             
             if source_url:  # Only include papers with valid citation URLs
                 title = paper.get("title", f"Research Paper {i}")
+                # Put the PUBLICATION date on the title line. The shared block header
+                # renders "📅 Retrieved: <today>", which is by far the most prominent
+                # date in the block — so a 2016 paper reads as current unless the real
+                # date sits right next to it. (Observed: a science bot presented papers
+                # 11-15 months old, and a query returned a 2016 paper at rank 1, while
+                # every block was stamped with today's date.) Kept local to this tool:
+                # format_source_block is shared by 11 modules and must not change shape.
+                published = paper.get("published") or paper.get("year")
+                if published:
+                    published_str = str(published)[:10]
+                    if published_str not in title:
+                        title = f"{title}  [published {published_str}]"
                 content = "\n".join(content_parts)
                 
                 formatted_block = format_source_block(
@@ -606,20 +625,20 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
             return []
     
     def _build_doaj_url(self, query: str, year: Optional[int], max_results: int) -> str:
-        """Build DOAJ API URL"""
-        base_url = "https://doaj.org/api/search/articles"
+        """Build DOAJ API URL.
+
+        DOAJ versioned its API: the old unversioned `/api/search/articles?q=…` now
+        returns HTTP 404 for every request, which is why this source had gone silently
+        dead. v2 takes the search string in the PATH, not as a `q` parameter.
+        The response body shape is unchanged, so _parse_doaj_data still applies.
+        """
         search_query = query
         if year:
             search_query += f" AND year:{year}"
-        
-        params = {
-            "q": search_query,
-            "pageSize": max_results,
-            "page": 1
-        }
-        
+
+        params = {"pageSize": max_results, "page": 1}
         param_str = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
-        return f"{base_url}?{param_str}"
+        return f"https://doaj.org/api/v2/search/articles/{quote(search_query)}?{param_str}"
     
     def _parse_doaj_data(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Parse DOAJ response data"""
@@ -663,37 +682,102 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
         return results
     
     async def _search_biorxiv(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
-        """Search bioRxiv and medRxiv preprint servers"""
+        """Search bioRxiv and medRxiv preprint servers.
+
+        bioRxiv has NO query endpoint — it serves a date-windowed feed that we filter
+        locally, and that feed has two traps measured on 2026-08-06:
+          * the page size is capped at 30 rows no matter what is requested, and
+          * cursor 0 is the OLDEST row in the window.
+        So the previous "2-year window, cursor 0, 5 rows" fetch returned 5 papers all
+        dated the window's first day, out of 111,186 — and the keyword filter then
+        matched none of them. The source looked dead for every query.
+
+        Fixed by reading `total` from the feed and paging BACKWARD from the end, which
+        is where the newest papers are (verified: cursor 19270/19301 returned papers
+        dated that same day). Bounded to _BIORXIV_MAX_PAGES requests.
+        """
         try:
-            url = self._build_biorxiv_url(year, max_results)
-            data = await self._fetch_json_content(url)
-            return self._filter_biorxiv_results(data, query, max_results)
+            first = await self._fetch_json_content(self._build_biorxiv_url(year, 0))
+            messages = (first.get("messages") or [{}])[0]
+            try:
+                total = int(messages.get("total") or 0)
+            except (TypeError, ValueError):
+                total = 0
+
+            collection = list(first.get("collection") or [])
+            # Walk backward from the newest end, a page at a time. A single page
+            # failing must NOT discard the pages already gathered — this walk makes
+            # ~9 requests and bioRxiv intermittently drops one under rapid calls, which
+            # would otherwise turn a good result set into an empty source.
+            cursor = max(0, total - _BIORXIV_ROWS)
+            for _ in range(_BIORXIV_MAX_PAGES):
+                if cursor <= 0:
+                    break
+                try:
+                    page = await self._fetch_json_content(self._build_biorxiv_url(year, cursor))
+                except Exception as page_error:
+                    logger.warning(f"bioRxiv page at cursor {cursor} failed, "
+                                   f"keeping {len(collection)} rows already fetched: {page_error}")
+                    break
+                rows = page.get("collection") or []
+                if not rows:
+                    break
+                collection.extend(rows)
+                cursor -= _BIORXIV_ROWS
+
+            return self._filter_biorxiv_results({"collection": collection}, query, max_results)
         except Exception as e:
             logger.error(f"bioRxiv search error: {e}")
             return []
     
-    def _build_biorxiv_url(self, year: Optional[int], max_results: int) -> str:
-        """Build bioRxiv API URL"""
+    def _build_biorxiv_url(self, year: Optional[int], cursor: int) -> str:
+        """Build bioRxiv API URL.
+
+        The endpoint returns papers in ASCENDING date order from start_date, and the
+        trailing cursor/limit pair pages through that interval. The previous build
+        asked for a TWO-YEAR window at cursor 0 and took only `max_results` rows —
+        i.e. the 5 OLDEST papers in the window (measured: 111,186 papers in range, all
+        5 returned rows dated the window's first day). Those 5 arbitrary papers were
+        then relevance-filtered against the query, so bioRxiv returned nothing for
+        essentially every search and looked like a dead source.
+
+        Fixed by using a RECENT window; the caller (_search_biorxiv) then pages
+        backward from `total` to reach the newest rows, since cursor 0 is the oldest.
+        """
         if year:
             start_date = f"{year}-01-01"
             end_date = f"{year}-12-31"
         else:
-            current_year = datetime.now().year
-            start_date = f"{current_year-1}-01-01"
-            end_date = f"{current_year}-12-31"
-        
-        return f"https://api.biorxiv.org/details/biorxiv/{start_date}/{end_date}/0/{max_results}"
+            today = datetime.now()
+            start_date = (today - timedelta(days=_BIORXIV_WINDOW_DAYS)).strftime("%Y-%m-%d")
+            end_date = today.strftime("%Y-%m-%d")
+
+        return f"https://api.biorxiv.org/details/biorxiv/{start_date}/{end_date}/{max(0, int(cursor))}/{_BIORXIV_ROWS}"
     
     def _filter_biorxiv_results(self, data: Dict[str, Any], query: str, max_results: int) -> List[Dict[str, Any]]:
-        """Filter bioRxiv results by query relevance"""
+        """Filter bioRxiv results by query relevance.
+
+        Previously this required the ENTIRE query to appear as a literal substring
+        ("antibiotic resistance discovery" had to occur verbatim), which virtually
+        never matches a real abstract — so even a well-populated feed filtered down
+        to nothing. Now a paper qualifies when its title/abstract contains most of
+        the query's meaningful terms, and results are ordered by how many matched
+        (then by recency, since the feed is date-windowed).
+        """
         results = []
         query_lower = query.lower()
-        
+        terms = [t for t in re.findall(r"[a-z0-9]+", query_lower) if len(t) > 2]
+        # Require a clear majority of terms so the filter stays selective without
+        # demanding a verbatim phrase.
+        needed = max(1, (len(terms) * 2 + 2) // 3) if terms else 0
+
         for article in data.get("collection", []):
             title = article.get("title", "").lower()
             abstract = article.get("abstract", "").lower()
-            
-            if query_lower in title or query_lower in abstract:
+            haystack = f"{title} {abstract}"
+            hits = sum(1 for t in terms if t in haystack) if terms else 0
+
+            if (terms and hits >= needed) or (not terms and query_lower in haystack):
                 abstract_text = article.get("abstract", "")
                 if abstract_text and len(abstract_text) > _ABSTRACT_MAX:
                     abstract_text = abstract_text[:_ABSTRACT_MAX] + "..."
@@ -710,9 +794,15 @@ Search Timestamp: {datetime.now().strftime('%A, %B %d, %Y %I:%M:%S %p')}
                     "url": biorxiv_url,  # Added for Citation Mastery
                     "doi": doi,
                     "pdf_link": f"https://www.biorxiv.org/content/{doi}.full.pdf" if doi else None,
-                    "abstract": abstract_text or "No abstract"
+                    "abstract": abstract_text or "No abstract",
+                    "_hits": hits,
                 })
-        
+
+        # Best-matching first, then newest — the feed arrives oldest-first, so without
+        # this the caller would truncate to the least relevant / oldest rows.
+        results.sort(key=lambda r: (r.get("_hits", 0), r.get("published") or ""), reverse=True)
+        for r in results:
+            r.pop("_hits", None)
         return results[:max_results]
     
     async def _search_core(self, query: str, year: Optional[int], max_results: int) -> List[Dict[str, Any]]:
