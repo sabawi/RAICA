@@ -15,7 +15,12 @@ cd "$PROJECT_ROOT" || exit 0
 
 # CORE workflow files — a staged change to ANY of these triggers the Tier-0 gate (+ Tier-1 reminder).
 # Keep in sync with docs/RAICA_QUALITY_BENCHMARK.md §7.
-CORE_REGEX='^(fastapi_server_complete\.py|research/|llm_providers/|orchestration/|user_tools/(image_to_text|sandboxed_executor|pdf_generator_tool)\.py|services/pdf_service\.py|utils/html_generator\.py|config/(llm_config\.yaml|pdf_styles\.css)|primary_model_system_prompt\.txt|pre_tool_model_system_prompt\.txt)'
+#
+# version.py / README.md / config/logging_config.json are here for test_version_sync.py. They are not
+# "workflow" files, but a VERSION BUMP is the exact moment the version surfaces drift, so the gate has
+# to fire then or the test never runs when it matters. (Before this, a bump triggered NOTHING: README
+# reached 44 builds stale and logging_config.json sat on a different version series entirely.)
+CORE_REGEX='^(fastapi_server_complete\.py|research/|llm_providers/|orchestration/|user_tools/(image_to_text|sandboxed_executor|pdf_generator_tool)\.py|services/pdf_service\.py|utils/html_generator\.py|config/(llm_config\.yaml|pdf_styles\.css|logging_config\.json)|primary_model_system_prompt\.txt|pre_tool_model_system_prompt\.txt|version\.py|README\.md)'
 
 CORE_HITS="$(git diff --cached --name-only | grep -E "$CORE_REGEX" || true)"
 [ -z "$CORE_HITS" ] && exit 0   # no core workflow files staged -> nothing to gate

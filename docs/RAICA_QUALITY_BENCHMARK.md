@@ -57,10 +57,18 @@ demand. You cannot run a 15-minute real-LLM suite on every commit.
 | **1 — Golden scenarios** | 5–6 real end-to-end runs vs `baseline.json` scorecard | non-deterministic (real LLM) | **before deploy/checkpoint** + nightly (manual/cron) | ~10–20 min |
 | **2 — Latency budgets** | Per-stage timings parsed from `server_complete.log`, vs baseline | measured | piggybacks on Tier 1 | free |
 
-**Tier 0** already mostly exists (7 files): `test_citation_grounding`, `test_tool_calling_retry`,
+**Tier 0** (9 files): `test_citation_grounding`, `test_tool_calling_retry`,
 `test_dr_title_extraction`, `test_html_single_workflow_styling`, `test_vision_fallback`,
-`test_delivery_failure_reporting`, `test_citation_source_filtering` + `test_citation_link_verification`.
-Step 1 is just to wire them into one runner + the hook. They are the fast "did the logic break" floor.
+`test_delivery_failure_reporting`, `test_citation_source_filtering`, `test_citation_link_verification`,
+`test_version_sync`. They are the fast "did the logic break" floor, wired into one runner + the hook.
+
+`test_version_sync` (added v1.0.0.234) locks the single-source-of-truth versioning contract:
+`version.py` is the authority, and `README.md` (badge, release link, every "RAICA vX" claim),
+`config/logging_config.json` and `utils/version_sync.py`'s own consistency check must all agree.
+`/health` is asserted **statically** — it must serve the imported `__version__` symbol, never a
+literal — so the gate stays offline and boot-free (importing `fastapi_server_complete` would load the
+whole server stack). It deliberately ignores version strings citing the **upstream** Agentic-RAG-System
+fork, which are historical facts, not drift.
 
 **Tier 1/2 run against LOCAL RAICA by default** (cheaper, residential IP avoids datacenter bot-blocking),
 with `--live` as an explicit opt-in.
@@ -171,8 +179,16 @@ A repo pre-commit hook (alongside the existing CLAUDE.md compliance check):
 `fastapi_server_complete.py`, `research/**`, `llm_providers/**`, `orchestration/**`,
 `user_tools/image_to_text.py`, `user_tools/sandboxed_executor.py`, `user_tools/pdf_generator_tool.py`,
 `services/pdf_service.py`, `utils/html_generator.py`, `config/llm_config.yaml`, `config/pdf_styles.css`,
-`primary_model_system_prompt.txt`, `pre_tool_model_system_prompt.txt`.
+`config/logging_config.json`, `primary_model_system_prompt.txt`, `pre_tool_model_system_prompt.txt`,
+`version.py`, `README.md`.
 (NewX core: `newx/app/ai_connector/responder.py`, `scheduler.py` — NewX has its own hook.)
+
+> `version.py`, `README.md` and `config/logging_config.json` are not "workflow" files. They are in the
+> list because a **version bump is the exact moment the version surfaces drift**, so `test_version_sync.py`
+> has to fire then or it never runs when it matters. Before this, a bump triggered *nothing*: the README
+> reached **44 builds stale** (`1.0.0.189` vs `1.0.0.233`) and `config/logging_config.json` sat on a
+> different version series entirely (`1.0.3.122`). A guard that does not fire at the moment of the failure
+> is not a guard.
 
 This policy is also recorded in project memory so it survives across sessions.
 

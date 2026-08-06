@@ -46,6 +46,7 @@ TIER0_TESTS = [
     "tests/integration/test_html_single_workflow_styling.py",# one HTML template + @media screen; PDF intact
     "tests/integration/test_vision_fallback.py",             # primary vision fail -> backup runs
     "tests/integration/test_delivery_failure_reporting.py",  # failed send reported as failed (no false ok)
+    "tests/integration/test_version_sync.py",                # version.py == README/logging_config//health
 ]
 
 GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
