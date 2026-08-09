@@ -1,8 +1,10 @@
 # LLM Provider Parity — Remediation Plan
 
-**Status:** PROPOSED — awaiting sign-off. **No code changes beyond what is already
-uncommitted (§1) until approved.**
-**Date:** 2026-08-09 · **Against:** v1.0.0.236 (uncommitted)
+**Status:** APPROVED 2026-08-09 · **4.2–4.5 SHIPPED** · **4.1 outstanding (deploy gate)**
+**Date:** 2026-08-09 · **Against:** v1.0.0.239
+**Progress:** D1 ✅ (baseline committed `0fccc11`, SI-014 isolated `e38fb1e`) ·
+4.2 ✅ v1.0.0.237 `a53f13c` · 4.3 ✅ v1.0.0.238 `6aadf59` · 4.4 + 4.5 ✅ v1.0.0.239 ·
+**4.1 ⏳ blocked on the SI-010 Ollama quota reset**
 **Constraint set by the user:** *NO REGRESSION. Improvement only.*
 
 ---
@@ -57,7 +59,7 @@ figures from DeepInfra `usage`; batch distribution from `logs/archive/*.log`.
 
 | parameter | ollama | openai | gemini | qwen |
 |---|---|---|---|---|
-| `system_prompt` | yes | yes *(§1b)* | yes | **NO** |
+| `system_prompt` | yes | yes *(§1b)* | yes | ~~NO~~ → **yes** (4.4, v1.0.0.239) |
 | `context_window_size` | yes | **NO** | **NO** | **NO** |
 | `num_predict` | yes | **NO** | **NO** | **NO** |
 | `think` | yes | **NO** | **NO** | **NO** |
@@ -194,7 +196,11 @@ only change that **alters what an already-working lane sends**.
   are inert the same way. Fix now or leave? Recommendation: **leave** — inert today,
   and changing temperature alters arbitration behaviour, which contradicts "no regression."
 
-### 4.4 Close the qwen `system_prompt` gap
+### 4.4 Close the qwen `system_prompt` gap  ✅ **DONE — v1.0.0.239**
+
+> Shipped 2026-08-09. Fixed in BOTH `generate_stream` and `generate_tools` —
+> qwen was worse than openai, which at least handled it in `generate_tools`.
+> Verified by reverting: the 4.5 contract catches it (2 tests fail).
 
 - **Change:** `qwen.py` — mirror the `openai.py` fix.
 - **Regression risk:** **none in practice** — qwen is configured on no lane.
@@ -202,7 +208,13 @@ only change that **alters what an already-working lane sends**.
   shipping a landmine for whoever enables qwen.
 - **Verification:** extend the parity test (4.5).
 
-### 4.5 Parameter-parity contract test
+### 4.5 Parameter-parity contract test  ✅ **DONE — v1.0.0.239**
+
+> Shipped 2026-08-09. `tests/unit/test_provider_parameter_parity.py`, 49 tests.
+> Falsified both ways: reverting 4.4 fails 2 tests; deleting a `KNOWN_GAPS`
+> entry fails 1. Also fails if a new provider module is added without
+> registration — the exact path by which openai.py escaped the v1.0.2.101
+> ollama fix.
 
 - **Change:** one test asserting that for every provider, each parameter callers pass
   is actually consumed — the table in §2.1 becomes executable.

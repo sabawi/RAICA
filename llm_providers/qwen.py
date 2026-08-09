@@ -57,11 +57,25 @@ class QwenProvider(LLMProvider):
             str: Response chunks
         """
         session = await self._get_session()
-        
+
+        # Forward the system prompt. This provider previously built `messages`
+        # from the user turn ALONE, silently discarding it — the same defect
+        # fixed in ollama.py (v1.0.2.101) and openai.py (SI-014, v1.0.0.236).
+        # Qwen was the worst of the three: BOTH its methods dropped it, where
+        # openai.py at least handled it in generate_tools.
+        # Not reachable today (qwen is configured on no lane), fixed so that
+        # enabling it later does not silently strip every system directive —
+        # citation rules, anti-hallucination rules, JSON-only contracts.
+        system_prompt = kwargs.get('system_prompt')
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": model,
             "input": {
-                "messages": [{"role": "user", "content": prompt}]
+                "messages": messages
             },
             "parameters": {
                 "result_format": "message",
@@ -70,8 +84,10 @@ class QwenProvider(LLMProvider):
                 "max_tokens": kwargs.get('max_tokens', self.get_max_tokens())
             }
         }
-        
-        logger.info(f"🔮 Qwen streaming request: model={model}, prompt_len={len(prompt)}")
+
+        logger.info(
+            f"🔮 Qwen streaming request: model={model}, prompt_len={len(prompt)}, "
+            f"{'📋 system prompt %d chars' % len(system_prompt) if system_prompt else '⚠️ NO SYSTEM PROMPT'}")
         
         try:
             async with session.post(
@@ -131,10 +147,19 @@ class QwenProvider(LLMProvider):
                 "function": tool
             })
         
+        # Forward the system prompt here too — the tool lane depends on it to
+        # know WHICH tools to prefer and when to abstain. See generate_stream
+        # above for the full rationale.
+        system_prompt = kwargs.get('system_prompt')
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": model,
             "input": {
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": messages,
                 "tools": formatted_tools
             },
             "parameters": {
@@ -143,8 +168,10 @@ class QwenProvider(LLMProvider):
                 "max_tokens": kwargs.get('max_tokens', 2048)
             }
         }
-        
-        logger.info(f"🔧 Qwen tool request: model={model}, tools={len(tools)}")
+
+        logger.info(
+            f"🔧 Qwen tool request: model={model}, tools={len(tools)}, "
+            f"{'📋 system prompt %d chars' % len(system_prompt) if system_prompt else '⚠️ NO SYSTEM PROMPT'}")
         
         try:
             async with session.post(
