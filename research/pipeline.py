@@ -267,8 +267,13 @@ async def _decompose_request(
     prompt = f"USER REQUEST:\n{user_request}"
     fallback = {"research_request": user_request, "deliverable_spec": {}, "actions": []}
     try:
+        # SI-015: OUTPUT cap on a call whose JSON carries `actions` — the delivery
+        # directives (email/PDF). On truncation the except below falls back to
+        # actions: [] and the user's requested file is silently never sent. Sized well
+        # above need because overshooting costs nothing (billing is on actual tokens).
+        _decompose_cap = int((config or {}).get("decompose_max_tokens", 4000))
         raw = await _collect_stream(generate_stream, prompt, system_prompt=system_prompt,
-                                    temperature=0.0, max_tokens=2000, stream=False)
+                                    temperature=0.0, max_tokens=_decompose_cap, stream=False)
         data = extract_json_object(raw)
         research_request = (data.get("research_request") or "").strip()
         if not research_request:

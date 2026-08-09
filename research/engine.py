@@ -252,6 +252,26 @@ class ResearchPlanner:
     def _max_rounds_ceiling(self) -> int:
         return int(self._cfg.get("loop", {}).get("max_rounds_ceiling", 4))
 
+    # --- output budgets for the JSON-returning control calls (SI-015) ---------------
+    # These were hardcoded literals. They are OUTPUT caps on calls whose result is parsed
+    # with extract_json_object(); when the cap is hit the JSON is incomplete, the except
+    # branch swallows it, and DR degrades into a fallback that LOOKS successful.
+    #
+    # Sizing basis — NOT a measured requirement. A reconstruction of the production
+    # payload produced only ~536 tokens and did not reproduce the truncation, so the true
+    # requirement is unknown. What IS known is the FAILURE point: 900 truncated in
+    # production at 17-24 evidence items. The error is asymmetric — too low degrades
+    # silently, too high is FREE (billing is on actual completion_tokens, not the cap) —
+    # so these are sized well above the observed failure point rather than fitted to it.
+    # v1.0.0.237 truncation detection is the backstop if they are still short.
+    @property
+    def _planner_max_tokens(self) -> int:
+        return int(self._cfg.get("planner", {}).get("max_tokens", 4000))
+
+    @property
+    def _assess_max_tokens(self) -> int:
+        return int(self._cfg.get("loop", {}).get("assess_max_tokens", 4000))
+
     @property
     def _per_source_queries(self) -> bool:
         """v1.0.0.157: allow the planner to emit a per-source `queries` map so a source whose
@@ -526,7 +546,7 @@ class ResearchPlanner:
             try:
                 raw = await _collect_stream(
                     self._generate_stream, prompt, system_prompt=system_prompt,
-                    temperature=0.1, max_tokens=1200, stream=False
+                    temperature=0.1, max_tokens=self._planner_max_tokens, stream=False
                 )
                 plan = extract_json_object(raw)
                 normalized = self._normalize(plan)
@@ -700,7 +720,8 @@ class DeepResearchEngine:
         # have the evidence gathered so far; never lose a round to a transient assess error.
         try:
             raw = await _collect_stream(self._gen, prompt, system_prompt=system_prompt,
-                                        temperature=0.1, max_tokens=900, stream=False)
+                                        temperature=0.1,
+                                        max_tokens=self._assess_max_tokens, stream=False)
             data = extract_json_object(raw)
         except Exception as e:  # noqa: BLE001
             logger.warning("🧪 Gap-assessment failed (%s) → treating as sufficient", e)

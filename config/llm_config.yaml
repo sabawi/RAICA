@@ -483,6 +483,29 @@ deep_research:
     # SMALL synthesis (little evidence) still rides the light model — it's load-driven, not per-node.
     # The NORMAL chat path (e.g. Ask answering a hard reasoning puzzle) still uses the global
     # `primary` (pro) directly. null `model` = use primary; null `heavy_model` = no heavy routing.
+    # --- OUTPUT budgets for the JSON-returning control calls (SI-015, v1.0.0.240) ------
+    # Each caps an LLM call whose reply is parsed with extract_json_object(). Truncated
+    # JSON is swallowed by an except branch and DR degrades into a fallback that LOOKS
+    # successful — so a cap set too low causes SILENT quality loss, never an error.
+    #
+    # SIZING BASIS — deliberately NOT fitted to a measurement. A reconstruction of the
+    # production payload produced only ~536 tokens and did NOT reproduce the truncation,
+    # so the true requirement is UNKNOWN. What IS known is the FAILURE point: 900
+    # truncated in production at 17-24 evidence items / 92-114 URLs, twice in one run.
+    # The error is asymmetric — too low degrades silently, too high is FREE (billing is on
+    # actual completion_tokens, not the cap) — so these sit well above the observed failure
+    # point. v1.0.0.237 truncation detection is the backstop: if `TRUNCATED` appears on
+    # these lanes again, raise them.
+    decompose_max_tokens: 4000   # was hardcoded 2000 (research/pipeline.py) — carries
+                                 # `actions`, the email/PDF delivery directives. Truncation
+                                 # here silently drops the user's deliverable.
+    verification:
+      max_tokens: 32000          # code default was 12000 and this key was ABSENT, so the
+                                 # default applied — and it TRUNCATED on the largest run.
+                                 # Claim extraction under-samples a long answer when cut,
+                                 # so late claims go unverified while grounding still
+                                 # reports coverage. The code comment already warned this
+                                 # "must be generous"; 12000 was not.
     model: deepseek-v4-flash:cloud           # LIGHT — default for all small DR calls
     heavy_model: deepseek-v4-pro:cloud       # HEAVY — large-payload calls (e.g. synthesis)
     heavy_threshold_chars: 20000             # prompt chars at/above which -> heavy_model (pro). 20000 =
@@ -543,6 +566,9 @@ deep_research:
       # LLM decomposes a research request into sub-questions + per-question source
       # strategy. max_sub_questions caps planner breadth; the LLM proposes fewer when apt.
       max_sub_questions: 6
+      # SI-015 (v1.0.0.240): was a hardcoded 1200 in research/engine.py. OUTPUT cap on
+      # the plan JSON; truncation makes the plan unparseable and all 3 retries fail alike.
+      max_tokens: 4000
       # Per-source query override (v1.0.0.157). When true, the planner MAY emit a `queries` map
       # per sub-question so a source whose argument is NOT a natural-language search string
       # (e.g. comprehensive_stock_analyzer wants {"ticker":"PLTR","detailed":true}; or a LIST of
@@ -562,6 +588,12 @@ deep_research:
       # Iterative gather loop ceilings (LLM proposes within these; RAICA clamps).
       max_rounds_ceiling: 4
       wall_clock_seconds: 240
+      # SI-015 (v1.0.0.240): was a hardcoded 900 in research/engine.py. OUTPUT cap on the
+      # gap-assessment JSON (gaps + next_queries). CONFIRMED truncating in production on
+      # BOTH DeepSeek-V3.1 and V4-Flash — model-independent. On truncation the except
+      # branch returns status=sufficient with EMPTY gaps, so later rounds lose their
+      # targeted follow-ups while DR still reports success.
+      assess_max_tokens: 4000
     sources:
       # Tool names (must exist in AsyncToolManager.available_functions) the planner may
       # choose from. The LLM picks per sub-question; RAICA only dispatches what's listed.

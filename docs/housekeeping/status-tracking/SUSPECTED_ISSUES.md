@@ -34,6 +34,37 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
   Also `user_tools/analytical_visualizer.py:215,231` (1024) generates **chart CODE** — a
   truncated program is a broken chart.
+- **UPDATE 2026-08-09 — two findings added after three live DR runs on the like-for-like config.**
+
+  **(a) `engine.py:703` (900) is MODEL-INDEPENDENT — confirmed.** It truncated on
+  `DeepSeek-V3.1` AND twice more on `DeepSeek-V4-Flash`, the exact model Ollama runs. So
+  this is not a provider or model artifact; it would truncate on Ollama too. It is
+  **volume-dependent**: it fired on the 3-round/24-item and 2-round/17-item runs, but not
+  on the 2-round/15-item run. Larger evidence pool → longer gap JSON → truncation.
+
+  **(b) NEW SITE — `research/synthesis.py:296-299`, claim verification, cap 12000.**
+  ```python
+  @property
+  def _verify_max_tokens(self) -> int:
+      # Output budget for the verification JSON. Long answers have many claims, so this
+      # must be generous or claim extraction gets truncated (under-sampling the answer).
+      return int(self._cfg.get("verification", {}).get("max_tokens", 12000))
+  ```
+  **The author anticipated this exact failure in the comment** and set 12000 as the
+  default. `deep_research.engine.verification` is **ABSENT from `llm_config.yaml`**, so the
+  default applies — and it truncated on the largest run (188K→246K-char synthesis prompts).
+  Consequence: claim extraction under-samples the answer, so claims in the later part of a
+  long report go **unverified** while citation grounding still reports coverage. This one
+  is the *easiest* fix of the set — it needs a CONFIG entry, not a code change.
+
+  **(c) What is NOT a defect — a correction.** `max_answer_tokens: 32000` truncated on 2/2
+  runs and lost 12/16 then 4/24 chart markers, and was reported here as a capacity limit.
+  **That was wrong.** Both runs had GLM-5.2 substituted as the DR heavy model instead of
+  `deepseek-v4-pro`. Re-run with the correct model on a LARGER input (188,604 then 246,296
+  chars vs 179,117): **no truncation, 20/20 chart markers placed, 0 repair passes.** The
+  cap is correctly sized; the ceiling was an artifact of an unauthorised model swap. See
+  [[provider-change-is-not-model-change]].
+
 - **Severity ranking:** `pipeline.py:271` is the worst. It is the request-decomposition stage,
   and dropping `actions` means a "research X and email me the PDF" request completes with no
   email and no error — precisely the failure class the architecture-first gate in `CLAUDE.md`
