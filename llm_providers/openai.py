@@ -70,16 +70,32 @@ class OpenAIProvider(LLMProvider):
             str: Response chunks
         """
         session = await self._get_session()
-        
+
+        # The system prompt MUST be forwarded. Callers pass it in kwargs
+        # (manager.call_arbitrator:315 among them) and this method used to build
+        # `messages` from the user turn ALONE, silently discarding it — so the
+        # arbitrator ran without its 13.8K-char "PURE JSON ONLY" schema spec and
+        # invented its own response shape, which downstream JSON parsing then
+        # rejected. ollama.py:69-70 was fixed for this in v1.0.2.101; the
+        # OpenAI-compatible path never was. generate_tools() below always handled
+        # it correctly, which is why the gap stayed invisible.
+        system_prompt = kwargs.get('system_prompt')
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "stream": True,
             "temperature": kwargs.get('temperature', self.get_temperature()),
             "max_tokens": kwargs.get('max_tokens', self.get_max_tokens())
         }
-        
-        logger.info(f"🤖 OpenAI streaming request: model={model}, prompt_len={len(prompt)}")
+
+        logger.info(
+            f"🤖 OpenAI streaming request: model={model}, prompt_len={len(prompt)}, "
+            f"{'📋 system prompt %d chars' % len(system_prompt) if system_prompt else '⚠️ NO SYSTEM PROMPT'}")
         
         try:
             async with session.post(
