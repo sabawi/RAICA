@@ -4,7 +4,12 @@
 **Date:** 2026-08-09 · **Against:** v1.0.0.239
 **Progress:** D1 ✅ (baseline committed `0fccc11`, SI-014 isolated `e38fb1e`) ·
 4.2 ✅ v1.0.0.237 `a53f13c` · 4.3 ✅ v1.0.0.238 `6aadf59` · 4.4 + 4.5 ✅ v1.0.0.239 ·
+**4.7 ⏳ NEW (SI-015) — found by 4.2 in live DR traffic** ·
 **4.1 ⏳ blocked on the SI-010 Ollama quota reset**
+
+> **4.2 paid for itself.** Truncation detection shipped at 15:00 and by 12:27 the next
+> DR query exposed three more hardcoded caps (4.7) that had been degrading Deep Research
+> silently — including one that drops email/PDF delivery with no error.
 **Constraint set by the user:** *NO REGRESSION. Improvement only.*
 
 ---
@@ -226,6 +231,38 @@ only change that **alters what an already-working lane sends**.
   Ollama-only. Gaps are declared in an explicit allow-list with a reason, so an
   *undeclared* gap fails.
 
+### 4.7 Hardcoded `max_tokens` on JSON-returning DR calls — **NEW, added 2026-08-09 (SI-015)**
+
+Found by the 4.2 detector within minutes of the first real DR query. Same class as
+4.3 (`manager.py:317`): a literal cap outranking config, on a call that must return
+complete JSON — but here the `except` handler degrades to a fallback that *looks*
+successful, so the loss is invisible.
+
+| site | cap | decides | truncation SILENTLY causes |
+|---|---|---|---|
+| `research/pipeline.py:271` | 2000 | request split incl. **`actions`** | `actions: []` — **delivery (email/PDF) dropped**, no error |
+| `research/engine.py:529` | 1200 | DR **planner** | plan unparseable; all 3 retries truncate alike |
+| `research/engine.py:703` | 900 | **gap assessment** | `sufficient` + empty `gaps`/`next_queries` → later rounds lose targeting |
+| `user_tools/analytical_visualizer.py:215,231` | 1024 | chart **code generation** | truncated program = broken chart |
+
+**Confirmed in production traffic**, not inferred — `engine.py:703` truncated at
+3,589 chars on a live PLUG research query (logs 12:27:32).
+
+- **Change:** make each cap config-driven and size it from a measured requirement
+  (the 4.3 method). AND fix the handlers: the provider now returns `truncated`, so
+  a truncated response can be **retried at a higher cap** instead of silently
+  degraded to a fallback.
+- **Regression risk:** MEDIUM — unlike 4.2/4.3 this alters DR control flow (a
+  retry where there was a swallow). Needs its own measured requirement per site
+  before any number is chosen; **do not reuse 4096 by analogy.**
+- **Priority:** `pipeline.py:271` first — dropping delivery actions is the only one
+  of the four that silently loses a user-visible deliverable.
+- **Verification:** a DR run at real evidence volume with zero `✂️ TRUNCATED` on
+  these sites, plus a named test asserting a truncated gap-assessment does NOT
+  report `sufficient` (must fail on current code).
+- **NOT DeepInfra-specific.** Caps are model-agnostic; unverified on Ollama only
+  because of the SI-010 quota. Check in the A/B.
+
 ### 4.6 Remove dead config (optional, cosmetic)
 
 Delete the 5 unread keys (§2.5) or comment them as informational. **Recommendation:
@@ -242,7 +279,9 @@ D1: commit the §1 baseline (isolated commit for the SI-014 hunk)
       │
 4.3  max_tokens config + 4096  ── needs 4.2 to prove it worked
       │
-4.4  qwen parity  +  4.5 contract test
+4.4  qwen parity  +  4.5 contract test          ✅ v1.0.0.239
+      │
+4.7  DR hardcoded caps (SI-015)  ── NEW; found BY 4.2 in live traffic
       │
 4.1  E2E verification on the REAL path (needs Ollama quota reset)
       │

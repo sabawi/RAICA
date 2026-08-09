@@ -11,6 +11,50 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-015 — Hardcoded `max_tokens` on JSON-returning DR calls, truncating into SILENT fallbacks  [P1 — CONFIRMED in production traffic]
+- **Observed (2026-08-09, first real DR query after the full-DeepInfra conversion):** the
+  v1.0.0.237 truncation detector fired within minutes, on a cap nobody knew existed:
+  ```
+  12:26:21  🔎 Round 1: dispatched 6 source(s), gathered 6 evidence item(s)
+  12:27:32  ✂️ TRUNCATED by max_tokens: deepseek-ai/DeepSeek-V3.1 hit the 900-token output cap
+  12:27:32  🧪 Gap-assessment failed (Expecting ',' delimiter: line 90 column 6 (char 3589))
+            → treating as sufficient
+  12:27:32  🔎 Round 2: dispatched 6 source(s), gathered 6 evidence item(s)
+  ```
+  3,589 chars ≈ 900 tokens exactly — the model was cut off mid-JSON.
+- **The pattern (this is a CLASS, not one bug).** Three DR-critical calls share it:
+  *hardcoded cap → `extract_json_object()` → `try/except` that degrades to a benign-looking
+  fallback.* The request succeeds, the log reads reassuring, and capability is silently lost.
+
+  | site | cap | what it decides | what truncation SILENTLY does |
+  |---|---|---|---|
+  | `research/pipeline.py:271` | 2000 | splits request into `research_request` / `deliverable_spec` / **`actions`** | falls back to `actions: []` — **every delivery action (email, PDF) is DROPPED**, and the user simply never receives the file |
+  | `research/engine.py:529` | 1200 | the **DR planner** (sub-questions, stop condition) | plan unparseable; 3 retries all truncate identically, so DR planning fails wholesale |
+  | `research/engine.py:703` | 900 | **gap assessment** — `gaps` + `next_queries` | returns `status: sufficient` with EMPTY gaps/next_queries → later rounds lose their targeted follow-ups and fall back to generic ones |
+
+  Also `user_tools/analytical_visualizer.py:215,231` (1024) generates **chart CODE** — a
+  truncated program is a broken chart.
+- **Severity ranking:** `pipeline.py:271` is the worst. It is the request-decomposition stage,
+  and dropping `actions` means a "research X and email me the PDF" request completes with no
+  email and no error — precisely the failure class the architecture-first gate in `CLAUDE.md`
+  was written about.
+- **NOT a DeepInfra artifact.** All caps are hardcoded and model-agnostic; they would truncate
+  on Ollama too. **Unverified on Ollama** — the account is 429 weekly-limited (SI-010), so
+  frequency may differ if the Ollama model is terser. Check in the A/B.
+- **Same class as `manager.py:317`** (fixed in v1.0.0.238): a literal outranking config, on a
+  call that must return complete JSON. Belongs with that fix, not as a one-off patch.
+- **Low-risk siblings, deliberately NOT grouped here:** `fastapi_server_complete.py:6316,6343,
+  6372` (24), `:7557` (60), `:3618` (120), `:3553` (200), `research/gate.py:65` (200). These
+  emit a label or a yes/no; the cap is proportionate. Listed so a future sweep does not
+  re-derive the triage.
+- **Fix when picked up:** plan step **4.7**. Make each cap config-driven and size it from a
+  measured requirement (as 4.3 did), AND make the `except` handlers distinguish *truncation*
+  from *malformed output* — the provider now returns that signal, so a truncated response can
+  be retried at a higher cap instead of silently degraded.
+- **Clear only when:** a DR run at the observed evidence volume completes with no `✂️ TRUNCATED`
+  on any of the three sites, and a named test asserts that a truncated gap-assessment does NOT
+  report `sufficient`.
+
 ### SI-011 — `config_server_cli.py set` DESTROYS every comment in `llm_config.yaml`  [P1 — CONFIRMED, blocks the quick-switch feature]
 - **Observed (2026-08-09, during the v1.0.0.236 DeepInfra build):** running
   `config_server_cli.py set --alias deepinfra_glm --as tool_calling` rewrote the whole config and
