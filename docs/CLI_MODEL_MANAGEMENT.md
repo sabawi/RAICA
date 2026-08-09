@@ -247,6 +247,52 @@ Displays complete configuration for an alias:
 
 Output shows all parameters including timestamps and provider-specific settings.
 
+### `convert` - Switch ALL lanes to another provider
+
+```bash
+./config_server_cli.py convert --to deepinfra --dry-run   # preview, writes nothing
+./config_server_cli.py convert --to deepinfra             # apply, with confirmation
+./config_server_cli.py convert --revert                   # undo
+```
+
+**A provider change is a TRANSPORT change, not a model change.** `deepseek-v4-pro:cloud`
+(Ollama) and `deepseek-ai/DeepSeek-V4-Pro` (DeepInfra) are the same model reached a
+different way, and that is the only mapping made automatically.
+
+Substituting a model silently changes the system under test: it confounds any A/B
+(provider *and* model changed, so a difference cannot be attributed) and it invalidates
+tuned config, because caps were fitted to the ORIGINAL model. Real case 2026-08-09:
+swapping the DR heavy model made `max_answer_tokens: 32000` truncate on 2/2 runs, losing
+12/16 then 4/24 chart markers — a ceiling that vanished once the correct model was restored.
+
+**What it does**
+
+1. **Discovers every model-bearing lane in the WHOLE config** — `vision`, `arbitrator`,
+   `deep_research` and `code_generation` are top-level keys, not under `llm:`. Doing this
+   by hand missed Deep Research and both `convergence` classifiers.
+2. **Maps same-model-only.** Vendor namespace and `:cloud` suffix are normalised away;
+   variant tokens (`-Turbo`, `-Instruct`, `-FP8`) are NOT — they are model identity.
+3. **Refuses to guess.** If the target does not serve a model, it stops, names the lane,
+   and asks for an admin decision. Nothing is written.
+4. **Verifies by INVOKING** each target model — a catalog listing is evidence in neither
+   direction. Skip with `--no-verify` (not recommended).
+5. **Prints a before/after table** and requires confirmation. The table discloses inert
+   lines (presets/fallback) that will also change, so predicted lines == written lines.
+6. **Preserves comments** — surgical line edits, not a `yaml.dump()` round-trip (SI-011).
+   Each rewritten line is tagged `# CONVERTED -> <provider> (was <original>)`, so
+   `--revert` needs no external backup and round-trips byte-identically.
+
+**Example**
+
+```
+lane                                 current provider:model     deepinfra:model
+llm.primary.config.model             deepseek-v4-pro:cloud      deepseek-ai/DeepSeek-V4-Pro  [same]
+deep_research.engine.heavy_model     deepseek-v4-pro:cloud      deepseek-ai/DeepSeek-V4-Pro  [same]
+vision.config.model                  minimax-m3:cloud           MiniMaxAI/MiniMax-M3         [same]
+  + 6 inert line(s) naming the same models will also be updated
+  TOTAL LINES TO CHANGE: 17  (11 active lane(s) + 6 inert)
+```
+
 ### `set` - Set Active Model
 ```bash
 ./config_server_cli.py set --alias NAME --as ROLE

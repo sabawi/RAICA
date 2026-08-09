@@ -44,6 +44,7 @@ Version: 1.0.1
 import argparse
 import json
 import os
+import re
 import sys
 import yaml
 from pathlib import Path
@@ -909,6 +910,389 @@ class ModelAliasManager:
     _PROBE_DEAD = 'dead'
     _PROBE_UNREACHABLE = 'unreachable'
 
+    # ==================================================================
+    # PROVIDER CONVERSION (`convert`)
+    # ==================================================================
+    # A provider change is a TRANSPORT change, NOT a model change.
+    # `deepseek-v4-pro:cloud` (Ollama) and `deepseek-ai/DeepSeek-V4-Pro`
+    # (DeepInfra) are THE SAME MODEL reached a different way, and that is the
+    # only mapping made automatically.
+    #
+    # Substituting a model silently changes the system under test. It breaks any
+    # A/B (provider AND model both changed, so a difference cannot be
+    # attributed) and it invalidates tuned config, because caps and thresholds
+    # were fitted to the ORIGINAL model. Real case 2026-08-09: swapping the DR
+    # heavy model for a different one made `max_answer_tokens: 32000` truncate
+    # on 2/2 runs, losing 12/16 then 4/24 chart markers — a ceiling that did not
+    # exist once the correct model was restored.
+    #
+    # So: same model or nothing. Where the target provider does not serve a
+    # model, this REFUSES to guess and reports the lane for an admin decision.
+
+    @staticmethod
+    def _canonical_model(name):
+        """Reduce a model id to a provider-independent identity key.
+
+        Identity only — this is NOT semantic matching. It strips the vendor
+        namespace, the Ollama `:cloud`/`:tag` suffix, and separators, so the
+        same model expressed by two providers collapses to one key:
+            deepseek-v4-pro:cloud        -> deepseekv4pro
+            deepseek-ai/DeepSeek-V4-Pro  -> deepseekv4pro
+            glm-5.2:cloud / zai-org/GLM-5.2 -> glm52
+            gpt-oss:120b-cloud / openai/gpt-oss-120b -> gptoss120b
+        """
+        if not name:
+            return ''
+        text = str(name).split('/')[-1].lower()
+        # Ollama expresses size/variant after a colon (gpt-oss:120b-cloud), so the
+        # colon becomes a separator rather than being stripped — dropping everything
+        # after it would lose the `120b` that distinguishes the model.
+        text = text.replace(':', '-')
+        # Strip ONLY deployment/packaging markers. Variant tokens like -Turbo,
+        # -Instruct and -FP8 are part of model IDENTITY and must NOT be removed:
+        # stripping 'turbo' collapsed gpt-oss-120b and gpt-oss-120b-Turbo to the same
+        # key, and the converter then picked whichever the catalog listed first —
+        # silently substituting a different model, the exact thing this refuses to do.
+        for noise in ('cloud', 'latest'):
+            text = text.replace(noise, '')
+        return re.sub(r'[^a-z0-9]', '', text)
+
+    @staticmethod
+    def _expand_secret(value):
+        """Expand ${VAR}, consulting .env — secrets live there, not in the shell.
+
+        Without this the probe sends no credentials and every target model comes
+        back 401 'inconclusive', which reads as "cannot verify" when the real
+        answer is "we never authenticated". Same failure mode as SI-009.
+        """
+        text = os.path.expandvars(value or '')
+        if not text.startswith('${'):
+            return text
+        name = text[2:-1]
+        env_file = Path(__file__).parent / '.env'
+        if env_file.exists():
+            for line in env_file.read_text().splitlines():
+                if line.startswith(f'{name}='):
+                    return line.split('=', 1)[1].strip().strip('"').strip("'")
+        return text
+
+    def _provider_catalog(self, provider, llm_config):
+        """Model ids the target provider actually serves. None if unreachable."""
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        providers = ((llm_config.get('llm') or {}).get('providers')
+                     or llm_config.get('providers') or {})
+        block = providers.get(provider) or {}
+        base = block.get('base_url') or PROVIDER_DEFAULTS.get(provider, {}).get('base_url')
+        if not base:
+            return None
+        api_key = self._expand_secret(block.get('api_key'))
+        request = urllib.request.Request(base.rstrip('/') + '/models')
+        if api_key and not api_key.startswith('${'):
+            request.add_header('Authorization', f'Bearer {api_key}')
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = _json.loads(response.read().decode('utf-8', 'replace'))
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+            return None
+        items = data.get('data') if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return None
+        return [m.get('id') for m in items if isinstance(m, dict) and m.get('id')]
+
+    def _plan_conversion(self, llm_config, target):
+        """Resolve every active lane to the SAME model on `target`.
+
+        Returns (rows, catalog_ok). Each row is a dict with path, old model,
+        new model (or None) and a status:
+            same       - identical model found on the target
+            unresolved - target does not serve it -> ADMIN DECISION REQUIRED
+            skip       - inert lane (presets / fallback / provider defaults)
+        """
+        catalog = self._provider_catalog(target, llm_config)
+        if catalog is None:
+            return [], False
+        by_key = {}
+        for model_id in catalog:
+            by_key.setdefault(self._canonical_model(model_id), model_id)
+
+        rows = []
+        for lane in self._discover_lanes(llm_config):
+            if lane['inert']:
+                rows.append(dict(lane, new=None, status='skip'))
+                continue
+            match = by_key.get(self._canonical_model(lane['model']))
+            rows.append(dict(lane, new=match,
+                             status='same' if match else 'unresolved'))
+        return rows, True
+
+    @staticmethod
+    def _print_conversion_table(rows, target, source_label='current'):
+        """The before/after table. Printed BEFORE anything is written."""
+        print(f"\n{Colors.HEADER}{Colors.BOLD}Provider conversion -> "
+              f"{target}{Colors.ENDC}")
+        print("=" * 108)
+        print(f"{'lane':<40}{source_label + ' provider:model':<34}"
+              f"{target + ':model'}")
+        print("-" * 108)
+        active = [r for r in rows if r['status'] != 'skip']
+        for row in sorted(active, key=lambda r: r['path']):
+            if row['status'] == 'same':
+                mark = f"{Colors.OKGREEN}same{Colors.ENDC}"
+                new = row['new']
+            else:
+                mark = f"{Colors.FAIL}NOT SERVED{Colors.ENDC}"
+                new = '-- ADMIN DECISION REQUIRED --'
+            print(f"{row['path'][:39]:<40}{str(row['model'])[:33]:<34}{new}  [{mark}]")
+        # Inert lanes (model_presets / fallback / provider defaults) are not ACTIVE,
+        # but the writer matches on model VALUE, so any inert line naming one of the
+        # same models is rewritten too. That is correct — leaving presets pointing at
+        # the old provider is how a stale slug gets re-adopted later — but it MUST be
+        # disclosed here, or the table under-reports what will change and the
+        # confirmation is worthless.
+        converting = {r['model'] for r in active if r['status'] == 'same'}
+        inert_hit = [r for r in rows
+                     if r['status'] == 'skip' and r['model'] in converting]
+        inert_untouched = [r for r in rows
+                           if r['status'] == 'skip' and r['model'] not in converting]
+        if inert_hit:
+            print(f"\n{Colors.OKCYAN}  + {len(inert_hit)} inert line(s) naming the same "
+                  f"models will also be updated (presets / fallback / provider "
+                  f"defaults):{Colors.ENDC}")
+            for row in sorted(inert_hit, key=lambda r: r['path'])[:8]:
+                print(f"      {row['path'][:52]:<54}{row['model']}")
+            if len(inert_hit) > 8:
+                print(f"      ... and {len(inert_hit) - 8} more")
+        if inert_untouched:
+            print(f"\n  ({len(inert_untouched)} inert line(s) left alone — they name "
+                  f"models this conversion does not touch)")
+        print(f"\n{Colors.BOLD}  TOTAL LINES TO CHANGE: "
+              f"{len(active) + len(inert_hit)}{Colors.ENDC}  "
+              f"({len(active)} active lane(s) + {len(inert_hit)} inert)")
+        return active
+
+    def convert(self, target, dry_run=False, assume_yes=False, verify=True):
+        """Convert every active lane to the same models on `target`."""
+        llm_config = self._load_llm_config()
+        # Walk the WHOLE document. Only `primary`/`tool_calling` live under `llm:`;
+        # `vision`, `arbitrator`, `deep_research` and `code_generation` are TOP-LEVEL
+        # keys with their own model settings. Converting just the `llm:` block was
+        # exactly the miss that left Deep Research pointed at the old provider.
+        rows, ok = self._plan_conversion(llm_config, target)
+        if not ok:
+            print(f"{Colors.FAIL}Cannot reach the {target} model catalog.{Colors.ENDC}")
+            print("Check the provider block's base_url and that its API key env var is set.")
+            return 1
+
+        active = self._print_conversion_table(rows, target)
+        unresolved = [r for r in active if r['status'] == 'unresolved']
+
+        if unresolved:
+            print(f"\n{Colors.FAIL}{Colors.BOLD}REFUSING to convert: "
+                  f"{len(unresolved)} lane(s) have no equivalent on {target}."
+                  f"{Colors.ENDC}")
+            print("A provider change must not change WHICH MODEL runs. Substituting one")
+            print("silently changes the system under test and invalidates config tuned to")
+            print("the original model. These need an admin decision:\n")
+            for row in unresolved:
+                print(f"  {row['path']}  ->  {row['model']}")
+            print("\nResolve each with an explicit choice, e.g.:")
+            print(f"  ./config_server_cli.py set --alias <alias> --as <role>")
+            print("Nothing was written.")
+            return 1
+
+        if verify:
+            print(f"\n{Colors.BOLD}Verifying each target model by INVOKING it "
+                  f"(a catalog listing is not evidence)...{Colors.ENDC}")
+            block = (((llm_config.get('llm') or {}).get('providers')
+                      or llm_config.get('providers') or {}).get(target) or {})
+            base = block.get('base_url') or PROVIDER_DEFAULTS.get(target, {}).get('base_url')
+            api_key = self._expand_secret(block.get('api_key'))
+            seen, dead = {}, []
+            for row in active:
+                model = row['new']
+                if model not in seen:
+                    seen[model] = self._probe_model(base, model, api_key)
+                status, detail = seen[model]
+                if status == self._PROBE_DEAD:
+                    dead.append((model, detail))
+                    print(f"  {Colors.FAIL}x{Colors.ENDC} {model:<44} {detail[:44]}")
+                elif status == self._PROBE_OK:
+                    print(f"  {Colors.OKGREEN}v{Colors.ENDC} {model:<44} OK")
+                else:
+                    print(f"  {Colors.WARNING}?{Colors.ENDC} {model:<44} "
+                          f"inconclusive: {detail[:38]}")
+            if dead:
+                print(f"\n{Colors.FAIL}REFUSING: {len(dead)} target model(s) are "
+                      f"rejected by {target}.{Colors.ENDC} Nothing was written.")
+                return 1
+
+        if dry_run:
+            print(f"\n{Colors.OKCYAN}--dry-run: nothing written.{Colors.ENDC}")
+            return 0
+
+        if not assume_yes:
+            print(f"\n{Colors.BOLD}Apply this conversion? "
+                  f"{len(active)} lane(s) [y/N]: {Colors.ENDC}", end='')
+            try:
+                if input().strip().lower() not in ('y', 'yes'):
+                    print("Aborted. Nothing was written.")
+                    return 1
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted. Nothing was written.")
+                return 1
+
+        written = self._write_conversion(active, target)
+        print(f"\n{Colors.OKGREEN}Converted {written} lane(s) to {target}."
+              f"{Colors.ENDC}")
+        print(f"Revert with: {Colors.BOLD}./config_server_cli.py convert --revert"
+              f"{Colors.ENDC}")
+        print("Restart the server for this to take effect.")
+        return 0
+
+    _CONVERT_TAG = '# CONVERTED'
+    _KNOWN_PROVIDERS = {'ollama', 'openai', 'openrouter', 'deepinfra', 'qwen', 'gemini'}
+
+    def _target_transport(self, target):
+        """base_url / api_key the converted lanes must point at."""
+        llm_config = self._load_llm_config()
+        providers = ((llm_config.get('llm') or {}).get('providers')
+                     or llm_config.get('providers') or {})
+        block = providers.get(target) or {}
+        defaults = PROVIDER_DEFAULTS.get(target, {})
+        return {
+            'base_url': block.get('base_url') or defaults.get('base_url'),
+            'api_key': block.get('api_key') or (
+                '${%s}' % API_KEY_ENV_VARS[target]
+                if API_KEY_ENV_VARS.get(target) else None),
+        }
+
+
+    def _write_conversion(self, active, target):
+        """Rewrite model values IN PLACE, line by line, preserving comments.
+
+        Deliberately NOT a yaml.safe_load()/yaml.dump() round-trip: PyYAML
+        discards comments, and this file carries ~575 of them including the
+        retirement history that stops a dead slug being re-added (SI-011).
+        Each rewritten line is tagged with its ORIGINAL value so `--revert`
+        needs no external backup.
+        """
+        path = self.llm_config_file
+        lines = path.read_text().split('\n')
+        by_old = {}
+        for row in active:
+            by_old.setdefault(row['model'], row['new'])
+
+        # A lane is only converted when its TRANSPORT moves too. Rewriting model
+        # names alone leaves `type:` and `base_url:` pointing at the old provider,
+        # so the config sends the new provider's model ids to the OLD endpoint and
+        # every call 404s. The model name is the visible half; the transport is the
+        # half that actually has to move.
+        tgt_block = self._target_transport(target)
+        written = 0
+        # Track the YAML key path by indentation. Transport keys (type/base_url/
+        # api_key) must ONLY be rewritten inside an ACTIVE LANE block. Rewriting them
+        # blindly also hit the `providers:` DEFINITION blocks and pointed ollama,
+        # openai and openrouter all at the target's base_url — which destroys the
+        # provider definitions and makes --revert impossible.
+        path_stack = []
+        for index, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith('#'):
+                indent = len(line) - len(stripped)
+                while path_stack and path_stack[-1][0] >= indent:
+                    path_stack.pop()
+                key_match = re.match(r'^([A-Za-z_][\w.\-]*):', stripped)
+                if key_match:
+                    path_stack.append((indent, key_match.group(1)))
+            segments = {seg for _, seg in path_stack}
+            in_definition_block = bool(segments & self._INERT_SEGMENTS)
+
+            if self._CONVERT_TAG in line:
+                continue
+
+            match = re.match(r'^(\s*[a-z_]*model:\s*)(\S+)(.*)$', line)
+            if match:
+                head, old, tail = match.groups()
+                new = by_old.get(old)
+                if new and new != old:
+                    lines[index] = (f"{head}{new}   {self._CONVERT_TAG} -> {target} "
+                                    f"(was {old}){tail}")
+                    written += 1
+                continue
+
+            # transport: `type:` on a converted lane
+            m_type = re.match(r'^(\s*type:\s*)(\S+)(.*)$', line)
+            if m_type and not in_definition_block \
+                    and m_type.group(2) in self._KNOWN_PROVIDERS \
+                    and m_type.group(2) != target:
+                lines[index] = (f"{m_type.group(1)}{target}   {self._CONVERT_TAG} -> "
+                                f"{target} (was {m_type.group(2)}){m_type.group(3)}")
+                written += 1
+                continue
+
+            # transport: base_url / api_key on a converted lane
+            m_url = re.match(r'^(\s*base_url:\s*)(\S+)(.*)$', line)
+            if m_url and not in_definition_block and tgt_block.get('base_url') \
+                    and m_url.group(2) != tgt_block['base_url'] \
+                    and not m_url.group(2).endswith('/api/tags'):
+                lines[index] = (f"{m_url.group(1)}{tgt_block['base_url']}   "
+                                f"{self._CONVERT_TAG} -> {target} "
+                                f"(was {m_url.group(2)}){m_url.group(3)}")
+                written += 1
+                continue
+
+            m_key = re.match(r'^(\s*api_key:\s*)(\S+)(.*)$', line)
+            if m_key and not in_definition_block and tgt_block.get('api_key') \
+                    and m_key.group(2) != tgt_block['api_key']:
+                lines[index] = (f"{m_key.group(1)}{tgt_block['api_key']}   "
+                                f"{self._CONVERT_TAG} -> {target} "
+                                f"(was {m_key.group(2)}){m_key.group(3)}")
+                written += 1
+        path.write_text('\n'.join(lines))
+        return written
+
+    def convert_revert(self, assume_yes=False):
+        """Undo a conversion using the inline `# CONVERTED ... (was X)` tags."""
+        path = self.llm_config_file
+        lines = path.read_text().split('\n')
+        # Matches ANY converted key, not just `model:` — the transport keys
+        # (type / base_url / api_key) are converted too, and a revert that restores
+        # only the model names leaves the config half-migrated: new model ids still
+        # pointed at the new endpoint, which is neither the old state nor the new one.
+        pattern = re.compile(
+            r'^(\s*[A-Za-z_][\w.\-]*:\s*)(\S+)\s+' + re.escape(self._CONVERT_TAG) +
+            r' -> \S+ \(was (\S+)\)(.*)$')
+        planned = [(i, m) for i, l in enumerate(lines) if (m := pattern.match(l))]
+        if not planned:
+            print("No converted lanes found (no "
+                  f"'{self._CONVERT_TAG}' tags). Nothing to revert.")
+            return 0
+        print(f"\n{Colors.HEADER}{Colors.BOLD}Revert conversion{Colors.ENDC}")
+        print("=" * 88)
+        print(f"{'current':<44}{'restore to'}")
+        print("-" * 88)
+        for _, m in planned:
+            print(f"{m.group(2)[:43]:<44}{m.group(3)}")
+        if not assume_yes:
+            print(f"\n{Colors.BOLD}Revert {len(planned)} lane(s)? [y/N]: {Colors.ENDC}",
+                  end='')
+            try:
+                if input().strip().lower() not in ('y', 'yes'):
+                    print("Aborted. Nothing was written.")
+                    return 1
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted. Nothing was written.")
+                return 1
+        for index, m in planned:
+            lines[index] = f"{m.group(1)}{m.group(3)}{m.group(4)}"
+        path.write_text('\n'.join(lines))
+        print(f"\n{Colors.OKGREEN}Reverted {len(planned)} lane(s).{Colors.ENDC}")
+        print("Restart the server for this to take effect.")
+        return 0
+
     def _probe_model(self, base, model, api_key='', timeout=60):
         """Invoke `model` at `base` with a 1-token generation.
 
@@ -1190,6 +1574,25 @@ Examples:
     doctor_parser.add_argument('--probe', action='store_true',
                                help='Also INVOKE each lane\'s model (1-token generation, '
                                     'costs one request per model) to prove it still answers')
+    # Convert command
+    convert_parser = subparsers.add_parser(
+        'convert',
+        help='Convert every active lane to the SAME models on another provider')
+    convert_parser.add_argument('--to', dest='to_provider',
+                                choices=['ollama', 'openai', 'openrouter',
+                                         'deepinfra', 'qwen', 'gemini'],
+                                help='Target provider')
+    convert_parser.add_argument('--revert', action='store_true',
+                                help='Undo a previous conversion using the inline '
+                                     '"# CONVERTED ... (was X)" tags')
+    convert_parser.add_argument('--dry-run', dest='dry_run', action='store_true',
+                                help='Print the before/after table and exit without writing')
+    convert_parser.add_argument('--yes', action='store_true',
+                                help='Skip the confirmation prompt')
+    convert_parser.add_argument('--no-verify', dest='no_verify', action='store_true',
+                                help='Skip INVOKING each target model (not recommended — '
+                                     'a catalog listing is not evidence it serves)')
+
     doctor_parser.add_argument('--aliases', action='store_true',
                                help='Also INVOKE every saved alias\'s model at its endpoint '
                                     '(same 1-token cost per distinct model)')
@@ -1256,6 +1659,15 @@ Examples:
 
         elif args.command == 'lanes':
             manager.show_lanes()
+
+        elif args.command == 'convert':
+            if args.revert:
+                sys.exit(manager.convert_revert(assume_yes=args.yes))
+            if not args.to_provider:
+                print(f"{Colors.FAIL}--to <provider> is required (or --revert){Colors.ENDC}")
+                sys.exit(1)
+            sys.exit(manager.convert(args.to_provider, dry_run=args.dry_run,
+                                     assume_yes=args.yes, verify=not args.no_verify))
 
         elif args.command == 'doctor':
             # Non-zero exit on problems so this can gate a deploy/CI step.
