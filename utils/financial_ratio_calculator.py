@@ -117,24 +117,51 @@ class FinancialRatioCalculator:
         and net income, which (a) was a full fiscal year stale and (b) understated ROIC vs trackers
         because net income < NOPAT. Now: TTM net income (``info['netIncomeToCommon']``) over averaged
         most-recent quarterly balance-sheet figures; ROIC uses NOPAT (TTM operating income × (1−tax)).
-        Margins remain on the annual statement (full-year ratios are representative; no TTM gross/operating
-        field exists in yfinance info).
+        v1.0.0.242 — MARGINS ARE NOW TTM-FIRST, and every margin is LABELLED with its period.
+
+        Previously margins came from the ANNUAL statement while net income, EPS, ROE/ROA and P/E
+        came from TTM, and all of it was printed as one snapshot. That is not a rounding
+        difference — it can flip the sign. CROX, 2026-08-09:
+
+            net_margin (annual 2025 net income -$81M)  =  -2.01%   <- what was reported
+            net_margin (TTM net income +$593M)         = +14.63%   <- consistent with the
+                                                                      EPS $11.27 / ROE 42.2%
+                                                                      printed beside it
+
+        A reviewer correctly called the report internally inconsistent: a -2.01% net margin cannot
+        coexist with a positive TTM EPS and a 42% ROE. It could, because they were different
+        periods — and nothing said so.
+
+        The old docstring justified this with "no TTM gross/operating field exists in yfinance
+        info". That premise is FALSE: `grossMargins`, `operatingMargins` and `profitMargins` are
+        all TTM and all present (verified across CROX/KO/JPM/NVDA/FUBO/RIVN). Annual remains the
+        fallback when a TTM field is missing or degenerate — banks report `grossMargins: 0.0`
+        (JPM), which is a sentinel, not a real zero margin.
         """
         ratios = {}
         ticker_info = ticker_info or {}
 
-        # Margins — from the annual income statement (full-year ratios, stable/representative)
         revenue = self._get_value(income_stmt, 'Total Revenue')
         gross_profit = self._get_value(income_stmt, 'Gross Profit')
         operating_income = self._get_value(income_stmt, 'Operating Income')
         net_income = self._get_value(income_stmt, 'Net Income')
 
-        if revenue and gross_profit:
-            ratios['gross_margin'] = (gross_profit / revenue) * 100
-        if revenue and operating_income:
-            ratios['operating_margin'] = (operating_income / revenue) * 100
-        if revenue and net_income:
-            ratios['net_margin'] = (net_income / revenue) * 100
+        def _margin(ttm_field, annual_numerator, key):
+            """TTM margin when available, else annual — and record WHICH."""
+            ttm = ticker_info.get(ttm_field)
+            # 0.0 is yfinance's sentinel for "not meaningful for this issuer" (banks report
+            # grossMargins 0.0). Treat it as absent rather than as a real 0% margin.
+            if ttm is not None and ttm != 0:
+                ratios[key] = float(ttm) * 100
+                ratios[f'{key}_period'] = 'TTM'
+                return
+            if revenue and annual_numerator:
+                ratios[key] = (annual_numerator / revenue) * 100
+                ratios[f'{key}_period'] = 'annual (TTM unavailable)'
+
+        _margin('grossMargins', gross_profit, 'gross_margin')
+        _margin('operatingMargins', operating_income, 'operating_margin')
+        _margin('profitMargins', net_income, 'net_margin')
 
         # ROE/ROA — TTM net income (numerator) over averaged most-recent quarterly balances (denominator)
         ttm_ni = ticker_info.get('netIncomeToCommon')
@@ -635,12 +662,16 @@ Date: {date}
         """Format profitability ratios."""
         lines = ["PROFITABILITY METRICS:"]
 
-        if 'gross_margin' in ratios:
-            lines.append(f"  Gross Margin: {ratios['gross_margin']:.2f}%")
-        if 'operating_margin' in ratios:
-            lines.append(f"  Operating Margin: {ratios['operating_margin']:.2f}%")
-        if 'net_margin' in ratios:
-            lines.append(f"  Net Margin: {ratios['net_margin']:.2f}%")
+        # v1.0.0.242 — every margin states its PERIOD. Printing an annual margin beside a TTM
+        # EPS/ROE without saying so is what let a -2.01% net margin sit next to a +$11.27 EPS
+        # in the same paragraph. The reader (and the synthesising LLM) cannot reconcile figures
+        # whose periods are invisible.
+        for key, label in (('gross_margin', 'Gross Margin'),
+                           ('operating_margin', 'Operating Margin'),
+                           ('net_margin', 'Net Margin')):
+            if key in ratios:
+                period = ratios.get(f'{key}_period', 'TTM')
+                lines.append(f"  {label}: {ratios[key]:.2f}%  [{period}]")
         if 'roa' in ratios:
             lines.append(f"  Return on Assets (ROA): {ratios['roa']:.2f}%")
         if 'roe' in ratios:

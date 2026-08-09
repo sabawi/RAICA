@@ -225,7 +225,36 @@ class ProjectionEngine:
             logger.error(f"Error generating earnings projections: {e}")
             return {}
 
-    def generate_fcf_projections(self, cash_flow: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
+    def _ttm_fcf_from_quarters(self, quarterly_cash_flow) -> Optional[float]:
+        """TTM free cash flow as OCF + capex over the last 4 quarters.
+
+        Deliberately the SAME formula the annual figures use, so the two are comparable.
+        `info['freeCashflow']` is NOT: for CROX it implied $228.7M of capex against the
+        $58.0M actually reported, turning a rising FCF ($659.2M -> $704.6M) into an
+        apparent decline ($659.2M -> $533.9M). A comparison is only a comparison when
+        both sides are computed the same way.
+
+        Returns None when fewer than 4 quarters are available — a partial sum would
+        understate TTM and reintroduce exactly the bug this replaces.
+        """
+        if quarterly_cash_flow is None or getattr(quarterly_cash_flow, 'empty', True):
+            return None
+        try:
+            if len(quarterly_cash_flow.columns) < 4:
+                return None
+            total = 0.0
+            for i in range(4):
+                ocf = self._get_value(quarterly_cash_flow, 'Operating Cash Flow', i)
+                capex = self._get_value(quarterly_cash_flow, 'Capital Expenditure', i)
+                if ocf is None or capex is None:
+                    return None
+                total += ocf + capex  # capex is negative
+            return total
+        except Exception:  # noqa: BLE001 - a shape surprise must not kill the projection
+            return None
+
+    def generate_fcf_projections(self, cash_flow: pd.DataFrame, ticker_info: Dict = None,
+                                 quarterly_cash_flow: pd.DataFrame = None) -> Dict[str, Any]:
         """Generate free cash flow projections."""
         try:
             ticker_info = ticker_info or {}
@@ -240,15 +269,31 @@ class ProjectionEngine:
                         fcf = ocf + capex  # capex is negative
                         fcf_values.append(fcf)
 
-            # Current FCF base: TTM-first (v1.0.0.159). info['freeCashflow'] is TTM FCF, consistent
-            # with the live price; annual can be stale (MU annual FCF $1.67B vs TTM $7.64B).
-            # Negative TTM FCF is valid (e.g. ORCL) — keep it so the projection shows the truth.
+            # Current FCF base: TTM-first (v1.0.0.159), but computed with the SAME FORMULA as the
+            # annual figures it is compared against (v1.0.0.242).
+            #
+            # `info['freeCashflow']` uses a DIFFERENT definition from OCF+capex, and mixing the two
+            # manufactures a trend that does not exist. CROX, 2026-08-09:
+            #     annual 2025 FCF (OCF 710.4 - capex  51.2) = $659.2M
+            #     TTM  info.freeCashflow                    = $533.9M   -> looks like a DECLINE
+            #     TTM  (4q OCF 762.6 - 4q capex 58.0)       = $704.6M   -> actually RISING
+            # info.freeCashflow implied $228.7M of capex against the $58.0M actually reported. The
+            # analysis then described "robust FCF with a 9.7% CAGR" beside a falling number, and a
+            # reviewer flagged the contradiction — correctly, and the fault was ours.
+            #
+            # So: sum the last 4 QUARTERS of OCF+capex. Fall back to info.freeCashflow only when
+            # quarterly data is unavailable, and SAY which definition was used either way.
+            ttm_fcf_consistent = self._ttm_fcf_from_quarters(quarterly_cash_flow)
             ttm_fcf = ticker_info.get('freeCashflow')
             current_fcf = None
             current_source = None
-            if ttm_fcf is not None:
+            if ttm_fcf_consistent is not None:
+                current_fcf = ttm_fcf_consistent
+                current_source = 'TTM (4-quarter OCF - capex; same formula as annual)'
+            elif ttm_fcf is not None:
                 current_fcf = float(ttm_fcf)
-                current_source = 'TTM (info.freeCashflow)'
+                current_source = ("TTM (info.freeCashflow — NOTE: vendor definition, NOT "
+                                  "comparable to the annual OCF-capex figures)")
             elif fcf_values:
                 current_fcf = fcf_values[0]
                 current_source = 'annual statement (stale)'
@@ -298,12 +343,14 @@ class ProjectionEngine:
         # Extract financial statements
         income_stmt = financials.get('income_statement', {}).get('annual')
         cash_flow = financials.get('cash_flow', {}).get('annual')
+        quarterly_cash_flow = financials.get('cash_flow', {}).get('quarterly')
         ticker_info = financials.get('ticker_info', {}) or {}
 
         return {
             'revenue_projections': self.generate_revenue_projections(income_stmt, ticker_info),
             'earnings_projections': self.generate_earnings_projections(income_stmt, ticker_info),
-            'fcf_projections': self.generate_fcf_projections(cash_flow, ticker_info)
+            'fcf_projections': self.generate_fcf_projections(cash_flow, ticker_info,
+                                                            quarterly_cash_flow)
         }
 
     def _format_source_block(self, source_num: int, title: str, url: str, date: str, content: str) -> str:
