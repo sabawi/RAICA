@@ -162,6 +162,14 @@ damage, and both are measurable here.
 
 ---
 
+## 6b. Freeze window — do not change finance output during the A/B
+
+`docs/PROJECTION_GROWTH_BLEND_SCOPE.md` is signed off but **deferred until this A/B
+completes**. It changes the growth numbers the synthesising LLM reasons over (CROX
+earnings 20.0% → 7.1%), so landing it mid-experiment would make a quality delta
+attributable to either the provider or that change — inseparably. Nothing that alters
+model inputs or finance calculations lands until the A/B is reported.
+
 ## 7. Known limitations — stated up front
 
 1. **C4 is unresolved.** Whether the two providers serve identical weights/quantisation
