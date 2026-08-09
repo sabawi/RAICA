@@ -198,9 +198,30 @@ arbitrator:
   config:
     model: glm-5.2:cloud   # was qwen3-coder-next:cloud — same swap as tool_calling; no path should depend on the flaky qwen cloud model.
     timeout: 60
-    context_window_size: 4096
+    context_window_size: 4096   # NOTE: inert for type:openai — only ollama.py reads
+                                # this (as num_ctx). Kept for documentation, and in
+                                # case this lane ever moves to an ollama-type provider.
     temperature: 0.1
-    max_tokens: 1024
+    # DERIVED, not chosen (v1.0.0.238). Was 1024 — and was ALSO dead config, because
+    # manager.py hardcoded 1024 over it until this release.
+    #
+    # The arbitrator must emit a COMPLETE tasks[] JSON, one entry per executed tool.
+    # A truncated reply is unparseable, so the lane fails wholesale rather than
+    # degrading. Measured requirement: 477 + 131n (gpt-oss-120b), 577 + 160n (GLM-5.2).
+    #
+    #   batch 6 (observed production peak, logs/archive): 1097 / 1419 tokens
+    #     -> BOTH exceeded the old 1024 cap; GLM truncated on 2/2 runs at batch 6
+    #   4096 covers batch 28 (gpt-oss) / batch 22 (GLM) = 3.7x the observed peak
+    #
+    # Headroom matters because batch size is UNBOUNDED in code
+    # (fastapi_server_complete.py:5293 zips over all tools_called). The error is
+    # asymmetric: too low = total lane failure; too high = FREE, since billing is on
+    # actual completion_tokens, not on the cap.
+    #
+    # Does NOT cover a reasoning_effort=xhigh tail (one measured run consumed >8000).
+    # No fixed cap does — that is what truncation detection is for (v1.0.0.237).
+    # reasoning_effort is unreachable in RAICA today: no provider forwards it.
+    max_tokens: 4096
     stream: false
     api_key: "ollama"
     base_url: http://127.0.0.1:11434/v1

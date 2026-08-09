@@ -310,14 +310,34 @@ class LLMManager:
         try:
             logger.info("🧠 Calling arbitrator LLM for task validation")
             
-            # Prepare arbitrator-specific parameters
+            # max_tokens comes from CONFIG, not a literal. It was hardcoded to
+            # 1024 here, which silently outranked llm_config.yaml — providers read
+            # `kwargs.get('max_tokens', self.get_max_tokens())`, so a literal
+            # kwarg always wins and the configured value was dead. Raising it in
+            # YAML did nothing, which is the worst kind of knob: one that looks
+            # adjustable and is not.
+            #
+            # 1024 was also too small. The arbitrator must emit a COMPLETE
+            # tasks[] JSON — one entry per executed tool — and measurement puts
+            # the requirement at 477 + 131n (gpt-oss) / 577 + 160n (GLM-5.2).
+            # Production peaks at 6 tools (logs/archive), needing ~1100-1420, so
+            # batches of 4+ were being truncated into unparseable JSON. Batch size
+            # is unbounded in code (fastapi_server_complete.py:5293), so the cap
+            # must carry headroom, not just clear today's peak.
+            #
+            # temperature/stream stay literal deliberately (plan D2): they are
+            # inert today, and changing temperature would alter arbitration
+            # behaviour — out of scope for a no-regression change.
             arbitrator_kwargs = {
                 'system_prompt': system_prompt,
                 'temperature': 0.1,  # Low temperature for consistent decisions
-                'max_tokens': 1024,  # Compact JSON responses
+                'max_tokens': self.arbitrator_provider.get_max_tokens(),
                 'stream': False,     # Structured output doesn't need streaming
                 **kwargs
             }
+            logger.info(
+                f"🧠 Arbitrator max_tokens={arbitrator_kwargs['max_tokens']} "
+                f"(from config; truncation is reported by the provider)")
             
             # Call arbitrator provider using streaming interface and collect full response
             response_chunks = []

@@ -167,7 +167,16 @@ only change that **alters what an already-working lane sends**.
 - **Verification:** unit test with a mocked `finish_reason: length` asserting the
   warning fires; must FAIL on current code.
 
-### 4.3 Make `max_tokens` config-driven, set 4096
+### 4.3 Make `max_tokens` config-driven, set 4096  ✅ **DONE — v1.0.0.238**
+
+> Shipped 2026-08-09. `manager.py` reads `arbitrator_provider.get_max_tokens()`;
+> `llm_config.yaml` set to 4096 with the derivation recorded inline.
+> **Falsification passed:** the harness that measured GLM-5.2 at **0% complete
+> JSON at batch 6** now reports **100% at batches 1/2/4/6/8**, both models,
+> 3 runs each. Tests: `tests/unit/test_arbitrator_max_tokens_from_config.py` —
+> 5 tests, **2 fail on pre-fix code**. Tier-0 9/9, unit 14/14.
+> `temperature`/`stream` left literal per D2.
+
 
 - **Change:** `manager.py:317` stop hardcoding `1024`; read the arbitrator lane's
   configured `max_tokens`. Set `arbitrator.config.max_tokens: 4096` in YAML.
