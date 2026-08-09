@@ -147,7 +147,15 @@ only change that **alters what an already-working lane sends**.
   3. confirm `llm.primary` output is byte-comparable (it must be — ollama path untouched)
 - **Rollback:** revert one hunk in `openai.py`.
 
-### 4.2 Detect truncation — the systemic guard
+### 4.2 Detect truncation — the systemic guard  ✅ **DONE — v1.0.0.237**
+
+> Shipped 2026-08-09. `_warn_if_truncated()` in `llm_providers/openai.py`, used by
+> both request paths; `generate_tools` also returns `truncated: bool`.
+> Tests: `tests/unit/test_openai_provider_truncation_detection.py` — 5 tests,
+> **4 fail on pre-fix code**. Real-path proof: live GLM-5.2 call at batch 6 /
+> `max_tokens=1024` emitted the warning and returned **0 chars** of content.
+> Tier-0 9/9.
+
 
 - **Change:** in `openai.py` (both methods) read `finish_reason`; if `length`, log an
   explicit warning naming model + token count, and surface it to the caller.

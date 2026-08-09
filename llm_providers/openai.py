@@ -58,6 +58,34 @@ class OpenAIProvider(LLMProvider):
             )
         return self.session
     
+    @staticmethod
+    def _warn_if_truncated(finish_reason, model, where, cap):
+        """Log loudly when a response was cut off by max_tokens.
+
+        `finish_reason == 'length'` is the ONLY signal that a reply is
+        incomplete — the HTTP status is 200 and the payload is well-formed JSON
+        describing a truncated body. Nothing in RAICA read this field, so a
+        truncated answer was indistinguishable from a model that simply produced
+        bad output, and the real cause (a cap set too low) was invisible.
+
+        Concretely: the arbitrator must emit a complete tasks[] JSON. Cut off
+        mid-object it is unparseable, the lane fails wholesale, and the log
+        blamed the model. This turns that silent corruption into a stated fact.
+
+        Deliberately a WARNING, not an exception: truncated output is often still
+        partially usable, and raising here would convert a degraded response into
+        an outage. The caller decides; this only makes the decision possible.
+        """
+        if finish_reason == 'length':
+            logger.warning(
+                f"✂️ TRUNCATED by max_tokens: model={model} in {where} hit the "
+                f"{cap}-token output cap (finish_reason=length). The response is "
+                f"INCOMPLETE — if the caller expects JSON it will not parse. "
+                f"Raise max_tokens for this lane."
+            )
+            return True
+        return False
+
     async def generate_stream(self, prompt: str, model: str, **kwargs) -> AsyncIterator[str]:
         """Generate streaming response from OpenAI
         
@@ -108,6 +136,13 @@ class OpenAIProvider(LLMProvider):
                     logger.error(f"❌ OpenAI API error {response.status}: {error_text}")
                     raise Exception(f"OpenAI API error: {response.status} - {error_text}")
                 
+                # TRUNCATION DETECTION — see _warn_if_truncated. A response cut
+                # off by max_tokens arrives as a NORMAL HTTP 200 stream; the only
+                # signal is finish_reason == 'length' on the final chunk. Without
+                # this, a truncated reply is indistinguishable from a complete
+                # one, and a caller that parses JSON just sees "the model failed
+                # to comply".
+                finish_reason = None
                 async for line in response.content:
                     line_str = line.decode('utf-8').strip()
                     if line_str.startswith('data: '):
@@ -116,14 +151,20 @@ class OpenAIProvider(LLMProvider):
                             break
                         try:
                             data = json.loads(data_str)
-                            choices = data.get('choices', [])
+                            choices = data.get('choices') or []
                             if choices:
-                                delta = choices[0].get('delta', {})
-                                content = delta.get('content', '')
+                                finish_reason = (choices[0].get('finish_reason')
+                                                 or finish_reason)
+                                delta = choices[0].get('delta') or {}
+                                content = delta.get('content') or ''
                                 if content:
                                     yield content
                         except json.JSONDecodeError:
                             continue  # Skip invalid JSON
+
+                self._warn_if_truncated(finish_reason, model, 'generate_stream',
+                                        kwargs.get('max_tokens',
+                                                   self.get_max_tokens()))
                             
         except asyncio.TimeoutError:
             logger.error("⏰ OpenAI request timeout")
@@ -266,11 +307,22 @@ class OpenAIProvider(LLMProvider):
 
                         if attempt > 1:
                             logger.info(f"✅ OpenAI tool API recovered on attempt {attempt}/{retry_attempts}")
+
+                        # Surface truncation to the caller as well as the log:
+                        # a tool call cut off mid-arguments yields unparseable
+                        # JSON in `arguments`, which downstream reads as a
+                        # malformed tool call rather than a cap that is too low.
+                        truncated = self._warn_if_truncated(
+                            choices[0].get('finish_reason'), model,
+                            'generate_tools',
+                            kwargs.get('max_tokens', 2048))
+
                         return {
                             'tool_calls': formatted_tool_calls,
                             'content': content,
                             'usage': response_data.get('usage', {}),
-                            'model': model
+                            'model': model,
+                            'truncated': truncated
                         }
 
             except asyncio.TimeoutError:
