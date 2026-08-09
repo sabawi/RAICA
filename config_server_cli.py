@@ -89,6 +89,14 @@ PROVIDER_DEFAULTS = {
         "max_tokens": 4096,
         "stream": True
     },
+    "deepinfra": {
+        # OpenAI-compatible; driven by llm_providers/openai.py (no module of its own).
+        "base_url": "https://api.deepinfra.com/v1/openai",
+        "timeout": 600,
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "stream": True
+    },
     "gemini": {
         "timeout": 120,
         "temperature": 0.7,
@@ -103,7 +111,8 @@ API_KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "qwen": "DASHSCOPE_API_KEY",
-    "gemini": "GEMINI_API_KEY"
+    "gemini": "GEMINI_API_KEY",
+    "deepinfra": "DEEPINFRA_API_KEY"
 }
 
 
@@ -451,7 +460,7 @@ class ModelAliasManager:
             new_config["config"]["context_window_size"] = alias_config["context_window_size"]
 
         # Add provider-specific settings
-        if alias_config["provider"] in ["openai", "openrouter", "qwen"]:
+        if alias_config["provider"] in ["openai", "openrouter", "qwen", "deepinfra"]:
             new_config["config"]["base_url"] = alias_config["base_url"]
             if "api_key" in alias_config:
                 new_config["config"]["api_key"] = alias_config["api_key"]
@@ -711,6 +720,7 @@ class ModelAliasManager:
         'api.openai.com': 'OPENAI_API_KEY',
         'openrouter.ai': 'OPENROUTER_API_KEY',
         'dashscope.aliyuncs.com': 'DASHSCOPE_API_KEY',
+        'api.deepinfra.com': 'DEEPINFRA_API_KEY',
     }
 
     def _api_key_env_for_endpoint(self, base_url):
@@ -1110,7 +1120,8 @@ Examples:
     add_parser = subparsers.add_parser('add', help='Add a new model alias')
     add_parser.add_argument('--alias', required=True, help='Alias name')
     add_parser.add_argument('--provider', required=True,
-                           choices=['ollama', 'openai', 'openrouter', 'qwen', 'gemini'],
+                           choices=['ollama', 'openai', 'openrouter', 'deepinfra',
+                                    'qwen', 'gemini'],
                            help='LLM provider')
     add_parser.add_argument('--model', required=True, help='Model name')
     add_parser.add_argument('--api-key-env', dest='api_key_env',

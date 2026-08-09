@@ -73,6 +73,15 @@ class LLMProviderFactory:
                 # OpenRouter uses OpenAI-compatible API
                 from .openai import OpenAIProvider
                 cls.register_provider('openrouter', OpenAIProvider)
+            elif provider_type == 'deepinfra':
+                # DeepInfra serves an OpenAI-compatible API at
+                # https://api.deepinfra.com/v1/openai — same /chat/completions path and
+                # same `Authorization: Bearer` scheme OpenAIProvider already speaks, so
+                # it needs no provider module of its own (identical rationale to
+                # openrouter above). base_url/api_key come from the provider block in
+                # llm_config.yaml, which config_loader merges into the lane config.
+                from .openai import OpenAIProvider
+                cls.register_provider('deepinfra', OpenAIProvider)
             elif provider_type == 'qwen':
                 from .qwen import QwenProvider
                 cls.register_provider('qwen', QwenProvider)
@@ -92,7 +101,7 @@ class LLMProviderFactory:
             List of available provider type strings
         """
         # Try to import all known providers
-        for provider_type in ['ollama', 'openai', 'openrouter', 'qwen', 'gemini']:
+        for provider_type in ['ollama', 'openai', 'openrouter', 'deepinfra', 'qwen', 'gemini']:
             if provider_type not in cls._providers:
                 cls._import_provider(provider_type)
 
@@ -118,7 +127,7 @@ def _auto_register_providers():
     factory = LLMProviderFactory()
     
     # Register providers that are available
-    for provider_type in ['ollama', 'openai', 'openrouter', 'qwen', 'gemini']:
+    for provider_type in ['ollama', 'openai', 'openrouter', 'deepinfra', 'qwen', 'gemini']:
         try:
             factory._import_provider(provider_type)
         except Exception as e:

@@ -225,8 +225,15 @@ class OpenAIProvider(LLMProvider):
                             raise Exception("No choices in OpenAI response")
 
                         message = choices[0].get('message', {})
-                        tool_calls = message.get('tool_calls', [])
-                        content = message.get('content', '')
+                        # `or []` — NOT `.get('tool_calls', [])`. The dict default only
+                        # applies when the KEY IS ABSENT. OpenAI omits the key when the
+                        # model calls no tool, but other OpenAI-compatible vendors send
+                        # it present-and-null (DeepInfra: {"tool_calls": null}), so the
+                        # default never fires and the loop below iterated None →
+                        # TypeError on EVERY correct abstention. Same reasoning for
+                        # `content`, which those vendors also return as null.
+                        tool_calls = message.get('tool_calls') or []
+                        content = message.get('content') or ''
 
                         # Convert OpenAI format to our standard format
                         formatted_tool_calls = []

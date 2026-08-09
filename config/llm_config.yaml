@@ -113,10 +113,46 @@ llm:
         HTTP-Referer: ${OPENROUTER_SITE_URL}
         X-Title: ${OPENROUTER_SITE_NAME}
       models:
-        primary: deepseek/deepseek-r1:free
-        tool_calling: openai/gpt-4o-mini
-        reasoning: deepseek/deepseek-r1
-        free: deepseek/deepseek-r1:free
+        # Liveness re-verified 2026-08-09 by INVOKING each slug (1-token generation).
+        # `deepseek/deepseek-r1:free` was retired — OpenRouter answers HTTP 404 naming
+        # `deepseek/deepseek-r1` as its replacement. The paid slugs below are LIVE but
+        # return 402 on this account ("never purchased credits"); the :free slug is the
+        # only one usable today, and it is verified for BOTH completion and tool calling.
+        primary: deepseek/deepseek-r1        # was deepseek-r1:free — retired 404 (2026-08)
+        tool_calling: openai/gpt-4o-mini     # LIVE, needs credits (402)
+        reasoning: deepseek/deepseek-r1      # LIVE, needs credits (402)
+        free: openai/gpt-oss-20b:free        # was deepseek-r1:free — retired 404; this
+                                             # slug verified 200 + emits valid tool_calls
+    # -------------------------------------------------------------------------
+    # DeepInfra — OpenAI-compatible cloud inference (added v1.0.0.236, 2026-08-09)
+    #
+    # DORMANT: no lane points here yet. Declaring a provider block does NOT activate
+    # it — a lane only uses this provider when its `type:` says `deepinfra`, at which
+    # point config_loader.get_llm_config() merges these keys into that lane's config
+    # (utils/config_loader.py:113-119) and the factory maps the type onto
+    # OpenAIProvider (llm_providers/factory.py). No new provider module is needed:
+    # DeepInfra speaks the same /chat/completions path and `Authorization: Bearer`
+    # scheme, exactly as openrouter above does.
+    #
+    # STATUS 2026-08-09: key authenticates (GET /models = 200, 182 models) and every
+    # model slug below was probed valid, but inference returns HTTP 402 "You need
+    # positive balance to do inference" — DeepInfra has NO free tier. Nothing here is
+    # behaviourally verified yet (tool calling, streaming, think/effort flags all
+    # UNTESTED); a 402 proves only that the slug and credentials are real.
+    # -------------------------------------------------------------------------
+    deepinfra:
+      api_key: ${DEEPINFRA_API_KEY}
+      base_url: https://api.deepinfra.com/v1/openai
+      retry_attempts: 3
+      retry_delay: 1
+      models:
+        # All probed 2026-08-09: HTTP 402 = slug valid, blocked only on balance.
+        # (404 would mean the slug does not exist — none of these returned 404.)
+        primary: deepseek-ai/DeepSeek-V3.1        # closest analogue to the Ollama primary
+        tool_calling: zai-org/GLM-5.2             # same family as the current tool lane
+        reasoning: deepseek-ai/DeepSeek-R1-0528
+        vision: Qwen/Qwen3-VL-235B-A22B-Instruct
+        cheap: meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo  # for smoke tests
     gemini:
       api_key: ${GEMINI_API_KEY}
       model: gemini-flash-latest
@@ -724,10 +760,12 @@ code_generation:
     # Google Gemini models
     gemini-flash:
       provider: gemini
-      model: gemini-2.0-flash
+      model: gemini-flash-latest  # was gemini-2.0-flash — Google retired it (HTTP 404
+                                  # "no longer available", verified 2026-08-09). The
+                                  # -latest alias is LIVE and already used at llm.vision.
     gemini-pro:
       provider: gemini
-      model: gemini-2.5-pro
+      model: gemini-2.5-pro       # verified LIVE 2026-08-09 (200)
     # Ollama local models
     Kimi-k2.5:
       provider: ollama
@@ -768,7 +806,7 @@ code_generation:
       - provider: openai
         model: gpt-4o-mini
       - provider: gemini
-        model: gemini-2.0-flash
+        model: gemini-flash-latest      # was gemini-2.0-flash — retired 404 (2026-08)
       - provider: ollama
         model: deepseek-v4-flash:cloud  # was deepseek-v3.1:671b-cloud — retired (2026-07)
       - provider: ollama
@@ -795,7 +833,7 @@ code_generation:
       retry_attempts: 3
       retry_delay: 2
     gemini:
-      model: gemini-2.0-flash
+      model: gemini-flash-latest  # was gemini-2.0-flash — retired 404 (verified 2026-08-09)
       api_key: ${GEMINI_API_KEY}
       timeout: 300
       temperature: 0.0

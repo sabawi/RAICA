@@ -43,16 +43,17 @@
   },
   "deepseek_ollama_cloud": {
     "provider": "ollama",
-    "model": "deepseek-v3.1:671b-cloud",
+    "model": "deepseek-v4-flash:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.7,
     "max_tokens": 16384,
     "stream": true,
     "created_at": "2025-10-12T08:41:47.929516",
-    "updated_at": "2025-10-12T09:00:01.260598",
+    "updated_at": "2026-08-09T08:12:49.567097",
     "think": false,
-    "context_window_size": 16384
+    "context_window_size": 16384,
+    "description": "was deepseek-v3.1:671b-cloud - Ollama retired it 2026-07-15 (HTTP 410). Repointed to the same replacement the config adopted at llm_config.yaml:746,781. NOTE: replacement not invocation-verified - account is 429 weekly-limited."
   },
   "gemini_flash": {
     "provider": "gemini",
@@ -120,5 +121,44 @@
     "context_window_size": 32768,
     "description": "Gemini 2.5 Pro via Google OpenAI-compat \u2014 tool-capable",
     "api_key": "${GEMINI_API_KEY}"
+  },
+  "deepinfra_glm": {
+    "provider": "deepinfra",
+    "model": "zai-org/GLM-5.2",
+    "base_url": "https://api.deepinfra.com/v1/openai",
+    "timeout": 600,
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "stream": true,
+    "created_at": "2026-08-09T08:29:43.727328",
+    "updated_at": "2026-08-09T08:29:43.727336",
+    "description": "DeepInfra GLM-5.2 - tool lane candidate",
+    "api_key": "${DEEPINFRA_API_KEY}"
+  },
+  "deepinfra_deepseek": {
+    "provider": "deepinfra",
+    "model": "deepseek-ai/DeepSeek-V3.1",
+    "base_url": "https://api.deepinfra.com/v1/openai",
+    "timeout": 600,
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "stream": true,
+    "created_at": "2026-08-09T08:30:33.283727",
+    "updated_at": "2026-08-09T08:30:33.283734",
+    "description": "DeepInfra DeepSeek-V3.1 - primary lane candidate (reasoning)",
+    "api_key": "${DEEPINFRA_API_KEY}"
+  },
+  "deepinfra_cheap": {
+    "provider": "deepinfra",
+    "model": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+    "base_url": "https://api.deepinfra.com/v1/openai",
+    "timeout": 600,
+    "temperature": 0.7,
+    "max_tokens": 512,
+    "stream": true,
+    "created_at": "2026-08-09T08:30:33.366400",
+    "updated_at": "2026-08-09T08:30:33.366407",
+    "description": "DeepInfra Llama-3.1-8B-Turbo - cheapest smoke-test lane",
+    "api_key": "${DEEPINFRA_API_KEY}"
   }
 }

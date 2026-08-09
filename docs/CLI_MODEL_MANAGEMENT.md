@@ -142,7 +142,7 @@ Shows all configured model aliases with:
 
 **Required Parameters:**
 - `--alias NAME` - Unique name for this alias
-- `--provider TYPE` - Provider type: `ollama`, `openai`, `openrouter`, `qwen`, `gemini`
+- `--provider TYPE` - Provider type: `ollama`, `openai`, `openrouter`, `deepinfra`, `qwen`, `gemini`
 - `--model MODEL` - Model identifier
 
 **Optional Parameters:**
@@ -252,6 +252,20 @@ Output shows all parameters including timestamps and provider-specific settings.
 ./config_server_cli.py set --alias NAME --as ROLE
 ```
 
+> **⚠️ KNOWN DEFECT — `set` deletes every comment in `config/llm_config.yaml`**
+> (tracked as **SI-011**, confirmed 2026-08-09). The writer round-trips the file
+> through `yaml.safe_load()` → `yaml.dump()`, and PyYAML discards comments because
+> they are not part of the YAML data model. One `set` removed all 525 comment
+> markers — every "was X — retired" breadcrumb and every scaling note. Key order
+> survives, so the file still *looks* correct and the loss is easy to miss.
+>
+> **Until this is fixed, back up before switching:**
+> ```bash
+> cp config/llm_config.yaml /tmp/llm_config.bak
+> ./config_server_cli.py set --alias NAME --as ROLE
+> diff /tmp/llm_config.bak config/llm_config.yaml   # review what else changed
+> ```
+
 **Roles:**
 - `primary` - Main LLM for user queries
 - `tool_calling` - LLM that decides which tools to call
@@ -307,6 +321,21 @@ Displays currently active models for each role:
 - **Max Tokens:** 4096
 - **API Key:** Reads from `$OPENROUTER_API_KEY`
 - **Custom Headers:** HTTP-Referer, X-Title for rankings
+
+### DeepInfra
+- **Base URL:** `https://api.deepinfra.com/v1/openai`
+- **Timeout:** 600s
+- **Temperature:** 0.7
+- **Max Tokens:** 4096
+- **API Key:** Reads from `$DEEPINFRA_API_KEY`
+- **Model naming:** `organization/model-name` (e.g. `deepseek-ai/DeepSeek-V3.1`,
+  `zai-org/GLM-5.2`, `meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo`)
+- **Note:** OpenAI-compatible — driven by `llm_providers/openai.py`, no provider
+  module of its own (same arrangement as OpenRouter).
+- **⚠️ No free tier.** Inference returns `HTTP 402 "You need positive balance to do
+  inference"` until the account is funded. A 402 confirms the slug and credentials
+  are valid; a nonexistent slug returns `404 model_not_found` instead, so the two
+  codes can be used to validate model names at zero cost.
 
 ### Qwen (Alibaba Cloud)
 - **Base URL:** `https://dashscope.aliyuncs.com/compatible-mode/v1`

@@ -11,6 +11,89 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-011 — `config_server_cli.py set` DESTROYS every comment in `llm_config.yaml`  [P1 — CONFIRMED, blocks the quick-switch feature]
+- **Observed (2026-08-09, during the v1.0.0.236 DeepInfra build):** running
+  `config_server_cli.py set --alias deepinfra_glm --as tool_calling` rewrote the whole config and
+  stripped **all 525 comment markers** — every retirement note, every scaling guide, every
+  "was X — retired (2026-07)" breadcrumb. The lane change itself was correct; the collateral damage
+  was total. Caught only because the change was made against a backup and diffed.
+- **Cause:** the writer round-trips through `yaml.safe_load()` → `yaml.dump()`. PyYAML's loader
+  discards comments (they are not part of the YAML data model), so the dump cannot re-emit them.
+  Key ORDER is preserved by the dumper's config, which is what makes the loss easy to miss — the
+  file still looks structurally right.
+- **Why this is P1 and not cosmetic:** the next planned feature is *quick switching back and forth
+  between DeepInfra and the other providers*. That feature calls `set` by design, repeatedly. The
+  FIRST switch would permanently delete the documentation that records which slugs were retired and
+  why — including the SI-008 audit trail written the same day. Comments are the only place that
+  history lives; git history alone would not stop a future reader re-adding a dead slug.
+- **Fix when picked up:** write with `ruamel.yaml` in round-trip mode (`YAML(typ='rt')`), which
+  preserves comments and ordering, OR surgically patch only the changed scalar lines instead of
+  re-dumping the document. `ruamel.yaml` is the smaller change and is already a common transitive
+  dep — check `venv` before adding it to `requirements.txt`.
+- **Interim mitigation:** back up `config/llm_config.yaml` before any `set`, and diff after.
+- **Clear only when:** a `set` invocation is shown to change the intended lane while leaving the
+  comment count unchanged, asserted by a named test that FAILS on the current implementation.
+
+### SI-012 — An UNSET `${VAR}` API key fails as a confusing 401, not a config error  [P3 — CONFIRMED, pre-existing, all providers]
+- **Observed (2026-08-09, adversarial audit A3 of the DeepInfra build):** `os.path.expandvars` leaves
+  an *undefined* variable as the literal string `${DEEPINFRA_API_KEY}`. That string is truthy, so the
+  guard at `llm_providers/openai.py:31` (`if not self.api_key: raise ValueError`) does **not** fire;
+  the provider constructs happily and sends `Authorization: Bearer ${DEEPINFRA_API_KEY}`, producing a
+  401/403 from the vendor at request time with nothing pointing back at the real cause.
+- **Asymmetry worth knowing:** a variable set to the EMPTY string expands to `''`, which is falsy, so
+  that case *does* fail fast at construction. Unset fails late and confusingly; empty fails early and
+  clearly — the opposite of what intuition suggests.
+- **Scope:** not specific to DeepInfra. Every provider that resolves its key through `${VAR}` in
+  `llm_config.yaml` behaves this way — openai, openrouter, gemini, qwen, deepinfra.
+- **Fix when picked up:** after expansion, reject any config value still matching `^\$\{.+\}$` with a
+  message naming the missing variable. One check in `utils/config_loader.py` covers every provider.
+- **Clear only when:** a lane with a deliberately-unset key raises a named-variable configuration
+  error at load time instead of a vendor 401.
+
+### SI-010 — Entire Ollama-cloud stack is 429 weekly-limited  [P1 — CONFIRMED by invocation]
+- **Observed (2026-08-09, `config_server_cli.py doctor --probe --aliases`):** every Ollama-cloud lane
+  returns the same refusal:
+  ```
+  HTTP 429: you (seedhom) have reached your weekly usage limit, upgrade for higher
+  ```
+- **Scope — measured, not assumed.** This is not one lane. It hits `llm.primary`
+  (`deepseek-v4-pro:cloud`), `llm.tool_calling` (`glm-5.2:cloud`), `deep_research.engine.model`
+  (`deepseek-v4-flash:cloud`), `code_generation.classification_model` (`gpt-oss:120b-cloud`), **and
+  both vision lanes** (`minimax-m3:cloud`, `kimi-k2.6:cloud`) — i.e. the primary conversation path,
+  tool selection, Deep Research, code generation and image understanding simultaneously.
+- **Impact:** while the limit holds, the main serving path is down. Non-Ollama lanes still answer
+  (`gpt-4o-mini`, `gemini-flash-latest` verified 200), so a provider switch is a viable mitigation.
+- **Secondary impact — blocks verification.** A 429 is a fact about the ACCOUNT, not a verdict on a
+  model, so no Ollama-cloud slug in `llm_config.yaml` can currently be proven live or dead. The
+  retired-slug audit in SI-008 therefore covers OpenAI/Gemini/OpenRouter only; the Ollama slugs are
+  **unaudited**, not clean.
+- **Clear only when:** the quota resets or is upgraded AND `doctor --probe --aliases` returns a real
+  verdict (not `?`) for every Ollama-cloud slug.
+
+### SI-009 — `doctor --probe` reports a FALSE failure for any alias whose key is still `${VAR}`  [P2 — CONFIRMED]
+- **Observed (2026-08-09):** `doctor --probe --aliases` reported `gemini_flash_36` and `gemini_pro_25`
+  as `probe failed: HTTP 400: Please pass a valid API key`, which reads as "these aliases are
+  misconfigured". **They are not.** Invoking both slugs directly with the expanded key returns HTTP
+  **200** — `gemini-3.6-flash` and `gemini-2.5-pro` are LIVE and correctly declared.
+- **Cause (code):** `config_server_cli.py::_probe_model` sends the auth header only when the key is
+  already expanded —
+  ```python
+  if api_key and not api_key.startswith('${'):
+      request.add_header('Authorization', f'Bearer {api_key}')
+  ```
+  Aliases are stored in `model_aliases.json` as the LITERAL `${GEMINI_API_KEY}` (JSON does no env
+  expansion), so the probe deliberately sends no credentials and the endpoint answers 400. The guard
+  exists to avoid sending a bogus literal as a bearer token; the cost is an unauthenticated probe
+  that cannot distinguish "misconfigured" from "not expanded".
+- **Why it matters:** this is the SI-005 lesson resurfacing in the tool built to enforce it. A false
+  negative here is actively misleading — a prior note in project memory recorded these two aliases as
+  "mis-declared" on the strength of this output. That note was **wrong** and was corrected 2026-08-09.
+- **Fix when picked up:** expand `${VAR}` from the environment before probing (`os.path.expandvars`,
+  the same mechanism `utils/config_loader.py:72` already uses) and report a distinct
+  `UNRESOLVED-CREDENTIAL` status when the variable is genuinely unset — never a bare 400.
+- **Clear only when:** an alias carrying `${VAR}` probes to a true verdict, and a named test asserts a
+  `${VAR}` alias with the env var SET probes OK (must fail on pre-fix code).
+
 ### SI-006 — 2 academic sources rate-limited without an API key (`semantic_scholar`, `core`)  [P2 — CONFIRMED, not a bug]
 - **Observed (2026-08-06):** after v1.0.0.235 revived pubmed/doaj/biorxiv, `published_papers_search`
   reaches **9 of 11** databases. The two that stay dark are `semantic_scholar` and `core`.
@@ -119,6 +202,83 @@ verbatim on sign-off.
 ---
 
 ## Resolved
+
+### SI-014 — `OpenAIProvider.generate_stream` SILENTLY DISCARDED the system prompt  →  **FIXED 2026-08-09**  [was P1, production-affecting]
+- **Observed (2026-08-09, arbitrator lane evaluation):** both candidate models scored **0% schema
+  compliance and 0% correct verdicts** on the arbitrator task. The models were not at fault — they
+  never received the schema.
+- **Cause (code, confirmed):** `generate_stream` built its payload as
+  `"messages": [{"role": "user", "content": prompt}]` — the user turn ALONE. Callers pass the system
+  prompt in kwargs (`manager.py:315`, `call_arbitrator`), and it was dropped on the floor.
+- **Production impact — NOT DeepInfra-specific.** The arbitrator lane is `type: openai`
+  (`llm_config.yaml`, `enabled: true`), so RAICA's arbitrator has been running **without its
+  13,802-char "🚨 CRITICAL JSON-ONLY RESPONSE REQUIRED" schema spec** (`fastapi_server_complete.py:5400`)
+  — on the normal Ollama-proxy path, not just under test. Measured consequence, pre-fix:
+
+  | model | pure-JSON | schema | correct verdict |
+  |---|---|---|---|
+  | gpt-oss-120b | 89% | **0%** | **0%** |
+  | GLM-5.2 | **0%** (```json fences) | **0%** | **0%** |
+
+  Any lane on an OpenAI-compatible provider is affected, so switching `llm.primary` to such a
+  provider would silently drop the citation/anti-hallucination rules too.
+- **Why it stayed invisible:** `generate_tools()` in the SAME class always handled `system_prompt`
+  correctly (and logs loudly about it), and `ollama.py:69-70` was fixed for this exact defect in
+  **v1.0.2.101**. The OpenAI path was never given the same fix, and the lane that used it produced
+  plausible-looking JSON, just not the required shape.
+- **Fix:** prepend `{"role": "system", ...}` when `system_prompt` is present, plus a log line that
+  states the char count or `⚠️ NO SYSTEM PROMPT` — so a future silent drop is visible.
+- **Residual (must verify before this is fully closed):** adding a 13.8K-char system message raises
+  token usage on every affected call; confirm no lane now exceeds its `context_window_size`, and
+  re-verify arbitrator behaviour end-to-end on the real Ollama path once its quota resets (SI-010).
+
+### SI-013 — `tool_calls: null` crashed the tool lane on every correct abstention  →  **FIXED 2026-08-09**  [was P1 for any OpenAI-compatible vendor]
+- **Observed:** 2 of 16 tool-selection cases died with `TypeError: 'NoneType' object is not iterable`
+  — specifically the ABSTENTION cases, i.e. exactly when the model correctly decided no tool was needed.
+- **Cause (code, confirmed by reproduction through the real provider):** `openai.py:227` used
+  `message.get('tool_calls', [])`. **A dict default fires only when the KEY IS ABSENT.** OpenAI omits
+  the key when no tool is called, so the bug never surfaced there; DeepInfra (and other
+  OpenAI-compatible vendors) send it **present and null**:
+  ```json
+  "message": {"role": "assistant", "content": "Hi!", "tool_calls": null}
+  ```
+  `.get(..., [])` therefore returned `None` and the formatting loop iterated it. `content` had the
+  identical flaw.
+- **Impact:** would have made DeepInfra unusable for the `tool_calling` lane — every greeting or
+  pure-knowledge question that correctly declined a tool would raise. Latent for any future
+  OpenAI-compatible provider.
+- **Fix:** `message.get('tool_calls') or []` and `message.get('content') or ''`.
+- **Tests:** `tests/unit/test_openai_provider_null_tool_calls.py` — 4 named tests; **2 FAIL on the
+  pre-fix code**, all 4 pass after (verified by temporarily reverting the fix).
+
+### SI-008 — Retired model slugs in `llm_config.yaml`  →  **RESOLVED 2026-08-09** (3 dead slugs replaced)
+- **Observed:** while evaluating DeepInfra as a new provider, the OpenRouter block was found to name a
+  model that no longer exists. A full invocation audit of every slug we hold credentials for followed.
+- **Method:** each slug INVOKED with a 1-token generation (per the SI-005 lesson that a catalog listing
+  is evidence in NEITHER direction). Script: `scratchpad/audit_config_models.py`. 13 slugs probed:
+  **8 LIVE, 2 DEAD, 3 inconclusive** (402 no-credits / 429 transient — never recorded as dead).
+- **Confirmed DEAD, with the vendor's own words:**
+
+  | Slug | Was at | Evidence | Replaced with |
+  |---|---|---|---|
+  | `deepseek/deepseek-r1:free` | `llm_config.yaml:116,119` | `404 — "This model is unavailable for free… use this slug instead: deepseek/deepseek-r1"` | `deepseek/deepseek-r1` (primary/reasoning) + `openai/gpt-oss-20b:free` (free lane) |
+  | `gemini-2.0-flash` | `llm_config.yaml:733,779,806` | `404 — "This model models/gemini-2.0-flash is no longer available"` | `gemini-flash-latest` |
+  | `deepseek-v3.1:671b-cloud` | alias `deepseek_ollama_cloud` | `410 — "retired at 2026-07-15"` | `deepseek-v4-flash:cloud` |
+
+- **Falsification note — the fix was incomplete on the first pass.** A grep anchored on
+  `^\s*model:` found 2 of the 3 `gemini-2.0-flash` references; the third (`code_generation.providers.
+  gemini.model`, line 806) was missed and was caught only because the verification asserted
+  `'gemini-2.0-flash' not in str(parsed_config)` over the whole document rather than re-reading the
+  lines just edited. **Assert absence across the parsed config, not across the diff.**
+- **Verified:** YAML parses; loads through the real path (`utils/config_loader.ConfigLoader`);
+  `doctor` reports every lane's model consistent with its endpoint; both replacement slugs
+  re-probed **HTTP 200 LIVE**; `openai/gpt-oss-20b:free` additionally verified to emit well-formed
+  `tool_calls`.
+- **Residual (tracked as SI-010):** all Ollama-cloud slugs remain **unaudited** — the account is 429
+  weekly-limited, so they can be proven neither live nor dead. `claude-sonnet-4-20250514` /
+  `claude-opus-4-20250514` (`code_generation`) are likewise unverifiable: `ANTHROPIC_API_KEY` is unset,
+  so that whole provider path is inert. Both look stale but neither was changed — replacing an
+  unverifiable slug with another unverifiable slug is not a fix.
 
 ### SI-005 — Vision lane swapped off two models  →  **CAUSE RETRACTED 2026-08-05; lane works, cause UNKNOWN**
 - **Status:** the vision lane is HEALTHY (verified replacements, below). What is retracted is the
