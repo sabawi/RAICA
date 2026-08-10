@@ -1456,10 +1456,18 @@ class ModelAliasManager:
             checked.add((endpoint, model))
 
             base = endpoint.rstrip('/')
-            # Expand ${VAR} the same way the loader does, so a probe uses the real key.
-            api_key = os.path.expandvars(
-                '${GEMINI_API_KEY}' if 'googleapis' in endpoint else ''
-            )
+            # SI-009: resolve the credential for THIS endpoint, from .env if needed.
+            #
+            # This used to be hardcoded to Gemini — every other endpoint was probed with an
+            # EMPTY key, so DeepInfra/OpenAI/OpenRouter lanes came back `401: missing API
+            # key` and were reported as `?` inconclusive. That reads as "cannot verify the
+            # model" when the truth is "we never authenticated", and it silently disarms the
+            # one command meant to gate a deploy.
+            #
+            # `_ENDPOINT_KEY_ENV` already maps host -> env var; `_expand_secret` already
+            # reads .env (keys live there, not in the shell). Both existed; neither was used.
+            _env = self._api_key_env_for_endpoint(endpoint)
+            api_key = self._expand_secret('${%s}' % _env) if _env else ''
 
             status, detail = self._probe_model(base, model, api_key)
 

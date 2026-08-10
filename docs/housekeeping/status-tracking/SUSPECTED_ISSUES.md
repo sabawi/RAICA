@@ -145,7 +145,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Clear only when:** the quota resets or is upgraded AND `doctor --probe --aliases` returns a real
   verdict (not `?`) for every Ollama-cloud slug.
 
-### SI-009 — `doctor --probe` reports a FALSE failure for any alias whose key is still `${VAR}`  [P2 — CONFIRMED]
+### SI-009 — `doctor --probe` probed UNAUTHENTICATED  →  **FIXED 2026-08-09 (v1.0.0.243)**
+- **Root cause was broader than first logged.** The original entry blamed `_probe_model`'s
+  guard (it skips the auth header when a key is still a literal `${VAR}`). That guard is
+  fine. The real defect was one layer up in `_probe_endpoints`:
+  ```python
+  api_key = os.path.expandvars('${GEMINI_API_KEY}' if 'googleapis' in endpoint else '')
+  ```
+  **Hardcoded to a single provider** — every other endpoint was probed with an EMPTY key.
+  DeepInfra/OpenAI/OpenRouter lanes all returned `401: missing API key` and were reported
+  as `?` inconclusive, which reads as "cannot verify the model" when the truth is "we never
+  authenticated". It silently disarmed the one command meant to gate a deploy.
+- **Caught in use, not by inspection:** running the A/B pre-flight on 2026-08-09, all 6
+  DeepInfra lanes came back `?`. Post-fix: 6/6 `✓`.
+- **Fix:** resolve the credential per endpoint via the existing `_ENDPOINT_KEY_ENV`
+  host→env map, expanded with `_expand_secret` (which reads `.env`). **Both helpers already
+  existed; neither was wired in.**
+
+### SI-009 (original entry, superseded above) — `${VAR}` aliases  [P2]
 - **Observed (2026-08-09):** `doctor --probe --aliases` reported `gemini_flash_36` and `gemini_pro_25`
   as `probe failed: HTTP 400: Please pass a valid API key`, which reads as "these aliases are
   misconfigured". **They are not.** Invoking both slugs directly with the expanded key returns HTTP
