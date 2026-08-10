@@ -14,6 +14,46 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def evidence_aware_growth_cap(signals, default_cap=0.20, anchor_label='sustainable anchor'):
+    """Shared stage-1 growth ceiling for the DCF **and** the projection engine.
+
+    SI-022. A flat cap applied AFTER a median blend can override the blend even when every
+    real signal disagrees with it. On NVDA (2026-08-10):
+
+        trailing 3-yr FCF growth 100.0% | analyst forward 43.3% | anchor 5.0%
+        median -> 43.3%   then capped -> 20.0%
+
+    20% was a rate NEITHER real signal supported. It produced an $83.05 intrinsic value
+    against a $222.16 price (-62.6%) and forced the synthesising LLM to write a paragraph
+    disclaiming its own tool. A model whose output must be talked around in prose is not
+    conservative, it is wrong.
+
+    The cap's real job is stopping ONE transient outlier being extrapolated for five years
+    (KO's -17.8%, CROX's acquisition-inflated 32.6%). But when BOTH independent real signals
+    clear it, the high number is agreement between a backward and a forward measurement, not
+    an outlier. So the cap never binds below the LOWER of the two, and this rule can only
+    RAISE it, never lower it.
+
+    The anchor is excluded from the vote: it is a constant we inject, not evidence about this
+    company, so it can never be one of the two agreeing signals.
+
+    Lives at module level and is shared deliberately. The projection engine and the DCF
+    print growth rates side by side in one report; when the rule was duplicated they drifted,
+    which is the exact defect docs/PROJECTION_GROWTH_BLEND_SCOPE.md was written about.
+
+    Returns (cap, was_raised, reason).
+    """
+    real = [v for label, v in signals if label != anchor_label]
+    if len(real) >= 2 and all(v > default_cap for v in real):
+        floor = min(real)
+        return floor, True, (
+            f"raised to {floor:.1%} — {len(real)} independent signals "
+            f"({', '.join(f'{v:.1%}' for v in sorted(real))}) all exceed the "
+            f"{default_cap:.0%} default, so the high rate is corroborated, "
+            f"not a transient outlier")
+    return default_cap, False, f"default {default_cap:.0%} ceiling"
+
+
 class DCFCalculator:
     """
     DCF valuation model calculator.
@@ -38,6 +78,15 @@ class DCFCalculator:
         # WACC adjustment for blue-chip companies
         # CAPM often overestimates cost of equity for mature, cash-rich companies
         self.blue_chip_wacc_adjustment = 0.02  # Reduce WACC by 2% for blue chips
+
+        # Ceiling on stage-1 FCF growth. Guards against extrapolating ONE transient
+        # outlier for five years. See _stage1_growth_cap() for the case where it must
+        # step aside: two independent signals agreeing above it is evidence, not noise.
+        self.max_stage1_growth = 0.20
+
+    def _stage1_growth_cap(self, signals):
+        """Delegate to the shared rule so the DCF and the projections cannot drift apart."""
+        return evidence_aware_growth_cap(signals, self.max_stage1_growth)
 
     def _get_value(self, df: pd.DataFrame, key: str, col_index: int = 0):
         """Safely extract value from DataFrame."""
@@ -484,10 +533,13 @@ class DCFCalculator:
                     pass
             _signals.append(('sustainable anchor', 0.05))
             projection_growth = float(np.median([v for _, v in _signals]))
-            # floor at terminal for a profitable/positive-FCF name (never project a durable FCF decline);
-            # cap at 20% for safety
+            # floor at terminal for a profitable/positive-FCF name (never project a durable FCF decline)
             projection_growth = max(projection_growth, self.terminal_growth_rate)
-            projection_growth = min(projection_growth, 0.20)
+            _cap, _cap_raised, _cap_reason = self._stage1_growth_cap(_signals)
+            projection_growth = min(projection_growth, _cap)
+            result['assumptions']['growth_cap'] = _cap
+            result['assumptions']['growth_cap_raised'] = _cap_raised
+            result['assumptions']['growth_cap_reason'] = _cap_reason
 
             result['assumptions']['projection_growth'] = projection_growth
             result['assumptions']['growth_signals'] = _signals   # [(label, value), ...] for the formatter
@@ -720,10 +772,26 @@ Date: {date}
                 _sigs = assumptions.get('growth_signals')
                 if _sigs:
                     _sig_str = ", ".join(f"{lbl} {val*100:.1f}%" for lbl, val in _sigs)
+                    # SI-022: report the cap that was ACTUALLY applied. This string used to
+                    # say "capped at 20%" unconditionally, so once the cap could be raised by
+                    # corroborating signals the prose contradicted the number sitting next to
+                    # it (43.3% growth described as "capped at 20%"). The number is what the
+                    # LLM reasons over; the explanation is what the READER checks it against.
+                    _cap = assumptions.get('growth_cap')
+                    _cap_txt = (f"capped at {_cap*100:.1f}%" if _cap is not None
+                                else "capped")
+                    _why = assumptions.get('growth_cap_reason')
+                    # structured flag, NOT a substring test on our own prose: the first
+                    # version filtered on `"default" not in _why`, and the raised-cap
+                    # message happens to contain the word "default" ("exceed the 20%
+                    # default"), so the explanation silently suppressed itself.
+                    _raised = bool(assumptions.get('growth_cap_raised'))
                     content_lines.append(
                         f"  Stage-1 FCF Growth: {_pg:.1f}% — the MEDIAN of [{_sig_str}], floored at the "
-                        "terminal rate and capped at 20% (the median ignores a transient trailing year, "
+                        f"terminal rate and {_cap_txt} (the median ignores a transient trailing year, "
                         "e.g. a one-off FCF dip, and a lone extreme forecast)")
+                    if _why and _raised:
+                        content_lines.append(f"    Growth ceiling: {_why}")
                 else:
                     content_lines.append(f"  Projected FCF Growth Rate: {_pg:.1f}%")
             if 'wacc' in assumptions:

@@ -1,6 +1,16 @@
 # Scope — Forward-Aware Growth for the Projection Engine
 
-**Status:** ✅ **SIGNED OFF 2026-08-09** — implement **AFTER** the provider A/B
+**Status:** ✅ **IMPLEMENTED 2026-08-10 in v1.0.0.248** (SI-022). Was: SIGNED OFF
+2026-08-09, gated on the provider A/B.
+
+> **Delivered with one documented DEVIATION from §4.2.** That section said "keep the 20%
+> cap unchanged". Shipping it unchanged would have left the defect that prompted the whole
+> review still firing on hyper-growth names: NVDA's median blend landed on 43.3% (analysts)
+> and the flat cap pushed it to 20%, a rate NEITHER real signal supported, producing an
+> $83.05 intrinsic against a $221.57 price. The cap is now *evidence-aware* — it steps
+> aside only when BOTH independent signals clear it, and can only ever be RAISED. §4.2's
+> intent (stop one transient outlier being extrapolated) is preserved intact; CROX and KO
+> are byte-identical.
 **Against:** v1.0.0.242 · **Origin:** user review of a real CROX analysis, 2026-08-09
 
 > **DO NOT IMPLEMENT BEFORE THE A/B COMPLETES.** This change alters the numbers the

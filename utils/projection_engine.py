@@ -11,6 +11,8 @@ from typing import Dict, Any, List, Optional
 import logging
 import numpy as np
 
+from utils.dcf_calculator import evidence_aware_growth_cap
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +30,59 @@ class ProjectionEngine:
     def __init__(self):
         """Initialize the projection engine."""
         self.projection_years = 3  # 3-year forward projections
+        self.sustainable_anchor = 0.05   # long-run growth a mature business can sustain
+        self.max_growth = 0.20           # default ceiling; see evidence_aware_growth_cap
+
+    def _blend_growth(self, historical, forward, cap=None, forward_label='analyst forward growth'):
+        """Median of (historical CAGR, analyst FORWARD growth, sustainable anchor).
+
+        See docs/PROJECTION_GROWTH_BLEND_SCOPE.md. The engine used to extrapolate a CAPPED
+        HISTORICAL CAGR with NO forward signal, while the DCF next to it in the same report
+        already median-blended a forward one. The two disagreed on the same page.
+
+        For CROX the report printed a 20.0% capped projection while stating, correctly, that
+        the raw 32.6% CAGR was "likely inflated by the HEYDUDE acquisition" and that analyst
+        consensus implied 7.1%. RAICA detected the distortion, said so, and then used the
+        distorted number anyway. A median of three signals is robust to ONE transient outlier
+        in either direction — it discards CROX's acquisition spike and KO's -17.8% collapse
+        alike — while actually pulling in the forward view.
+
+        Returns (growth, signals, cap, cap_raised, cap_reason). `signals` is carried through
+        to the formatter so the output can SHOW its derivation rather than assert a number.
+        """
+        signals = []
+        if historical is not None:
+            signals.append(('historical CAGR', float(historical)))
+        if forward is not None:
+            try:
+                _f = float(forward)
+                if -0.9 < _f < 3.0:          # same sanity bound the DCF applies
+                    signals.append((forward_label, _f))
+            except (TypeError, ValueError):
+                pass
+        signals.append(('sustainable anchor', self.sustainable_anchor))
+
+        growth = float(np.median([v for _, v in signals]))
+        _cap, _raised, _reason = evidence_aware_growth_cap(
+            signals, self.max_growth if cap is None else cap)
+        return min(growth, _cap), signals, _cap, _raised, _reason
+
+    @staticmethod
+    def _divergence_note(signals):
+        """Flag when the backward and forward signals disagree enough to matter.
+
+        The median already neutralises the outlier; this states WHY the number moved, so a
+        reader is not left wondering why a 32.6% CAGR became 7.1%.
+        """
+        hist = next((v for lbl, v in signals if lbl == 'historical CAGR'), None)
+        fwd = next((v for lbl, v in signals
+                    if lbl not in ('historical CAGR', 'sustainable anchor')), None)
+        if hist is None or fwd is None:
+            return None
+        if abs(hist - fwd) > 0.15 or (abs(fwd) > 1e-9 and abs(hist / fwd) > 2.0):
+            return ("historical CAGR diverges sharply from analyst consensus — likely "
+                    "reflects acquisitions or one-time items rather than organic growth")
+        return None
 
     def _get_value(self, df: pd.DataFrame, key: str, col_index: int = 0):
         """Safely extract value from DataFrame."""
@@ -89,7 +144,8 @@ class ProjectionEngine:
 
         return projections
 
-    def generate_revenue_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
+    def generate_revenue_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None,
+                                     analyst_estimates: Dict = None) -> Dict[str, Any]:
         """Generate revenue projections with base/best/worst scenarios."""
         try:
             ticker_info = ticker_info or {}
@@ -124,25 +180,23 @@ class ProjectionEngine:
             # Calculate historical growth rate (from the multi-year annual series — still legit)
             historical_growth = self.calculate_historical_cagr(revenue_values)
 
-            if historical_growth is None:
-                # Use conservative 5% if no historical data
-                base_growth = 0.05
-            else:
-                base_growth = historical_growth
-
-            # v1.0.0.163 — cap the revenue base-case growth (parallels the earnings 20% / FCF 15%
-            # caps below). Previously revenue base_growth used the RAW historical CAGR uncapped, so a
-            # hyper-growth name (e.g. NVDA, clamped at the 100% CAGR ceiling) projected revenue
-            # DOUBLING every year (→ ~$2.03T in 3 years) — facially absurd, AND internally
-            # inconsistent with the 20%-capped earnings (implied net margin collapsing 63% → 14%).
-            # Cap at 20% (matching the earnings cap → flat-margin base case, and below the 25%
-            # best-case ceiling so the base case can never exceed the optimistic case).
-            base_growth = min(base_growth, 0.20)
+            # v1.0.0.163 capped the RAW historical CAGR here (a hyper-growth name projected
+            # revenue DOUBLING every year → ~$2.03T in 3 years). The cap stopped the absurdity
+            # but kept the model blind to the forward view; SI-022 replaces it with the same
+            # median blend the DCF uses, so the two agree in the report they share.
+            _fwd = (analyst_estimates or {}).get('fwd_rev_growth_pct')
+            _fwd = float(_fwd) / 100.0 if isinstance(_fwd, (int, float)) else None
+            base_growth, _sig, _cap, _raised, _reason = self._blend_growth(
+                historical_growth, _fwd)
 
             # Create scenarios
             # Best case: 1.5x historical or +5%, whichever is higher
             best_growth = max(base_growth * 1.5, base_growth + 0.05)
-            best_growth = min(best_growth, 0.25)  # Cap at 25%
+            # SI-022: the 25% ceiling must never fall BELOW the base case. It was safe only
+            # while base_growth was itself hard-capped at 20%; once a corroborated forward
+            # signal can lift the base above 25% (NVDA: base 42.6%), a flat ceiling made the
+            # "best case" 25% — an OPTIMISTIC scenario more pessimistic than the base one.
+            best_growth = min(best_growth, max(0.25, base_growth + 0.05))
 
             # Worst case: 0.5x historical or -5%, whichever is lower
             worst_growth = min(base_growth * 0.5, base_growth - 0.05)
@@ -152,6 +206,11 @@ class ProjectionEngine:
                 'current': current_revenue,
                 'current_source': current_source,
                 'historical_growth': historical_growth,
+                'growth_signals': _sig,
+                'growth_cap': _cap,
+                'growth_cap_raised': _raised,
+                'growth_cap_reason': _reason,
+                'divergence_note': self._divergence_note(_sig),
                 'base_case': {
                     'growth_rate': base_growth,
                     'projections': self.project_metric(current_revenue, base_growth, self.projection_years)
@@ -170,7 +229,8 @@ class ProjectionEngine:
             logger.error(f"Error generating revenue projections: {e}")
             return {}
 
-    def generate_earnings_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None) -> Dict[str, Any]:
+    def generate_earnings_projections(self, income_stmt: pd.DataFrame, ticker_info: Dict = None,
+                                      analyst_estimates: Dict = None) -> Dict[str, Any]:
         """Generate earnings projections."""
         try:
             ticker_info = ticker_info or {}
@@ -201,20 +261,23 @@ class ProjectionEngine:
             # Calculate historical growth rate
             historical_growth = self.calculate_historical_cagr([e for e in earnings_values if e > 0])
 
-            if historical_growth is None:
-                # Use conservative 5% if no historical data
-                base_growth = 0.05
-            else:
-                # Use slightly more conservative growth for earnings
-                base_growth = historical_growth * 0.9
-
-            # Cap earnings growth at 20%
-            base_growth = min(base_growth, 0.20)
+            # SI-022: median-blend with the analyst forward EPS consensus rather than
+            # extrapolating a capped historical CAGR. The 0.9 haircut on history is dropped —
+            # it was a crude stand-in for the forward view we now actually have.
+            _fwd = (analyst_estimates or {}).get('fwd_eps_growth_pct')
+            _fwd = float(_fwd) / 100.0 if isinstance(_fwd, (int, float)) else None
+            base_growth, _sig, _cap, _raised, _reason = self._blend_growth(
+                historical_growth, _fwd)
 
             return {
                 'current': current_earnings,
                 'current_source': current_source,
                 'historical_growth': historical_growth,
+                'growth_signals': _sig,
+                'growth_cap': _cap,
+                'growth_cap_raised': _raised,
+                'growth_cap_reason': _reason,
+                'divergence_note': self._divergence_note(_sig),
                 'base_case': {
                     'growth_rate': base_growth,
                     'projections': self.project_metric(current_earnings, base_growth, self.projection_years)
@@ -254,7 +317,8 @@ class ProjectionEngine:
             return None
 
     def generate_fcf_projections(self, cash_flow: pd.DataFrame, ticker_info: Dict = None,
-                                 quarterly_cash_flow: pd.DataFrame = None) -> Dict[str, Any]:
+                                 quarterly_cash_flow: pd.DataFrame = None,
+                                 analyst_estimates: Dict = None) -> Dict[str, Any]:
         """Generate free cash flow projections."""
         try:
             ticker_info = ticker_info or {}
@@ -304,17 +368,24 @@ class ProjectionEngine:
             # Calculate historical growth rate
             historical_growth = self.calculate_historical_cagr([f for f in fcf_values if f > 0])
 
-            if historical_growth is None:
-                # Use conservative 4% if no historical data
-                base_growth = 0.04
-            else:
-                base_growth = historical_growth
-
-            # Be more conservative with FCF growth
-            base_growth = min(base_growth, 0.15)
+            # SI-022: no analyst FCF consensus exists in yfinance, so EPS growth is used as
+            # the forward PROXY — an explicit assumption, labelled as such in the output
+            # (scope doc Q1). The alternative, two signals, is a mean not a median and loses
+            # the outlier robustness that is the whole point. FCF keeps its tighter 15%
+            # default ceiling.
+            _fwd = (analyst_estimates or {}).get('fwd_eps_growth_pct')
+            _fwd = float(_fwd) / 100.0 if isinstance(_fwd, (int, float)) else None
+            base_growth, _sig, _cap, _raised, _reason = self._blend_growth(
+                historical_growth, _fwd, cap=0.15,
+                forward_label='analyst forward growth (EPS proxy)')
 
             return {
                 'current': current_fcf,
+                'growth_signals': _sig,
+                'growth_cap': _cap,
+                'growth_cap_raised': _raised,
+                'growth_cap_reason': _reason,
+                'divergence_note': self._divergence_note(_sig),
                 'current_source': current_source,
                 'historical_growth': historical_growth,
                 'base_case': {
@@ -327,7 +398,8 @@ class ProjectionEngine:
             logger.error(f"Error generating FCF projections: {e}")
             return {}
 
-    def generate_projections(self, ticker: str, financials: Dict) -> Dict[str, Any]:
+    def generate_projections(self, ticker: str, financials: Dict,
+                             analyst_estimates: Dict = None) -> Dict[str, Any]:
         """
         Generate comprehensive financial projections.
 
@@ -346,12 +418,37 @@ class ProjectionEngine:
         quarterly_cash_flow = financials.get('cash_flow', {}).get('quarterly')
         ticker_info = financials.get('ticker_info', {}) or {}
 
+        # SI-022: analyst_estimates is already fetched by the caller for the DCF and simply
+        # was not passed here — the wiring gap the scope doc identified as "one line".
         return {
-            'revenue_projections': self.generate_revenue_projections(income_stmt, ticker_info),
-            'earnings_projections': self.generate_earnings_projections(income_stmt, ticker_info),
-            'fcf_projections': self.generate_fcf_projections(cash_flow, ticker_info,
-                                                            quarterly_cash_flow)
+            'revenue_projections': self.generate_revenue_projections(
+                income_stmt, ticker_info, analyst_estimates),
+            'earnings_projections': self.generate_earnings_projections(
+                income_stmt, ticker_info, analyst_estimates),
+            'fcf_projections': self.generate_fcf_projections(
+                cash_flow, ticker_info, quarterly_cash_flow, analyst_estimates)
         }
+
+
+    @staticmethod
+    def _growth_derivation_lines(block, indent="  "):
+        """Render HOW a projected growth rate was derived, not just its value.
+
+        Non-negotiable per the scope doc §4.3: RAICA already DETECTED the CROX distortion
+        and said so in prose while using the distorted number. Showing the derivation is
+        what makes the corrected number auditable instead of merely different.
+        """
+        out = []
+        sig = block.get('growth_signals')
+        if sig:
+            out.append(f"{indent}  [median of: "
+                       + " | ".join(f"{lbl} {val*100:.1f}%" for lbl, val in sig) + "]")
+        if block.get('growth_cap_raised') and block.get('growth_cap_reason'):
+            out.append(f"{indent}  Growth ceiling: {block['growth_cap_reason']}")
+        note = block.get('divergence_note')
+        if note:
+            out.append(f"{indent}  NOTE: {note}")
+        return out
 
     def _format_source_block(self, source_num: int, title: str, url: str, date: str, content: str) -> str:
         """
@@ -470,12 +567,14 @@ Date: {date}
             lines.append(f"  Historical CAGR (raw, uncapped): {rev_proj['historical_growth']*100:.1f}%")
         if 'base_case' in rev_proj:
             base = rev_proj['base_case']
-            lines.append(f"\nBase Case (Projected growth, capped at 20%: {base['growth_rate']*100:.1f}%):")
+            lines.append(f"\nBase Case (Projected growth: {base['growth_rate']*100:.1f}%):")
+            lines.extend(self._growth_derivation_lines(rev_proj))
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
         lines.append(
-            "  NOTE: These projections extrapolate the historical CAGR forward; "
-            "they are NOT analyst consensus estimates."
+            "  NOTE: RAICA model estimate — the median of the historical CAGR, the analyst "
+            "FORWARD consensus, and a 5% sustainable anchor. Not a pure analyst consensus, "
+            "and not a pure historical extrapolation."
         )
 
         return "\n".join(lines)
@@ -496,12 +595,14 @@ Date: {date}
             lines.append(f"  Historical CAGR (raw, uncapped): {earn_proj['historical_growth']*100:.1f}%")
         if 'base_case' in earn_proj:
             base = earn_proj['base_case']
-            lines.append(f"\nProjected Growth (capped at 20%): {base['growth_rate']*100:.1f}%")
+            lines.append(f"\nProjected Growth: {base['growth_rate']*100:.1f}%")
+            lines.extend(self._growth_derivation_lines(earn_proj))
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
         lines.append(
-            "  NOTE: These projections extrapolate the historical CAGR forward; "
-            "they are NOT analyst consensus estimates."
+            "  NOTE: RAICA model estimate — the median of the historical CAGR, the analyst "
+            "FORWARD consensus, and a 5% sustainable anchor. Not a pure analyst consensus, "
+            "and not a pure historical extrapolation."
         )
 
         return "\n".join(lines)
@@ -522,12 +623,14 @@ Date: {date}
             lines.append(f"  Historical CAGR (raw, uncapped): {fcf_proj['historical_growth']*100:.1f}%")
         if 'base_case' in fcf_proj:
             base = fcf_proj['base_case']
-            lines.append(f"\nProjected Growth (capped at 15%): {base['growth_rate']*100:.1f}%")
+            lines.append(f"\nProjected Growth: {base['growth_rate']*100:.1f}%")
+            lines.extend(self._growth_derivation_lines(fcf_proj))
             for i, value in enumerate(base['projections'], 1):
                 lines.append(f"  Year {i}: ${value/1e9:.2f}B")
         lines.append(
-            "  NOTE: These projections extrapolate the historical CAGR forward; "
-            "they are NOT analyst consensus estimates."
+            "  NOTE: RAICA model estimate — the median of the historical CAGR, the analyst "
+            "FORWARD consensus, and a 5% sustainable anchor. Not a pure analyst consensus, "
+            "and not a pure historical extrapolation."
         )
 
         return "\n".join(lines)

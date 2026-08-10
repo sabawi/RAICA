@@ -372,6 +372,45 @@ verbatim on sign-off.
 
 ## Resolved
 
+### SI-022 — A constant standing in for evidence in BOTH growth models  →  **FIXED 2026-08-10 (v1.0.0.248)**  [was P1, distorted every valuation]
+- **Origin:** user's independent review of a real NVDA/AAPL report: *"rigorous-looking
+  model → biased assumptions → predetermined conclusion."* Accurate on both counts.
+- **(1) DCF flat cap overrode the blend.** `dcf_calculator.py` median-blended three growth
+  signals then applied a flat 20% cap AFTER the blend. NVDA (live 2026-08-10):
+  trailing 100.0%, analyst forward 43.3%, anchor 5.0% → median 43.3% → **capped to 20.0%**,
+  a rate NEITHER real signal supported. Intrinsic **$83.05** vs price $221.57 (−62.6%), and
+  the synthesising LLM wrote a paragraph disclaiming its own tool.
+  **After:** growth 43.3%, intrinsic **$179.44**, −19.0%.
+- **(2) Projections had no forward signal at all.** `projection_engine.py` extrapolated a
+  capped historical CAGR while the DCF beside it in the same report blended one. CROX
+  printed 20.0% while stating the raw 32.6% CAGR was "likely inflated by the HEYDUDE
+  acquisition" and analysts implied 7.1% — detected the distortion, said so, used it anyway.
+  **After:** 7.1%, matching the scope doc's predicted target exactly; revenue unchanged at
+  4.4%, also as predicted.
+- **Fix:** shared `evidence_aware_growth_cap()` — the cap steps aside only when BOTH
+  independent real signals clear it (agreement is evidence, not an outlier), can only ever
+  be RAISED, and excludes the injected anchor from the vote. Shared at module level so the
+  DCF and the projections cannot drift apart again. Projections now median-blend the
+  analyst forward consensus (EPS proxy for FCF, labelled).
+- **Deviation from the signed-off scope §4.2** ("keep the 20% cap") — documented in the
+  scope doc with rationale; §4.2's intent is preserved and CROX/KO are byte-identical.
+- **Found by adversarial audit BEFORE shipping:** raising the base case above the flat 25%
+  best-case ceiling made NVDA's "best case" **25% against a 42.6% base** — an optimistic
+  scenario more pessimistic than the base one. Fixed and pinned by a parametrised test.
+- **Two stale strings the change made FALSE, caught by reading the real output:**
+  the DCF line still said "capped at 20%" beside a 43.3% number, and all three projection
+  blocks still said "NOT analyst consensus estimates" when they now blend exactly that.
+- **Behavioural change, stated not buried:** a stock with NO analyst coverage now blends
+  two signals, and a median of two is their mean — growth is pulled toward the 5% anchor.
+  Accepted deliberately: `dcf_calculator` has behaved this way since v1.0.0.176 and the
+  point of SI-022 is that the two must agree.
+- **Known limitation, NOT fixed:** AAPL still shows −49.1%. Its cap never binds (only one
+  signal clears it); the low value comes from ~$90B/yr of buybacks suppressing trailing FCF
+  growth to −3.9%. DCF for buyback-heavy mega-caps is a separate problem.
+- **Tests:** `tests/unit/test_growth_blend_and_cap.py` — 17 tests, incl. the anchor-cannot-
+  vote guard, the raise-only guard, and the scenario-ordering invariant.
+
+
 ### SI-021 — The DR gap-assessment loop was DEAD for 7 builds  →  **FIXED 2026-08-10 (v1.0.0.247)**  [was P0, silently degraded every DR answer]
 - **Observed:** the user's `@Ask` benchmark prompt produced 4 rounds / 44 evidence / 171
   sources on PROD (pre-fix code) but **2 rounds / 19 evidence** locally — *identically on

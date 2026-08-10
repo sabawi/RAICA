@@ -790,7 +790,12 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                         # Generate projections
                         if FeatureFlags.DETAILED_ANALYSIS_PROJECTIONS:
                             projector = ProjectionEngine()
-                            projections = projector.generate_projections(ticker, financials)
+                            # SI-022: pass the analyst consensus already fetched above for the
+                            # DCF. Without it the projections extrapolated a capped historical
+                            # CAGR with NO forward signal while the DCF beside them blended one,
+                            # so the same report printed two disagreeing growth rates.
+                            projections = projector.generate_projections(
+                                ticker, financials, analyst_estimates=_analyst_estimates)
                             detailed_output.append(projector.format_projections_for_llm(projections, ticker))
 
                         # v1.0.0.166 — real analyst CONSENSUS (yfinance): price targets, recommendation
