@@ -252,3 +252,101 @@ def test_revert_restores_transport_keys_too(tmp_path):
     assert cfg.read_text() == original, (
         "revert is not byte-identical — transport keys were left converted"
     )
+
+
+# ------------------------------- SI-017: keyless -> credentialed provider
+def test_converts_a_lane_that_has_NO_api_key_line(tmp_path):
+    """A lane with no api_key must GAIN one when moving to a credentialed provider.
+
+    The writer could only REWRITE an existing api_key line, never INSERT one. `vision`
+    is exactly that case — a local Ollama endpoint needs no key — so converting it to
+    DeepInfra left it uncredentialed and every image call returned
+    `401 missing API key`. The A/B's whole vision case (0/3, BOTH arms) was voided partly
+    by this.
+
+    The earlier fixture HAD an api_key line, so the tests exercised the rewrite path and
+    never the insert path. This one deliberately has none.
+    """
+    mgr = ModelAliasManager()
+    cfg = tmp_path / "llm_config.yaml"
+    cfg.write_text(
+        "vision:\n"
+        "  type: ollama\n"
+        "  config:\n"
+        "    model: minimax-m3:cloud\n"
+        "    base_url: http://127.0.0.1:11434\n"
+        "    fallback_model: kimi-k2.6:cloud\n"          # the line that broke adjacency
+        "llm:\n"
+        "  providers:\n"
+        "    deepinfra:\n"
+        "      base_url: https://api.deepinfra.com/v1/openai\n"
+        "      api_key: ${DEEPINFRA_API_KEY}\n"
+    )
+    mgr.llm_config_file = cfg
+    mgr._write_conversion(
+        [{"path": "vision.config.model", "model": "minimax-m3:cloud",
+          "new": "MiniMaxAI/MiniMax-M3", "status": "same"}], "deepinfra")
+
+    vision = yaml.safe_load(cfg.read_text())["vision"]["config"]
+    assert vision.get("api_key"), (
+        "vision has no api_key after conversion — every call will 401. The insert must "
+        "key off BLOCK MEMBERSHIP, not on api_key happening to follow base_url: here "
+        "`fallback_model` sits between them, which defeated the first attempt."
+    )
+
+
+def test_revert_DELETES_an_inserted_api_key_rather_than_restoring_a_literal(tmp_path):
+    """An inserted line did not exist before, so reverting must remove it.
+
+    Restoring the literal string 'ABSENT' would leave a bogus credential behind and
+    break the byte-identical round-trip that makes --revert trustworthy.
+    """
+    mgr = ModelAliasManager()
+    cfg = tmp_path / "llm_config.yaml"
+    original = (
+        "vision:\n"
+        "  type: ollama\n"
+        "  config:\n"
+        "    model: minimax-m3:cloud\n"
+        "    base_url: http://127.0.0.1:11434\n"
+        "llm:\n"
+        "  providers:\n"
+        "    deepinfra:\n"
+        "      base_url: https://api.deepinfra.com/v1/openai\n"
+        "      api_key: ${DEEPINFRA_API_KEY}\n"
+    )
+    cfg.write_text(original)
+    mgr.llm_config_file = cfg
+    mgr._write_conversion(
+        [{"path": "vision.config.model", "model": "minimax-m3:cloud",
+          "new": "MiniMaxAI/MiniMax-M3", "status": "same"}], "deepinfra")
+    assert yaml.safe_load(cfg.read_text())["vision"]["config"].get("api_key")
+
+    mgr.convert_revert(assume_yes=True)
+    assert cfg.read_text() == original, "revert did not remove the inserted api_key line"
+    assert "ABSENT" not in cfg.read_text()
+
+
+def test_existing_api_key_is_not_duplicated(tmp_path):
+    """A lane that already has a key must be rewritten, not given a second one."""
+    mgr = ModelAliasManager()
+    cfg = tmp_path / "llm_config.yaml"
+    cfg.write_text(
+        "arbitrator:\n"
+        "  type: openai\n"
+        "  config:\n"
+        "    model: glm-5.2:cloud\n"
+        "    api_key: \"ollama\"\n"
+        "    base_url: http://127.0.0.1:11434/v1\n"
+        "llm:\n"
+        "  providers:\n"
+        "    deepinfra:\n"
+        "      base_url: https://api.deepinfra.com/v1/openai\n"
+        "      api_key: ${DEEPINFRA_API_KEY}\n"
+    )
+    mgr.llm_config_file = cfg
+    mgr._write_conversion(
+        [{"path": "arbitrator.config.model", "model": "glm-5.2:cloud",
+          "new": "zai-org/GLM-5.2", "status": "same"}], "deepinfra")
+
+    assert cfg.read_text().count("api_key:") == 2, "api_key was duplicated"

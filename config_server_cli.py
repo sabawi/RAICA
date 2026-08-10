@@ -1153,6 +1153,28 @@ class ModelAliasManager:
         return 0
 
     _CONVERT_TAG = '# CONVERTED'
+    @staticmethod
+    def _block_has_api_key(lines, index, indent):
+        """Is there an api_key at the SAME indent within this block?
+
+        Scans both directions until the indent drops, which is the block boundary.
+        Without this the insert would duplicate a key that simply sits above base_url.
+        """
+        for step in (1, -1):
+            i = index + step
+            while 0 <= i < len(lines):
+                line = lines[i]
+                if not line.strip():
+                    i += step
+                    continue
+                cur = len(line) - len(line.lstrip())
+                if cur < len(indent):
+                    break
+                if cur == len(indent) and line.strip().startswith('api_key:'):
+                    return True
+                i += step
+        return False
+
     _KNOWN_PROVIDERS = {'ollama', 'openai', 'openrouter', 'deepinfra', 'qwen', 'gemini'}
 
     def _target_transport(self, target):
@@ -1198,6 +1220,7 @@ class ModelAliasManager:
         # openai and openrouter all at the target's base_url — which destroys the
         # provider definitions and makes --revert impossible.
         path_stack = []
+        converted_urls = []
         for index, line in enumerate(lines):
             stripped = line.lstrip()
             if stripped and not stripped.startswith('#'):
@@ -1242,6 +1265,7 @@ class ModelAliasManager:
                                 f"{self._CONVERT_TAG} -> {target} "
                                 f"(was {m_url.group(2)}){m_url.group(3)}")
                 written += 1
+                converted_urls.append(index)     # SI-017: this block may need an api_key
                 continue
 
             m_key = re.match(r'^(\s*api_key:\s*)(\S+)(.*)$', line)
@@ -1251,6 +1275,31 @@ class ModelAliasManager:
                                 f"{self._CONVERT_TAG} -> {target} "
                                 f"(was {m_key.group(2)}){m_key.group(3)}")
                 written += 1
+                continue
+
+        # SI-017 POST-PASS — insert a missing api_key.
+        #
+        # A lane moving from a KEYLESS provider to a credentialed one has NO api_key line
+        # to rewrite, and this writer could only rewrite, never insert. `vision` is exactly
+        # that case (a local Ollama endpoint needs no key), so converting it to DeepInfra
+        # left it uncredentialed and every image call returned `401 missing API key`.
+        #
+        # Done as a POST-PASS rather than inline: the first attempt inserted "on the line
+        # after base_url", which silently did nothing whenever that line was another model
+        # key — vision's base_url is followed by `fallback_model:`, so it was skipped. Block
+        # membership, not line adjacency, is the correct condition.
+        #
+        # Descending order so earlier insertions do not shift later indices.
+        if tgt_block.get('api_key'):
+            for url_index in sorted(converted_urls, reverse=True):
+                indent = re.match(r'^(\s*)', lines[url_index]).group(1)
+                if self._block_has_api_key(lines, url_index, indent):
+                    continue
+                lines.insert(url_index + 1,
+                             f"{indent}api_key: {tgt_block['api_key']}   "
+                             f"{self._CONVERT_TAG} -> {target} (was ABSENT)")
+                written += 1
+
         path.write_text('\n'.join(lines))
         return written
 
@@ -1286,8 +1335,11 @@ class ModelAliasManager:
             except (EOFError, KeyboardInterrupt):
                 print("\nAborted. Nothing was written.")
                 return 1
-        for index, m in planned:
-            lines[index] = f"{m.group(1)}{m.group(3)}{m.group(4)}"
+        for index, m in sorted(planned, key=lambda x: -x[0]):
+            if m.group(3) == 'ABSENT':
+                del lines[index]          # SI-017: the line did not exist before
+            else:
+                lines[index] = f"{m.group(1)}{m.group(3)}{m.group(4)}"
         path.write_text('\n'.join(lines))
         print(f"\n{Colors.OKGREEN}Reverted {len(planned)} lane(s).{Colors.ENDC}")
         print("Restart the server for this to take effect.")
