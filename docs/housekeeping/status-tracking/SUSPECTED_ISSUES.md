@@ -372,6 +372,33 @@ verbatim on sign-off.
 
 ## Resolved
 
+### SI-021 — The DR gap-assessment loop was DEAD for 7 builds  →  **FIXED 2026-08-10 (v1.0.0.247)**  [was P0, silently degraded every DR answer]
+- **Observed:** the user's `@Ask` benchmark prompt produced 4 rounds / 44 evidence / 171
+  sources on PROD (pre-fix code) but **2 rounds / 19 evidence** locally — *identically on
+  BOTH providers*, which is what exposed it.
+- **Cause (CONFIRMED, reproduced and falsified):** SI-015 (v1.0.0.240) defined
+  `_assess_max_tokens` on `ResearchPlanner` (engine.py:272) but it is consumed in
+  `DeepResearchEngine._assess` (engine.py:724) — a different class. Every assessment
+  raised `AttributeError: 'DeepResearchEngine' object has no attribute
+  '_assess_max_tokens'`. `_assess` wraps the call in a bare `except Exception` whose
+  legitimate purpose is "never lose a round to a transient assess error", so it logged a
+  warning and returned `{"status": "sufficient"}`. **DR never requested another round on
+  any prompt, for any provider, from v1.0.0.240 to v1.0.0.246** — while reporting success.
+- **Why it hid:** nothing failed, nothing 500'd, answers still looked good. The sibling
+  property `_planner_max_tokens` works because its consumer is in the same class, so the
+  commit looked symmetric. Same class as the swallowed `NameError` that killed
+  `search_web` for 6 days — see [[fastapi_server_re_import_gotcha]].
+- **Fix:** moved the property to `DeepResearchEngine`.
+- **Verified through the real @Ask path (not a unit test):** v1.0.0.247 / Ollama →
+  **4 rounds, 40 evidence, 161 sources, 595,254 chars, stop=max_rounds, 0 truncations**,
+  vs prod's 4 / 44 / 171 / 502,264 / max_rounds. Claims checked 123 with **3 unverified
+  vs prod's 12**.
+- **Collateral:** `docs/PROVIDER_AB_TEST_RESULTS.md` is **INVALID** — its entire DR half
+  measured this dead loop in both arms. Banner added; must be re-run.
+- **Tests:** `tests/unit/test_dr_gap_assessment_alive.py` — 3 of 5 FAIL on pre-fix code,
+  including a behavioural test that reproduces the exact production warning line.
+
+
 ### SI-018 — `convert` rewrote NON-LLM service endpoints  →  **FIXED 2026-08-10 (v1.0.0.246)**  [was P1, self-inflicted]
 - **Observed (2026-08-10, live):** a flood of `❌ Embedding generation failed: 404` →
   `❌ Batch failure: task 0 returned None` → `❌ UNHEALTHY`, ~3s apart, during a user query.

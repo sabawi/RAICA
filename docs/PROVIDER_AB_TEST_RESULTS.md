@@ -1,5 +1,28 @@
 # Provider A/B Results — Ollama-cloud vs DeepInfra
 
+> # ⛔ INVALID — DO NOT CITE THESE RESULTS (2026-08-10)
+>
+> Every run in this document executed against a **dead Deep Research gap-assessment
+> loop** (SI-021). From v1.0.0.240, `_assess_max_tokens` was defined on
+> `ResearchPlanner` but consumed in `DeepResearchEngine`, so every assessment raised
+> `AttributeError`, was swallowed by a catch-all, and returned `status=sufficient` on
+> the FIRST check. DR therefore stopped at `min_rounds` on every prompt, in BOTH ARMS.
+>
+> The DR half measured a crippled pipeline, so its headline findings — "D1 evidence
+> −48%", "groundedness −12.4pp", the one-armed 32000 truncation, and the whole
+> "planner assigns fewer sources per sub-question" mechanism — cannot be attributed to
+> the provider and are hereby withdrawn.
+>
+> **The tell was in the data and I missed it:** both arms returned IDENTICAL round and
+> evidence counts (2 rounds / 19 items). A provider comparison in which both arms agree
+> exactly is not measuring the provider. I attributed it to serving differences and
+> confound C4 instead.
+>
+> The non-DR half (§2) is unaffected — it does not traverse the DR loop.
+>
+> Superseded by a re-run on v1.0.0.247+. See `CHANGELOG_v1.0.0.247.md`.
+
+
 **Run:** 2026-08-09 → 2026-08-10 · **Against:** v1.0.0.243–245 · **Plan:**
 `docs/PROVIDER_AB_TEST_PLAN.md` (pre-registered)
 

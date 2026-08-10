@@ -269,10 +269,6 @@ class ResearchPlanner:
         return int(self._cfg.get("planner", {}).get("max_tokens", 4000))
 
     @property
-    def _assess_max_tokens(self) -> int:
-        return int(self._cfg.get("loop", {}).get("assess_max_tokens", 4000))
-
-    @property
     def _per_source_queries(self) -> bool:
         """v1.0.0.157: allow the planner to emit a per-source `queries` map so a source whose
         argument is NOT a natural-language search string (e.g. comprehensive_stock_analyzer wants
@@ -585,6 +581,23 @@ class DeepResearchEngine:
         self._dispatch = dispatch_tool
         self._cfg = engine_config or {}
         self._planner = ResearchPlanner(generate_stream, engine_config)
+
+    @property
+    def _assess_max_tokens(self) -> int:
+        """OUTPUT cap for the gap-assessment JSON call (SI-015).
+
+        SI-021: this property was defined on ResearchPlanner but CONSUMED here, in
+        DeepResearchEngine. Every assessment therefore raised
+        `AttributeError: 'DeepResearchEngine' object has no attribute
+        '_assess_max_tokens'`, which the caller's bare `except Exception` swallowed into
+        `→ treating as sufficient`. The gap-assessment loop was thus DEAD from
+        v1.0.0.240: DR never asked for another round and always stopped at min_rounds.
+        Measured on one prompt — prod (pre-fix) 4 rounds / 44 evidence / 171 sources
+        vs post-fix 2 rounds / 19 evidence / 63-93 sources, IDENTICALLY on both
+        providers, which is what exposed it: a provider A/B where both arms return the
+        same number is not measuring the provider.
+        """
+        return int(self._cfg.get("loop", {}).get("assess_max_tokens", 4000))
 
     @property
     def _allowed_sources(self) -> set:
