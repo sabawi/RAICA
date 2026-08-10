@@ -182,6 +182,12 @@ def _salvage_claim_objects(raw: str) -> List[Dict[str, Any]]:
     return objs
 
 
+# SI-025: inline artifact markers a TOOL rendered ([[chart:…]], [[image:…]], [[file:…]]).
+# They are the one part of an evidence block that cannot be re-derived from any other
+# source, and they sit at the block TAIL, so head-truncation destroys them first.
+_ARTIFACT_MARKER_RE = re.compile(r"\[\[(?:chart|image|file):[^\]]*\]\]")
+
+
 def _tok_truncate(text: str, max_tokens: int) -> str:
     if max_tokens <= 0:
         return ""
@@ -508,12 +514,44 @@ class ResearchSynthesizer:
         return int(self._cfg.get("verification", {}).get(
             "evidence_token_budget", max(1, int(self._evidence_token_budget * 0.55))))
 
+    @property
+    def _priority_sources(self) -> set:
+        """Sources whose output is COMPUTED and therefore irreplaceable (SI-025).
+
+        Web prose is redundant — five articles about a company say much the same thing, so
+        truncating one loses little. A tool block is not: the DCF, the ratio suite and the
+        rendered technical chart exist in exactly ONE place, cost real compute, and were
+        explicitly requested by the user. Under a flat "fair share" they are truncated
+        FIRST, because they are the largest blocks.
+        """
+        return set(self._cfg.get("synthesis", {}).get(
+            "priority_sources",
+            ["comprehensive_stock_analyzer", "get_stock_and_company_data"]))
+
+    @property
+    def _priority_budget_ceiling(self) -> float:
+        """Cap on the share of the budget priority sources may claim, so web evidence is
+        never starved to zero on a many-entity request."""
+        return float(self._cfg.get("synthesis", {}).get("priority_budget_ceiling", 0.70))
+
     def _allocate_token_budget(self, evidence: List[Dict[str, Any]],
                                budget: Optional[int] = None) -> List[int]:
         """
         Fair token allocation across sources so the evidence document fits the model window:
         small sources are kept whole; leftover budget is split among the large ones (which are
         truncated only if still over). Returns a per-item token cap aligned with `evidence`.
+
+        SI-025 — PRIORITY PASS. A flat fair-share is exactly wrong when a request names many
+        entities. The user's 8-stock query gathered 78 items / ~206K tokens against an 87K
+        budget, giving 1,115 tokens/item; each ~12K-token analyzer block was cut to ~9% of
+        itself, and because the analyzer appends its DCF and `[[chart:…]]` marker LAST, the
+        surviving head carried the company name while the computed valuation was destroyed.
+        The report then correctly said "No technical chart markers were provided in the
+        evidence" for all 8 stocks — the model was honest; the pipeline had starved it.
+
+        So computed blocks are served FIRST, up to `priority_budget_ceiling` of the budget,
+        and the remainder is shared fairly among the rest. Ordering within each group is
+        unchanged, and when everything fits this function is a no-op exactly as before.
         """
         budget = self._evidence_token_budget if budget is None else budget
         sizes = [_tok_count(e.get("content", "")) for e in evidence]
@@ -521,20 +559,41 @@ class ResearchSynthesizer:
             return sizes  # everything fits — no truncation
 
         n = len(evidence)
-        fair = max(1, budget // n)
         caps = [0] * n
-        large_idx = []
+        prio = self._priority_sources
+        prio_idx = [i for i, e in enumerate(evidence) if e.get("source") in prio]
+        rest_idx = [i for i in range(n) if i not in set(prio_idx)]
+
         remaining = budget
-        for i, sz in enumerate(sizes):
-            if sz <= fair:
-                caps[i] = sz
-                remaining -= sz
+        if prio_idx:
+            # Serve computed blocks first, bounded so scraped evidence keeps a real share.
+            prio_pool = int(budget * self._priority_budget_ceiling)
+            need = sum(sizes[i] for i in prio_idx)
+            if need <= prio_pool:
+                for i in prio_idx:
+                    caps[i] = sizes[i]                     # kept WHOLE — chart + DCF survive
+                remaining -= need
             else:
-                large_idx.append(i)
-        if large_idx:
-            share = max(1, remaining // len(large_idx))
-            for i in large_idx:
-                caps[i] = share
+                share = max(1, prio_pool // len(prio_idx))
+                for i in prio_idx:
+                    caps[i] = min(sizes[i], share)
+                remaining -= sum(caps[i] for i in prio_idx)
+
+        # Original fair-share behaviour, applied to whatever is left.
+        pool = [i for i in rest_idx]
+        if pool:
+            fair = max(1, remaining // len(pool))
+            large_idx = []
+            for i in pool:
+                if sizes[i] <= fair:
+                    caps[i] = sizes[i]
+                    remaining -= sizes[i]
+                else:
+                    large_idx.append(i)
+            if large_idx:
+                share = max(1, remaining // len(large_idx))
+                for i in large_idx:
+                    caps[i] = share
         return caps
 
     # ---- shared: build the annotated evidence document (budgeted to the model window) ----
@@ -547,7 +606,17 @@ class ResearchSynthesizer:
         for e, cap in zip(evidence, caps):
             content = e.get("content", "")
             if _tok_count(content) > cap:
+                # SI-025: rescue rendered-artifact markers before cutting. `_tok_truncate`
+                # keeps the HEAD, and comprehensive_stock_analyzer appends its
+                # `[[chart:…]]` marker LAST — so a truncated block loses the one thing that
+                # cannot be re-derived from any other source, while keeping redundant prose.
+                # A marker is ~100 chars; re-attaching costs nothing and is the difference
+                # between a rendered chart and "no chart markers were provided".
+                _markers = _ARTIFACT_MARKER_RE.findall(content)
                 content = _tok_truncate(content, cap) + "\n[…source truncated to fit context budget…]"
+                _kept = [m for m in _markers if m not in content]
+                if _kept:
+                    content += "\n" + "\n".join(_kept)
                 truncated += 1
             _block_urls = [u for u in (e.get("urls", []) or []) if u]
             tiers = sorted({credibility.get(_domain_of(u), "unknown") for u in _block_urls})

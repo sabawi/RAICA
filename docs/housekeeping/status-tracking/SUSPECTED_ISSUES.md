@@ -11,6 +11,46 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-024 — Evidence budgeting silently DISCARDS computed tool output  →  **SUPERSEDED by SI-025, FIXED 2026-08-10 (v1.0.0.250)**  [was P1]
+- **Observed (2026-08-10, user's 8-stock @Ask query):** the report said *"No technical chart
+  markers were provided in the evidence"* for **all 8 stocks** and contained **zero DCF
+  intrinsic values** — despite the user explicitly asking for the structured analyzer at
+  full detail and for DCF values to be labelled.
+- **The tools RAN and SUCCEEDED.** Log: 8/8 `Calculating DCF for {KO,JPM,BRK-B,CROX,RIVN,
+  PLUG,FUBO,RBRK}` and 8/8 `🖼️ chart marker EMITTED`, all during the DR gather
+  (11:22:02–11:23:17), before `Deep research complete` at 11:24:39.
+- **CAUSE (confirmed by contrast, not by inspection alone):**
+  `SynthesisEngine._allocate_token_budget` divides `evidence_token_budget: 87000` across
+  the evidence pool. Two runs in the SAME log:
+
+  | run | items | chars | truncated | markers reaching synthesis |
+  |---|---|---|---|---|
+  | 10:33 (2 stocks) | 28 | 242,127 | 6/28 | **evidence=2** ✅ |
+  | 11:21 (8 stocks) | 78 | 824,053 | **50/78 (~100,729 tokens)** | **evidence=0** ❌ |
+
+  `fair = 87000 // 78 ≈ 1,115 tokens/item`. `_tok_truncate` keeps `toks[:max_tokens]` —
+  the **HEAD**. The analyzer appends `tech_block` (which carries the `[[chart:…]]` marker)
+  LAST, at `comprehensive_stock_analyzer.py:907`, after fundamentals/ratios/DCF/projections.
+  So the cut lands squarely on the technical + chart + DCF sections.
+- **Falsifying detail that CONFIRMS rather than merely fits:** the report DID carry 50-day
+  MA, 200-day MA, RSI and 52-week range for all 8 — those sit in the HEAD of the block and
+  survived. Only tail-resident content vanished. A different cause (tool failure, marker
+  stripping, whitelist) would have removed both.
+- **The LLM was honest.** "No technical chart markers were provided in the evidence" was
+  literally TRUE of the evidence it received. The pipeline starved it; the model reported
+  the starvation correctly. This is NOT a synthesis-prompt defect.
+- **Severity:** the MORE entities a user asks about, the LESS computed detail each one gets,
+  silently, and the loss falls on the most expensive content (DCF, charts) purely because
+  of where it sits in the block. Scales exactly the wrong way.
+- **Fix direction (NOT yet implemented, needs sign-off):** (a) extract `[[chart:…]]`
+  markers from a block BEFORE truncation and re-attach after — they cost ~100 chars each,
+  so survival is nearly free; (b) give COMPUTED tool blocks a larger budget share than
+  scraped web prose, which is redundant and compressible; (c) reorder the analyzer so
+  computed results (DCF, technicals) precede bulk narrative. (a)+(b) are the targeted pair.
+- **Clear only when:** an 8-ticker query renders per-ticker charts and DCF values, asserted
+  by a test that fails on current code.
+
+
 ### SI-017 — `convert` cannot ADD an `api_key` to a lane that lacks one  [P2 — CONFIRMED]
 - **Observed (2026-08-10, A/B run):** every DeepInfra-arm vision call failed
   `API error: 401 - missing API key`.
@@ -371,6 +411,55 @@ verbatim on sign-off.
 ---
 
 ## Resolved
+
+### SI-025 — Duplicate YAML key halved the synthesis budget; flat truncation then destroyed computed tool output  →  **FIXED 2026-08-10 (v1.0.0.250)**  [was P0 — the product's flagship feature, unusable above ~3 tickers]
+- **Reported by the user:** an 8-stock `@Ask` query returned *"No technical chart markers were
+  provided in the evidence"* for **all 8** stocks and **zero DCF values**, while the July prod
+  run on 7 stocks delivered per-stock charts AND per-stock DCFs. **I initially and wrongly
+  claimed prod had never been asked a multi-ticker question — the user refuted it with the
+  prod output. That claim is retracted.**
+- **THREE COMPOUNDING DEFECTS:**
+  1. **Duplicate YAML key (pre-existing, prod too).** `verification:` sat at synthesis-child
+     depth with its five children at the SAME depth, so YAML made them `synthesis` siblings
+     and the verifier's `evidence_token_budget: 87000` silently overrode
+     `synthesis.evidence_token_budget: 160000` (last key wins). The code reads verification
+     at ENGINE level, so its settings were never read at all. Three values ran at ~half their
+     intended size for the config's whole life: synthesis budget 87,000 (vs 160,000),
+     verify budget 47,850 (vs 87,000), verify max_tokens 12,000 (vs 24,000).
+  2. **My SI-021 fix removed an accidental safeguard.** Prod's gap assessor was broken by a
+     900-token cap, so DR stopped at 2 rounds / ~34K tokens — under budget BY LUCK. Reviving
+     it took gathering to 4 rounds / ~206K tokens, overflowing an already-undersized budget.
+     Correct research behaviour; it is why the user hit this and prod did not.
+  3. **Flat fair-share truncation cut the wrong content.** Web prose is redundant; a tool
+     block is not — its DCF, ratios and rendered chart exist in ONE place. Being the largest
+     blocks they were cut hardest, and `_tok_truncate` keeps the HEAD while the analyzer
+     appends its `[[chart:…]]` marker LAST, so the irreplaceable tail died first.
+- **Measured on the user's exact profile (78 items / ~206K tokens):**
+
+  | allocator | analyzer block kept | DCF + chart |
+  |---|---|---|
+  | OLD flat-share @87k (what ran) | **9%** | LOST |
+  | OLD flat-share @160k (config fix ALONE) | **52%** | **still LOST** |
+  | NEW priority @160k | **100%** | **SURVIVE** |
+
+  The middle row is why the config fix alone was insufficient and the allocator had to change.
+- **Fix:** (a) MERGE the stranded settings into the ALREADY-EXISTING `engine.verification:`
+  block, and delete them from `synthesis:`. **First attempt was wrong and the repo's own
+  `test_no_duplicate_yaml_keys_under_engine` caught it:** simply dedenting the stranded block
+  created a SECOND engine-level `verification:`, and YAML taking the last silently downgraded
+  `max_tokens` 32000 -> 24000 — reproducing the exact bug class being fixed. The merge keeps
+  32000 and leaves exactly one block;
+  (b) priority-aware allocation — computed sources (`synthesis.priority_sources`) are served
+  first up to `priority_budget_ceiling` (0.70), remainder shared fairly; (c) rescue
+  `[[chart:|image:|file:]]` markers from a truncated block and re-attach them.
+- **VERIFIED END-TO-END on the user's exact 8-stock prompt (v1.0.0.250):**
+  `synth chart-markers — evidence=20 prompt=40 draft=20`, `charts_required=20
+  charts_placed=20`, **8/8 tickers with DCF values, 8/8 with charts and technicals**, and the
+  phrase *"no technical chart markers"* appears **0** times (was 8).
+  **Now exceeds prod:** 110 evidence vs 23, 277 sources vs 88, 20 charts vs 7, 8 DCFs vs 7.
+- **Tests:** `tests/unit/test_evidence_budget_priority.py` — 10 tests; **5 fail cleanly** when
+  only the config is reverted, and the regression test asserts the 160k-alone case STILL fails.
+
 
 ### SI-022 — A constant standing in for evidence in BOTH growth models  →  **FIXED 2026-08-10 (v1.0.0.248)**  [was P1, distorted every valuation]
 - **Origin:** user's independent review of a real NVDA/AAPL report: *"rigorous-looking

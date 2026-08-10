@@ -511,6 +511,19 @@ deep_research:
                                  # so late claims go unverified while grounding still
                                  # reports coverage. The code comment already warned this
                                  # "must be generous"; 12000 was not.
+      # SI-025: these four lived under `synthesis:` at the WRONG indentation, so YAML made
+      # them synthesis siblings and `evidence_token_budget: 87000` silently overrode
+      # synthesis's 160000 (last key wins). The code reads them HERE, at engine level, so
+      # none of them were ever applied. `max_tokens` is NOT re-added: the 32000 above
+      # supersedes the stranded 24000.
+      enabled: true
+      # A claim needs at least this many independent sources to be labeled "supported".
+      min_corroborating_sources: 2
+      # Evidence document sent to the VERIFIER — deliberately below the synthesis budget
+      # so the verify INPUT does not fill the window and starve the output JSON.
+      evidence_token_budget: 87000
+      # Model that EXTRACTS + VERIFIES claims. null = primary (gemma4:31b rubber-stamped).
+      verify_model: null
     model: deepseek-v4-flash:cloud           # LIGHT — default for all small DR calls
     heavy_model: deepseek-v4-pro:cloud       # HEAVY — large-payload calls (e.g. synthesis)
     heavy_threshold_chars: 20000             # prompt chars at/above which -> heavy_model (pro). 20000 =
@@ -675,6 +688,17 @@ deep_research:
       # (context_window_size, 200000 tokens) minus headroom for instructions + the generated answer.
       # Raised 110000 -> 160000 (+45%) to retain more evidence on large research runs.
       evidence_token_budget: 160000
+      # SI-025 — sources whose output is COMPUTED and therefore irreplaceable. Web prose is
+      # redundant (five articles say much the same), so truncating one loses little; a tool
+      # block's DCF, ratio suite and rendered chart exist in exactly ONE place. Under a flat
+      # fair-share these were truncated FIRST because they are the largest blocks, and since
+      # the analyzer appends its [[chart:...]] marker LAST, head-truncation destroyed exactly
+      # the part that cannot be re-derived. Served first now, bounded by the ceiling below so
+      # scraped evidence is never starved on a many-entity request.
+      priority_sources:
+        - comprehensive_stock_analyzer
+        - get_stock_and_company_data
+      priority_budget_ceiling: 0.70
       # Max tokens for the generated answer. Deep research has rich evidence to draw on;
       # give the model room to elaborate fully (kept well within the model window).
       max_answer_tokens: 32000   # 8000→16000→32000: 16000 hit 100% of cap on a 5-stock full-detail report
@@ -708,26 +732,6 @@ deep_research:
         enabled: true
         max_repair_passes: 3       # bounded LLM re-place attempts before returning the best draft
         min_content_ratio: 0.85    # reject a repair that keeps < this fraction of the draft's length
-      verification:
-      enabled: true
-      # A claim needs at least this many independent sources to be labeled "supported".
-      min_corroborating_sources: 2
-      # Output token budget for the verification JSON (maps to Ollama num_predict via
-      # research/_collect_stream). A long answer yields a large claim list; the salvage parser
-      # recovers complete claims if the JSON is still cut off, so verify never returns 0.
-      # Raised 16000 -> 24000 in step with max_answer_tokens (16000 -> 32000): a longer answer has
-      # more claims to verify, so give the claim-list JSON proportional room (salvage still backstops).
-      max_tokens: 24000
-      # Token budget for the EVIDENCE document sent to the verifier. Kept well below the full
-      # synthesis budget so the verify INPUT does not fill the context window and starve the
-      # output. Raised 60000 -> 87000 (+45%) alongside the larger context window (200000).
-      evidence_token_budget: 87000
-      # Model that EXTRACTS + VERIFIES claims against the evidence. null = primary.
-      # More mechanical than arbitration, so a lower quality-risk place to use a faster model.
-      # NOTE (2026-06-01 test): gemma4:31b here checked half as many claims (13 vs 26) and
-      # flagged none (rubber-stamped all 'supported') vs deepseek catching an unverified one.
-      # ~19s faster but weakened the hallucination safety net — keep at null.
-      verify_model: null # setting it to null will default to primary model
     arbitration:
       # Run synthesis on multiple models and reconcile disagreements. Set enabled:false
       # to skip the extra model cost (single-model synthesis still gets verified).

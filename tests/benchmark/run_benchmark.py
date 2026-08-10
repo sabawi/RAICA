@@ -99,17 +99,17 @@ def run_tier1(live, repeats, update_baseline, reason):
     from datetime import datetime, timezone
     from lib import scoring as S
     from lib import raica_client as RC
-    from scenarios import s1_news_citation, s2_dr_email_delivery, s3_vision
+    from scenarios import s1_news_citation, s2_dr_email_delivery, s3_vision, s4_multi_ticker_dr
 
     base = RC.LIVE_BASE if live else RC.LOCAL_BASE
     print(f"\n{'='*78}\n  RAICA BENCHMARK — Tier 1 (golden scenarios)  [{'LIVE' if live else 'LOCAL'} {base}]\n{'='*78}")
-    SCENARIOS = [s1_news_citation, s3_vision, s2_dr_email_delivery]  # S2 (DR) last — it's the slow one
+    SCENARIOS = [s1_news_citation, s3_vision, s2_dr_email_delivery, s4_multi_ticker_dr]  # S2 (DR) last — it's the slow one
     baseline_path = os.path.join(BENCH_DIR, "baseline.json")
     baseline = S.load_baseline(baseline_path)
 
     all_metrics = []
     for mod in SCENARIOS:
-        reps = 1 if mod.SCENARIO == "S2_dr_delivery" else repeats   # DR ~5 min: single run
+        reps = 1 if mod.SCENARIO in ("S2_dr_delivery", "S4_multi_ticker_dr") else repeats   # DR ~5 min: single run
         print(f"  ▶ {mod.SCENARIO}  (x{reps}) ...", flush=True)
         try:
             all_metrics.extend(S.median_runs(mod.run(base, reps)))

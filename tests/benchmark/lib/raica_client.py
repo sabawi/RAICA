@@ -122,14 +122,45 @@ def resolve_ratio(urls, timeout=15):
 
 
 def log_window_since(t_start):
-    """Return server-log lines written since epoch t_start (best-effort; LOCAL only)."""
+    """Return server-log lines written since epoch t_start (best-effort; LOCAL only).
+
+    The previous implementation IGNORED t_start and returned the last 4000 lines, so every
+    log-derived metric silently absorbed whatever the PREVIOUS scenario had written. It
+    showed up on 2026-08-10 as three different scenarios all reporting
+    `sources_truncated=17`, and as an immigration-simulation run whose "chart markers" were
+    the stock tickers from the scenario before it. Log-derived metrics were therefore not
+    measurements at all.
+
+    Now filters on the log's own timestamp prefix ('MM/DD/YYYY HH:MM:SS AM - '), falling
+    back to the old behaviour only if nothing parses (so a log-format change degrades to
+    noisy rather than empty).
+    """
     if not os.path.exists(SERVER_LOG):
         return []
     try:
         with open(SERVER_LOG, encoding="utf-8", errors="replace") as f:
-            return f.read().splitlines()[-4000:]
+            lines = f.read().splitlines()
     except Exception:
         return []
+
+    import datetime as _dt
+    stamp = re.compile(r"^(\d{2}/\d{2}/\d{4} \d{1,2}:\d{2}:\d{2} [AP]M) - ")
+    start_i, seen = None, False
+    for i, ln in enumerate(lines):
+        m = stamp.match(ln)
+        if not m:
+            continue
+        seen = True
+        try:
+            ts = _dt.datetime.strptime(m.group(1), "%m/%d/%Y %I:%M:%S %p").timestamp()
+        except ValueError:
+            continue
+        if ts >= t_start - 2:          # 2s slack for clock/flush skew
+            start_i = i
+            break
+    if not seen:
+        return lines[-4000:]           # unparseable format -> old behaviour
+    return lines[start_i:] if start_i is not None else []
 
 
 def vision_seconds(log_lines):
