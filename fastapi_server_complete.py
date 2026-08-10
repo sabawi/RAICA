@@ -9466,8 +9466,33 @@ async def llama_stream(request: Request):
                                         # Execute image_to_text tool
                                         import time
                                         start_time = time.time()
+                                        # SI-016 (v1.0.0.245): FORWARD THE USER'S QUESTION.
+                                        #
+                                        # This call previously passed NO prompt, so image_to_text
+                                        # fell back to its generic default (image_to_text.py:146):
+                                        #   "Analyze this image thoroughly and describe what you
+                                        #    see in detail. Extract any visible text accurately.
+                                        #    USER PROMPT: "        <- empty
+                                        # The vision model was asked to DESCRIBE the image, never to
+                                        # answer what the user actually asked. Whether the answer
+                                        # happened to contain the requested information was luck —
+                                        # which is why this failed intermittently rather than always.
+                                        #
+                                        # Measured, same image and model, 3 runs each:
+                                        #   without the user prompt -> transcribed 0/3
+                                        #                              ("# Image Analysis / a simple
+                                        #                               minimalist rectangular box")
+                                        #   with    the user prompt -> transcribed 3/3
+                                        #                              ("The text reads: RAICA AB
+                                        #                               TEST8317")
+                                        #
+                                        # The arbitrator was then RIGHT to mark the result BAD — a
+                                        # composition analysis does not answer "transcribe the text"
+                                        # — but its retry could not succeed, because the image had
+                                        # already been consumed (see the image_exists note below).
                                         result = await image_tool.execute(
                                             images=images_data,
+                                            prompt=user_prompt,
                                             processing_mode="sequential",  # Use sequential for forced processing
                                             quality="high"
                                         )
