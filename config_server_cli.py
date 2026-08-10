@@ -1219,6 +1219,25 @@ class ModelAliasManager:
         # blindly also hit the `providers:` DEFINITION blocks and pointed ollama,
         # openai and openrouter all at the target's base_url — which destroys the
         # provider definitions and makes --revert impossible.
+        # ...and ONLY inside a block that is actually a CONVERTING LLM LANE.
+        # The guard used to be a DENYLIST (_INERT_SEGMENTS), i.e. "anything not a
+        # preset/fallback/provider-definition is an LLM lane". That is false: the config
+        # also holds non-LLM services that carry base_url/api_key. A real conversion
+        # rewrote 10 lines across 5 of them (SI-018) — including the embedding service,
+        # whose `model_name:` discovery never touches, so it kept an OpenAI model id
+        # while being pointed at DeepInfra: 404 on every embedding call.
+        #
+        # So the allowlist is derived from the conversion plan itself. A block can only
+        # be transport-converted if a model INSIDE it is being converted, which makes
+        # discovery and rewriting agree by construction rather than by two lists that
+        # have to be kept in sync.
+        lane_blocks = {row['path'].rsplit('.', 1)[0]
+                       for row in active if row.get('path')}
+
+        def in_converting_lane(current_path):
+            return any(current_path == block or block.startswith(current_path + '.')
+                       for block in lane_blocks)
+
         path_stack = []
         converted_urls = []
         for index, line in enumerate(lines):
@@ -1231,7 +1250,13 @@ class ModelAliasManager:
                 if key_match:
                     path_stack.append((indent, key_match.group(1)))
             segments = {seg for _, seg in path_stack}
-            in_definition_block = bool(segments & self._INERT_SEGMENTS)
+            # `path_stack` includes the key on the CURRENT line, so drop it to get the
+            # enclosing block's path.
+            current_path = '.'.join(seg for _, seg in path_stack[:-1])
+            # Belt and braces: an inert segment is never convertible even if some lane
+            # path were to imply otherwise.
+            in_definition_block = (bool(segments & self._INERT_SEGMENTS)
+                                   or not in_converting_lane(current_path))
 
             if self._CONVERT_TAG in line:
                 continue

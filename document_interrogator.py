@@ -127,6 +127,7 @@ def _load_embedding_config() -> Dict[str, Any]:
             'adaptive_mode_enabled': embedding_config.get('batch_processing', {}).get('adaptive_mode_enabled', True),
             'min_batch_size': embedding_config.get('batch_processing', {}).get('min_batch_size', 1),
             'adaptive_reduction_factor': embedding_config.get('batch_processing', {}).get('adaptive_reduction_factor', 0.5),
+            'max_recovery_cycles': embedding_config.get('batch_processing', {}).get('max_recovery_cycles', 3),
 
             # Document processing configuration
             'chunk_size': doc_config.get('document_processing', {}).get('chunk_size', 1000),
@@ -159,6 +160,7 @@ def _load_embedding_config() -> Dict[str, Any]:
             'adaptive_mode_enabled': True,
             'min_batch_size': 1,
             'adaptive_reduction_factor': 0.5,
+            'max_recovery_cycles': 3,
             'chunk_size': 1000,
             'chunk_overlap': 200,
             'min_chunk_length': 10,
@@ -210,6 +212,7 @@ STARTUP_INITIALIZATION_DELAY = _EMBEDDING_CONFIG['startup_initialization_delay']
 ADAPTIVE_BATCH_MODE_ENABLED = _EMBEDDING_CONFIG['adaptive_mode_enabled']
 MIN_BATCH_SIZE = _EMBEDDING_CONFIG['min_batch_size']
 ADAPTIVE_BATCH_REDUCTION_FACTOR = _EMBEDDING_CONFIG['adaptive_reduction_factor']
+MAX_RECOVERY_CYCLES = _EMBEDDING_CONFIG['max_recovery_cycles']
 BATCH_DELAY_SECONDS = _EMBEDDING_CONFIG['batch_delay']
 
 # Existing server integration
@@ -997,8 +1000,17 @@ class FAISSDocumentStore:
             current_batch_size = DEFAULT_BATCH_SIZE  # Start with configured batch size
             all_embeddings = []
             processed_count = 0
-
-            logger.info(f"🔄 Processing {len(texts)} embeddings with batch_size={current_batch_size} (adaptive mode: {ADAPTIVE_BATCH_MODE_ENABLED})")
+            # SI-019 damper. The `range(2)` recovery budget below lives INSIDE this
+            # while-loop, so it restarts at 1 on every iteration and can never be
+            # exhausted. For a cloud provider `_restart_embedding_service()` returns
+            # True unconditionally ("nothing to restart") without verifying anything,
+            # so a PERMANENT failure — a bad endpoint, a dead key, a quota wall — became
+            # an unbounded detect/compensate cycle: fail -> "✅ recovered" -> retry ->
+            # fail, ~3s apart, forever, at zero progress. Observed 2026-08-10: 6,614
+            # cycles and a 9.1MB log from one misconfigured endpoint.
+            # This counter is the line that makes cycle N+1 impossible: it is scoped to
+            # the whole call, not to one iteration, so it survives the `continue`.
+            recovery_cycles = 0
 
             while processed_count < len(texts):
                 # Calculate batch boundaries
@@ -1040,16 +1052,40 @@ class FAISSDocumentStore:
                     logger.warning(f"🔍 Embedding health check ({EMBEDDING_PROVIDER}): {'✅ HEALTHY' if is_service_healthy else '❌ UNHEALTHY'}")
 
                     if not is_service_healthy:
+                        # SI-019 damper — checked BEFORE recovering, so cycle
+                        # MAX_RECOVERY_CYCLES+1 cannot start. Without this the loop is
+                        # unbounded: recovery "succeeds" (cloud = no-op), the batch
+                        # fails again, and the per-attempt budget below resets.
+                        recovery_cycles += 1
+                        if recovery_cycles > MAX_RECOVERY_CYCLES:
+                            logger.error(
+                                f"🛑 Embedding service still UNHEALTHY after "
+                                f"{MAX_RECOVERY_CYCLES} recovery cycles — giving up "
+                                f"rather than retrying forever")
+                            logger.error(f"   Provider: {EMBEDDING_PROVIDER}, URL: {EMBEDDING_SERVICE_URL}")
+                            logger.error(f"   Model: {EMBEDDING_MODEL_NAME}")
+                            logger.error(f"   Progress: {processed_count}/{total_chunks} embeddings processed")
+                            logger.error(f"   A persistent 404/401 here usually means the endpoint "
+                                         f"does not serve this model — check that base_url and "
+                                         f"model_name belong to the SAME provider.")
+                            return None
+
                         logger.error(f"🚨 EMBEDDING SERVICE UNHEALTHY ({EMBEDDING_PROVIDER}) - Attempting recovery")
                         logger.error(f"   Progress: {processed_count}/{total_chunks} embeddings processed")
                         logger.error(f"   Current batch_size: {current_batch_size}")
+                        logger.error(f"   Recovery cycle {recovery_cycles}/{MAX_RECOVERY_CYCLES}")
 
                         # Attempt to restart/recover embedding service
                         restart_success = False
                         for restart_attempt in range(2):  # Try 2 restart attempts
                             logger.info(f"🔄 Embedding service recovery attempt {restart_attempt + 1}/2...")
                             if await self._restart_embedding_service():
-                                logger.info(f"✅ Embedding service recovered successfully")
+                                # NOT a verified recovery. For a cloud provider this
+                                # returns True having done nothing at all, so claiming
+                                # "recovered successfully" put a false success in the
+                                # log 6,614 times while zero progress was being made.
+                                logger.info(f"↩️ Embedding service ready to retry "
+                                            f"(recovery reported OK — not yet verified)")
                                 restart_success = True
                                 break
                             else:

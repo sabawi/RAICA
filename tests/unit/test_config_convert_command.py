@@ -350,3 +350,65 @@ def test_existing_api_key_is_not_duplicated(tmp_path):
           "new": "zai-org/GLM-5.2", "status": "same"}], "deepinfra")
 
     assert cfg.read_text().count("api_key:") == 2, "api_key was duplicated"
+
+
+def test_non_llm_service_blocks_are_never_rewritten(tmp_path):
+    """Converting the LLM provider must not touch services that are NOT LLM lanes.
+
+    SI-018. The transport guard was a DENYLIST (`model_presets`/`fallback`/`providers`),
+    so every OTHER block carrying a base_url was assumed to be an LLM lane. It is not.
+    A real `convert --to deepinfra` on 2026-08-10 rewrote 10 lines across 5 unrelated
+    services:
+
+      document_interrogator.embedding.service -> DeepInfra, while `model_name:` stayed
+        `text-embedding-3-small` (untouched, because discovery matches `model`/`*_model`
+        and not `model_name`). DeepInfra does not serve that model at that path, so
+        EVERY embedding call 404'd.
+      flight_search.apis.{amadeus,skyscanner,serpapi,rapidapi_skyscanner} -> their
+        vendor API keys replaced with ${DEEPINFRA_API_KEY}.
+
+    The root defect is that `_discover_lanes` and `_write_conversion` DISAGREED about
+    what a lane is. The fix makes transport rewriting follow discovery, so a config
+    block can never be transport-converted unless discovery calls it a lane.
+    """
+    mgr = ModelAliasManager()
+    cfg = tmp_path / "llm_config.yaml"
+    cfg.write_text(
+        "document_interrogator:\n"
+        "  embedding:\n"
+        "    provider: openai\n"
+        "    model_name: text-embedding-3-small\n"
+        "    service:\n"
+        "      base_url: https://api.openai.com/v1\n"
+        "      api_key: ${OPENAI_API_KEY}\n"
+        "llm:\n"
+        "  primary:\n"
+        "    type: ollama\n"
+        "    config:\n"
+        "      model: deepseek-v4-pro:cloud\n"
+        "      base_url: http://127.0.0.1:11434/v1\n"
+        "flight_search:\n"
+        "  apis:\n"
+        "    serpapi:\n"
+        "      api_key: ${SERPAPI_API_KEY}\n"
+        "      base_url: https://serpapi.com/search.json\n"
+    )
+    mgr.llm_config_file = cfg
+    mgr._write_conversion(
+        [{"path": "llm.primary.config.model", "model": "deepseek-v4-pro:cloud",
+          "new": "deepseek-ai/DeepSeek-V4-Pro", "status": "same"}], "deepinfra")
+
+    out = yaml.safe_load(cfg.read_text())
+
+    # the LLM lane DID convert — otherwise this test would pass by doing nothing
+    assert out["llm"]["primary"]["config"]["model"] == "deepseek-ai/DeepSeek-V4-Pro"
+    assert out["llm"]["primary"]["type"] == "deepinfra"
+
+    emb = out["document_interrogator"]["embedding"]
+    assert emb["service"]["base_url"] == "https://api.openai.com/v1", \
+        "embedding endpoint was repointed at the LLM provider -> 404 on every embed"
+    assert emb["service"]["api_key"] == "${OPENAI_API_KEY}"
+
+    sp = out["flight_search"]["apis"]["serpapi"]
+    assert sp["api_key"] == "${SERPAPI_API_KEY}", "third-party vendor key was clobbered"
+    assert sp["base_url"] == "https://serpapi.com/search.json"

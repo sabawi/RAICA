@@ -28,6 +28,11 @@ document_interrogator:
       adaptive_mode_enabled: true
       min_batch_size: 1
       adaptive_reduction_factor: 0.5
+      # SI-019: hard ceiling on service-recovery cycles for ONE embedding call.
+      # Recovery for a cloud provider is a no-op that reports success without
+      # verifying, so a permanently-failing endpoint otherwise retries forever
+      # (6,614 cycles / 9.1MB of log observed 2026-08-10). Bounded here instead.
+      max_recovery_cycles: 3
     # To revert to local Ollama embeddings, use this config:
     # provider: ollama
     # model_name: mxbai-embed-large

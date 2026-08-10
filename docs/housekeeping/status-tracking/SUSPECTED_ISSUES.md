@@ -372,6 +372,61 @@ verbatim on sign-off.
 
 ## Resolved
 
+### SI-018 — `convert` rewrote NON-LLM service endpoints  →  **FIXED 2026-08-10 (v1.0.0.246)**  [was P1, self-inflicted]
+- **Observed (2026-08-10, live):** a flood of `❌ Embedding generation failed: 404` →
+  `❌ Batch failure: task 0 returned None` → `❌ UNHEALTHY`, ~3s apart, during a user query.
+- **Cause (verified by diff against HEAD, not by inspection):** `convert --to <provider>` guarded
+  transport rewrites with a **DENYLIST** — `_INERT_SEGMENTS = {model_presets, fallback, providers}` —
+  i.e. "any block that is not one of these is an LLM lane." False. The config also holds non-LLM
+  services carrying `base_url`/`api_key`. A real conversion rewrote **10 lines across 5 services**:
+  - `document_interrogator.embedding.service` → DeepInfra, while `model_name:` stayed
+    `text-embedding-3-small`. Discovery matches `model`/`*_model`/`selected_model` — **not**
+    `model_name` — so the model was left behind and every embedding call 404'd.
+  - `flight_search.apis.{amadeus,skyscanner,serpapi,rapidapi_skyscanner}` → vendor API keys
+    replaced with `${DEEPINFRA_API_KEY}`.
+- **Root defect:** `_discover_lanes` and `_write_conversion` DISAGREED about what a lane is. The
+  denylist had to be maintained in parallel with discovery, and was not.
+- **Fix:** the transport allowlist is now derived from the conversion plan itself — a block is
+  transport-converted only if a model *inside it* is being converted. Discovery and rewriting agree
+  by construction, so a new non-LLM service can never be swept in.
+- **Verified through the real command, not just unit tests:** `convert --revert` → byte-identical to
+  HEAD; `convert --to deepinfra` → **10 LLM-lane transport lines converted, 0 non-LLM lines touched**;
+  all 5 previously-corrupted services intact. Embedding endpoint re-invoked directly: HTTP 200,
+  1536-dim vector. Test `test_non_llm_service_blocks_are_never_rewritten` FAILS on the pre-fix code.
+- **Note:** the FRED/World-Bank `discovery.type` lines were *suspected* but proved **not** corrupted —
+  the `_KNOWN_PROVIDERS` condition already excluded them. Confirmed by diff before claiming impact.
+
+### SI-019 — Embedding recovery was an UNBOUNDED detect/compensate loop  →  **FIXED 2026-08-10 (v1.0.0.246)**  [was P1, pre-existing]
+- **Observed:** **6,614 recovery cycles** and a **9.1 MB** log from one bad endpoint, still spinning
+  when found, at `Progress: 0/5 embeddings processed` throughout.
+- **Cause:** the `for restart_attempt in range(2)` budget lives **inside** the `while processed_count`
+  batch loop it is meant to bound, so it restarts at 1 on every iteration and can never be exhausted.
+  `_restart_embedding_service()` returns `True` **unconditionally** for any non-Ollama provider
+  ("cloud-based, no restart needed") **without verifying anything**, so the code logged
+  `✅ Embedding service recovered successfully` 6,614 times while the service was dead, then
+  `continue`d. Classic control loop: it reacted to an actor that simply acted again, with no damper.
+- **Fix:** `recovery_cycles` is scoped to the whole call (initialised *before* the `while`), checked
+  *before* recovery is attempted, and `return`s rather than `continue`s. Bound is config-driven
+  (`batch_processing.max_recovery_cycles: 3`). The false-success log line now reads
+  `↩️ ready to retry (recovery reported OK — not yet verified)`, and the give-up message names the
+  likely cause: a `base_url`/`model_name` mismatch.
+- **Independent of SI-018.** That bug only supplied the trigger; this one fires on ANY persistent
+  embedding failure (vendor outage, expired key, quota wall).
+- **Tests:** `tests/unit/test_embedding_recovery_damper.py` — 6 of 7 FAIL on pre-fix code.
+
+### SI-020 — The version-sync gate was a SILENT NO-OP under pytest  →  **FIXED 2026-08-10 (v1.0.0.246)**  [was P2]
+- **Observed:** `pytest tests/integration/test_version_sync.py` reported **5 passed** while
+  `README.md` was a build stale (`1.0.0.245` vs `1.0.0.246`) **and** `logging_config.json` had drifted.
+  Run as a script the same file correctly printed 5 ✗ and exited 1.
+- **Cause:** `check()` only prints and bumps a module counter — deliberately, so script mode reports
+  EVERY drifted surface rather than stopping at the first. But nothing ever asserted, so each test
+  function returned normally regardless. The gate written to stop version drift did not gate in the
+  runner most likely to be used casually.
+- **Fix:** a `@gates` decorator on all 5 test functions asserts the failure counter did not move.
+  A decorator rather than an autouse fixture: a fixture asserts during TEARDOWN, which pytest reports
+  as `5 passed, 1 error` — the same misreadable green. Script mode is unchanged (still collects all,
+  exits 1). Falsified: breaking the README badge now yields `1 failed, 4 passed`.
+
 ### SI-014 — `OpenAIProvider.generate_stream` SILENTLY DISCARDED the system prompt  →  **FIXED 2026-08-09**  [was P1, production-affecting]
 - **Observed (2026-08-09, arbitrator lane evaluation):** both candidate models scored **0% schema
   compliance and 0% correct verdicts** on the arbitrator task. The models were not at fault — they

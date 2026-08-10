@@ -25,6 +25,7 @@ asserted statically instead — see test_health_endpoint_cannot_drift.
 Run:  python tests/integration/test_version_sync.py
       make benchmark            # runs it as part of Tier 0
 """
+import functools
 import json
 import os
 import re
@@ -49,11 +50,39 @@ def check(name, cond, detail=None):
         print(f"  ✗ {name}" + (f" — {detail}" if detail else ""))
 
 
+def gates(fn):
+    """Make `check()` failures FAIL this test under pytest.
+
+    `check()` only prints and bumps a counter — deliberately, so script mode reports
+    EVERY drifted surface instead of stopping at the first. But it also meant each
+    test function returned normally no matter what, so `pytest tests/` reported 5/5
+    GREEN while the README was a build stale AND logging_config.json had drifted
+    (observed 2026-08-10 on v1.0.0.246). The gate written to stop version drift was a
+    silent no-op in the runner most likely to be used casually.
+
+    A decorator rather than an autouse fixture because a fixture asserts during
+    TEARDOWN, which pytest reports as `5 passed, 1 error` — the same misreadable
+    green this is meant to remove. Script mode is unaffected: it calls the undecorated
+    behaviour through the same wrapper, collecting every failure before exiting 1.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        before = FAIL
+        result = fn(*args, **kwargs)
+        assert FAIL == before, (
+            f"{FAIL - before} version surface(s) drifted from version.py "
+            f"({V.VERSION}) — see the ✗ lines above, or run: "
+            f"python utils/version_sync.py")
+        return result
+    return wrapper
+
+
 def _read(*parts):
     with open(os.path.join(REPO_ROOT, *parts), encoding='utf-8') as handle:
         return handle.read()
 
 
+@gates
 def test_version_format():
     print("version.py is a well-formed single source of truth:")
     check("VERSION is MAJOR.MINOR.PATCH.BUILD",
@@ -66,6 +95,7 @@ def test_version_format():
           list(V.VERSION_TUPLE) == [int(p) for p in V.VERSION.split('.')], V.VERSION_TUPLE)
 
 
+@gates
 def test_readme_matches_on_every_surface():
     """The README claims the current version in several places; ALL must agree.
 
@@ -100,6 +130,7 @@ def test_readme_matches_on_every_surface():
           f"found {stale}, expected {V.VERSION}")
 
 
+@gates
 def test_logging_config_matches():
     """config/logging_config.json cannot import version.py, so it rots silently."""
     print("config/logging_config.json agrees:")
@@ -118,6 +149,7 @@ def test_logging_config_matches():
           f"{config.get('version')} != {V.VERSION} (run utils/version_sync.py)")
 
 
+@gates
 def test_version_sync_utility_agrees():
     """utils/version_sync.py is the writer for non-importing files; its own
     consistency check must agree that everything is in sync."""
@@ -134,6 +166,7 @@ def test_version_sync_utility_agrees():
           '; '.join(result.get('issues') or [])[:110])
 
 
+@gates
 def test_health_endpoint_cannot_drift():
     """/health must serve the IMPORTED symbol, never a hardcoded literal.
 
