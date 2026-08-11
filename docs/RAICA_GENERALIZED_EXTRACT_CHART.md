@@ -125,6 +125,96 @@ generation and no sandboxed execution** — this is the crucial difference from 
 `analytical_visualizer`, which generates and *runs* chart code and would open a security surface
 for no benefit.
 
+### P2b — Restricted numpy expression evaluator  *(supersedes a `series_stats` tool)*
+
+**Why this instead of more calculators.** The 2026-08-11 Treasury answer fetched 401 real daily
+rows and then reported the minimum 30Y-10Y spread as **+0.19** while quoting the two yields that
+produce **+0.67**, and named a maximum of +0.53 when the true maximum is **+0.69**, a year
+earlier. Every value it *quoted* was exact; only values it **derived** were wrong. The model was
+eyeballing extrema over a 401-row table.
+
+Writing a `series_stats` tool would fix min/max and leave correlation, percentiles, diffs,
+normalisation and rolling windows to be added one at a time — precisely the per-case
+proliferation the Generalization Directive forbids. Instead, expose **numpy** and let the LLM
+choose the function.
+
+```
+compute(expr="np.min(y30 - y10)",
+        data={"y30": [...], "y10": [...]},
+        label="minimum 30Y-10Y spread")
+  -> {value, expr, n, dtype}          # the EXPRESSION is returned for citation
+```
+
+numpy is already a dependency (2.3.2). Verified on the real failure:
+
+```
+np.min(y30 - y10)            = 0.18    <- true minimum   (answer said 0.19)
+np.max(y30 - y10)            = 0.69    <- true maximum   (answer said 0.53)
+np.corrcoef(y30, y10)[0][1]  = 0.738
+```
+
+**Provenance benefit, not just correctness.** The expression is citable — *"minimum spread,
+computed as `np.min(y30 - y10)`, = 0.18 on 2025-01-13"* is auditable in a way "the model read the
+table" never is. That speaks directly to D7, the weakest measured dimension (40.2% over_captured).
+
+#### The fence — defence in depth, and NOT code execution
+
+This is **not** sandboxing Python. It is a *restricted expression language that happens to use
+Python syntax*: the AST is validated **before** anything is evaluated, and the permitted node set
+is small enough to audit by eye.
+
+> `sandboxed_executor` is explicitly **rejected** as the substrate. It is a command whitelist over
+> `subprocess` (strict/permissive/unrestricted) with path restrictions — no seccomp, no container,
+> no isolation boundary. Routing LLM-authored code through it on a user-facing path is real RCE
+> surface.
+
+| layer | rule |
+|---|---|
+| 1. AST allow-list | only `Expression, BinOp, UnaryOp, Call, Name, Load, Constant, Attribute, Subscript, Slice, Tuple, List` + arithmetic/comparison operators. Everything else — comprehensions, lambdas, walrus, f-strings, starargs, imports — **rejected** |
+| 2. Attribute rule | `Attribute` permitted **only** as `np.<name>` where `<name>` is in the function allow-list. No chained attributes, no dunder, ever |
+| 3. Name binding | names must be either `np` or a key of the caller-supplied `data` dict |
+| 4. Builtins | `eval` runs with `{"__builtins__": {}}` |
+| 5. numpy allow-list | **ALLOW-list of pure math only, never a deny-list.** numpy ships genuinely dangerous callables — `np.load` (executes pickles), `np.frombuffer`, `np.save`, `np.vectorize` (takes a callable), `np.memmap`. A deny-list would miss the next one |
+| 6. Resource caps | max array length, max total elements, and a wall-clock timeout — otherwise `np.zeros(10**12)` or a crafted broadcast hangs a worker |
+
+#### Adversarial checklist — MUST be attempted before shipping
+
+A restricted-eval escape is a well-populated genre. Each of these gets a **named test that fails
+on a permissive implementation**:
+
+1. dunder traversal — `().__class__.__bases__[0].__subclasses__()`
+2. globals reach-through on an allowed callable — `np.min.__globals__`
+3. `getattr` / `vars` / `globals` / `eval` / `exec` by name
+4. import smuggling — `__import__('os')`
+5. file access — `open(...)`, and `np.load` on a crafted path (pickle execution)
+6. callable injection — `np.vectorize(...)`, `np.apply_along_axis(f, ...)`
+7. comprehension / generator / lambda side effects
+8. f-string and `format` evaluation
+9. subscript on a non-data object
+10. resource exhaustion — huge allocation, pathological broadcast, deep recursion
+11. name shadowing — binding `np` through `data`
+12. unicode / homoglyph attribute names
+
+**A clean pass is a red flag until the attack list is shown** — per the adversarial-audit gate.
+
+#### Policy alignment (P4 extension)
+
+- Any **derived** figure over retrieved data — extremum, correlation, spread, percentile, growth
+  rate — must come from `compute`, not from reading the table.
+- The **expression and the n** must be stated alongside the result.
+- An extremum must carry **its date/label**, and must be arithmetically consistent with any values
+  quoted beside it. *(The 2026-08-11 answer stated `4.64 - 3.97 = 0.19` — self-refuting on its
+  face, and the cheapest possible check.)*
+
+#### Sizing
+
+| item | est. |
+|---|---|
+| evaluator + allow-lists + caps | ~120 LOC |
+| adversarial test suite (12 vectors above) | ~150 LOC |
+| tool wrapper + schema + policy | ~60 LOC |
+| **total** | **~1.5–2 days**, of which **half is the adversarial pass** |
+
 ### P3 — Availability
 Add `plot_data` to the `@Ask` whitelist (`newx/ai_plugins/Ask.yaml`) — config only.
 
@@ -146,7 +236,7 @@ artifact, never from model recall, and that the columns plotted must be named.
 | **P4** policy + fallback ordering | **~1 hour** | MED | must not cannibalise specialized tools — see §6 |
 | **E2E + baseline** | **0.5–1 day** | — | S9 spectrum scenario; measure against D1–D7 before/after |
 
-**Total ≈ 3 days** including tests, an end-to-end run through the real `@Ask` path, and a baseline
+**Total ≈ 4.5–5 days** (P1 done; P2a chart ~1.5d, P2b compute ~1.5–2d, P3/P4 ~1h) including tests, an end-to-end run through the real `@Ask` path, and a baseline
 measurement. **P1 alone (~half a day) would have answered the user's actual question** — the table
 and items 1–3 — leaving only the chart missing.
 

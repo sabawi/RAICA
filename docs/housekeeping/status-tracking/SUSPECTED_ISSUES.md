@@ -18,7 +18,25 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   rather than rejected. HTML/PDF paths unchanged. Verified against the exact file that failed:
   **153 lines, complete, `text/csv`**. Plus routing guards (policy, not ticker regex) sending listed
   securities to the specialized analyzer, and a requirement to name the fetched source/rows/columns.
-- **P2-P4 still NOT started** (generic `plot_data` tool, whitelist, fallback-ordering policy).
+- **P2a-P4 still NOT started** (generic `plot_data` tool, whitelist, fallback-ordering policy).
+- **P2b ADDED 2026-08-11 — restricted numpy expression evaluator**, replacing a proposed
+  `series_stats` tool. Trigger: the Treasury answer fetched 401 real daily rows and every value it
+  QUOTED was exact, while values it DERIVED were wrong — minimum 30Y-10Y spread reported as +0.19
+  beside two yields that give +0.67, and a maximum of +0.53 when the true max is +0.69 a year
+  earlier. The model was eyeballing extrema over a 401-row table.
+  **`calculator` could not have helped and was not even visible:** it is absent from the @Ask
+  whitelist (prod log confirms 8 tools offered, not including it), and `user_tools/
+  example_calculator.py` takes two scalars and one of add/subtract/multiply/divide.
+  **User's call:** expose numpy and let the LLM pick the function rather than write a new
+  calculator per statistic. Verified on the real failure — `np.min(y30-y10)`=0.18,
+  `np.max(y30-y10)`=0.69 — with `__import__`, `open()` and dunder traversal all blocked by an
+  AST allow-list. `sandboxed_executor` explicitly REJECTED as substrate (command whitelist over
+  subprocess, not a Python sandbox). Fence + 12-vector adversarial checklist in the design doc;
+  numpy allow-list must be an ALLOW-list because numpy ships `np.load` (executes pickles),
+  `np.vectorize` (takes a callable), `np.frombuffer`, `np.memmap`.
+- **NEW D3 SUBTYPE for the quality baseline:** *unverified derived statistics* — real retrieved
+  data, correct quoted values, wrong COMPUTED ones. Invisible to liveness, provenance and
+  absent-from-evidence checks; only arithmetic over the retrieved series catches it.
 - **Reframed 2026-08-11 by the user.** Originally logged as "add a Treasury daily yield-curve
   source". **Withdrawn as a per-site band-aid** — the Generalization Directive forbids it: the next
   request is BLS, then ECB, then a CSV on GitHub, each needing its own tool. The right question was
