@@ -59,7 +59,15 @@ class CompareDatasetsTool(BaseUserTool):
             f"`measure` from the advertised catalogs (available sources: {names}). For the `fred` source, "
             "`measure` may ALSO be a plain DESCRIPTION of any U.S. economic/financial/housing/labor series "
             "(e.g. 'home price index', 'homeownership rate', '30-year mortgage rate') — it is resolved by "
-            "searching FRED, so you are not limited to the listed measures."
+            "searching FRED, so you are not limited to the listed measures. "
+            # SI-027 — the model was choosing this tool for short-window questions and then
+            # describing 3 annual dots as a two-year 'path'. State the resolution up front so
+            # it can set expectations (or pick a different framing) BEFORE it writes.
+            "GRANULARITY: values are ANNUAL MEANS of each series' published frequency, so a short "
+            "window returns only a few points per line (e.g. '2024-2026' is THREE points, not a "
+            "daily path) and the newest year is a PARTIAL-year average whenever the current year is "
+            "unfinished. Say so when you present the chart, and treat the correlations it reports as "
+            "informative only when there are enough points to support them."
         )
 
     @property

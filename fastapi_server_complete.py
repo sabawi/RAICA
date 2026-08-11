@@ -3209,7 +3209,24 @@ _ARTIFACT_MARKER_RELAY = (
     "data in prose or a markdown TABLE instead, and (if relevant) note briefly that a chart wasn't available. "
     "You must NEVER fabricate a chart — do NOT invent or hand-write a [[chart:...]] marker, do NOT emit "
     "matplotlib/plotly/quickchart or any chart code or chart URL, and do NOT put data values inside a marker. "
-    "Charts come only from real tool output; never from you."
+    "Charts come only from real tool output; never from you.\n"
+    # SI-027 — describe the chart you were GIVEN, not the one the user pictured.
+    "- STATE THE GRANULARITY, AND DO NOT READ MORE INTO A CHART THAN IT CONTAINS. Dataset charts "
+    "(search_datasets / compare_datasets) plot ANNUAL MEANS of the underlying series, so a request for "
+    "'the last 2 years' yields only two or three annual points per line — not a daily path. When the "
+    "points are few, say so in one clause ('annual averages; 3 points per series'), and describe what the "
+    "chart actually shows — LEVELS at those points and the direction between them — rather than narrating "
+    "it as a continuous path, a trend line, or intra-year movement it cannot resolve. Two lines rising "
+    "together with an unchanged gap are NOT diverging; check the gap before you call it one.\n"
+    "- LABEL AN INCOMPLETE PERIOD. If the newest point covers a partial year (the current year is not "
+    "over), say so where the number appears and give the latest actual observation alongside it when you "
+    "have one — an 'annual average' of a part-year understates or overstates the present whenever the "
+    "series has trended, and a reader will act on it as if it were the current value.\n"
+    "- DO NOT REPORT A STATISTIC THE SAMPLE CANNOT SUPPORT. A correlation, trend or 'lockstep' claim "
+    "computed over a handful of annual points carries no information, however precise the number looks; "
+    "if you cite one, give the number of observations behind it in the same breath, and prefer plain "
+    "description when they are few. Precision that the data does not support reads as authority it has "
+    "not earned."
 )
 
 # Structural repair for inline chart markers on the standard (non-deep-research) synthesis path. Even with the

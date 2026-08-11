@@ -412,6 +412,33 @@ verbatim on sign-off.
 
 ## Resolved
 
+### SI-027 — Dataset charts described at a resolution they do not have  →  **FIXED (policy) 2026-08-11 (v1.0.0.252)**  [was P2, user-reported]
+- **Reported:** a "past two years" chart of 30/20/10/5-year Treasury yields read as though the
+  10y and 30y were **diverging**. They were not — the 30y-10y spread was **0.52 → 0.54 over 13
+  months** (10y +0.39, 30y +0.41: a parallel shift, not a divergence).
+- **The DATA was perfect.** All 12 annual averages matched FRED to the basis point, and all four
+  series resolved correctly (DGS30/20/10/5). **Zero fabrication.** The defect was entirely in
+  how the chart was DESCRIBED.
+- **Three misrepresentations:** (1) three annual points per line narrated as a two-year *path*,
+  which is what made a constant gap look like spreading; (2) the 2026 point labelled an "annual
+  average" while covering **151 trading days** (Jan-Aug) — 30y shown as 4.93% against an actual
+  latest of **5.19%**; (3) a "trend correlation of **+1.00**" reported from **three**
+  observations, which carries no information however precise it looks.
+- **Why POLICY and not code:** `shape: fred_observations` aggregates every FRED series to ANNUAL
+  MEANS and exposes **no frequency parameter**. A directive telling the model to fetch daily data
+  would be silently defeated by the code — the LLM-policy gate's exact trap. The directives
+  therefore ask only for what the system CAN do: disclose granularity, label a partial year,
+  refrain from statistics the sample cannot support.
+- **Two surfaces:** the `compare_datasets` DESCRIPTION (read when choosing/using the tool, so
+  expectations are set BEFORE writing) and the non-DR answer directive `_ARTIFACT_MARKER_RELAY`
+  (read when composing). The parallel-rise-read-as-divergence error is named explicitly —
+  *"Two lines rising together with an unchanged gap are NOT diverging; check the gap first."*
+- **Known limitation, NOT fixed:** dataset charts remain annual-mean only. A true daily yield path
+  needs a frequency-capable data path — a code change, deliberately out of scope here.
+- **Tests:** `tests/unit/test_chart_granularity_policy.py` (8), incl. one asserting the policy
+  never promises daily/weekly/monthly data the tool cannot serve.
+
+
 ### SI-026 — A missing market value silently killed technicals AND charts  →  **FIXED 2026-08-11 (v1.0.0.251)**  [was P1, user-reported from production]
 - **Reported:** user replied to an @Ask post — *"Show the 2 years chart of GPIQ"* — and got
   prose with **no chart** (sabawi.net/post/6502).
