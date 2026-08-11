@@ -11,6 +11,30 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-030 — Citing a download URL silently downloads files when the reader clicks  [P2 — CONFIRMED by the user, caused by SI-028 P1]
+- **Reported 2026-08-11:** the user clicked the Treasury citations in a RAICA answer and got
+  **six files downloaded with no browser message and no notification.** *"was not expecting the
+  silence."*
+- **Not a broken link — a working one behaving as designed.** Verified with full browser headers:
+  the cited URL returns `200 text/csv` with
+  `Content-Disposition: attachment; filename="daily-treasury-rates.csv"`. The server instructs the
+  browser to DOWNLOAD rather than display, so a click renders nothing and silently writes a file.
+- **CAUSED BY SI-028 P1 (mine, v1.0.0.253-255).** Making machine-readable files fetchable was
+  correct; what I did not anticipate is that their URLs then appear as CITATIONS. A citation is a
+  promise the reader can SEE the evidence, and an attachment URL cannot satisfy it.
+- **A human-viewable equivalent usually exists** and should be preferred for the citation, with the
+  data file named as what was actually parsed. For this source, verified `200 text/html`:
+  `.../interest-rates/TextView?type=daily_treasury_yield_curve&field_tdr_date_value=2025`
+- **Fix shape (NOT implemented):** `_extract_data_content` already holds the response headers —
+  capture `Content-Disposition` and surface an `is_attachment` label in the tool result, then a
+  policy line: cite a human-viewable page where one exists; if only the download URL is available,
+  mark it plainly as a file download so a click is never a surprise. Policy alone is weaker here —
+  the model cannot know a URL is an attachment without being told.
+- **Generalises beyond Treasury:** every CSV/XLSX/ZIP endpoint P1 unlocked has the same property.
+- **Clear only when:** a cited data-file URL is either replaced by a viewable page or explicitly
+  labelled as a download, asserted by a test that fails on current behaviour.
+
+
 ### SI-028 — Generalized search → extract → chart fallback  [P1 **DONE** v1.0.0.253; P2-P4 awaiting sign-off]
 - **P1 SHIPPED 2026-08-11 (v1.0.0.253):** `lookup_website` now dispatches on the SERVER-declared
   `Content-Type` (`_probe_content_type` → `_extract_data_content`), passing CSV/TSV/JSON/XML through
