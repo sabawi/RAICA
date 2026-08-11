@@ -11,7 +11,14 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-028 — Generalized search → extract → chart fallback  [P2 — INVESTIGATED, awaiting sign-off]
+### SI-028 — Generalized search → extract → chart fallback  [P1 **DONE** v1.0.0.253; P2-P4 awaiting sign-off]
+- **P1 SHIPPED 2026-08-11 (v1.0.0.253):** `lookup_website` now dispatches on the SERVER-declared
+  `Content-Type` (`_probe_content_type` → `_extract_data_content`), passing CSV/TSV/JSON/XML through
+  verbatim with the line count stated and truncation DISCLOSED. Unknown types are returned labelled
+  rather than rejected. HTML/PDF paths unchanged. Verified against the exact file that failed:
+  **153 lines, complete, `text/csv`**. Plus routing guards (policy, not ticker regex) sending listed
+  securities to the specialized analyzer, and a requirement to name the fetched source/rows/columns.
+- **P2-P4 still NOT started** (generic `plot_data` tool, whitelist, fallback-ordering policy).
 - **Reframed 2026-08-11 by the user.** Originally logged as "add a Treasury daily yield-curve
   source". **Withdrawn as a per-site band-aid** — the Generalization Directive forbids it: the next
   request is BLS, then ECB, then a CSV on GitHub, each needing its own tool. The right question was

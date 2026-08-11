@@ -2164,6 +2164,73 @@ class AsyncToolManager:
 
         return truncated
 
+    # ── SI-028 P1: machine-readable data files ────────────────────────────────────────────────
+    # `lookup_website` used to branch on the URL STRING — PDF, else assume HTML — so CSV/JSON/XML
+    # fell into the HTML extractor and failed CLOSED and SILENT ("Failed to extract content").
+    # Observed 2026-08-11: an @Ask run selected lookup_website correctly and fetched the US
+    # Treasury daily-yield CSV twice (one file per year, exactly as asked) and got ZERO rows,
+    # while the endpoint served HTTP 200, text/csv, 12,422 bytes, 153 rows. That blocked EVERY
+    # machine-readable data file on the web, not one site.
+    #
+    # Generalization directive: dispatch on what the SERVER declares, and when the type is
+    # unrecognised return the text LABELLED with its type so the LLM can decide — never a
+    # hardcoded per-site handler, never silent rejection.
+    _DATA_CONTENT_TYPES = {
+        "text/csv": "CSV", "application/csv": "CSV", "text/tab-separated-values": "TSV",
+        "application/json": "JSON", "text/json": "JSON",
+        "application/xml": "XML", "text/xml": "XML",
+        "text/plain": "Plain text",
+    }
+    _DATA_MAX_BYTES = 2_000_000          # refuse to stream a huge file into an LLM context
+
+    def _probe_content_type(self, url: str, timeout: int = 10) -> str:
+        """Ask the SERVER what it is. '' when unknown — callers then fall back to HTML."""
+        hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "*/*"}
+        for meth in ("head", "get"):
+            try:
+                r = getattr(requests, meth)(url, timeout=timeout, allow_redirects=True,
+                                            headers=hdrs, stream=(meth == "get"))
+                if r.status_code < 400:
+                    ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    if meth == "get":
+                        r.close()
+                    if ct:
+                        return ct
+            except Exception:
+                continue
+        return ""
+
+    def _extract_data_content(self, url: str, ctype: str, timeout: int = 25) -> dict:
+        """Pass a structured data file through VERBATIM (no HTML extraction).
+
+        Truncation is DISCLOSED in the returned content — SI-027's lesson: a silently shortened
+        artifact is read as complete, and the reader acts on a partial table as if it were whole.
+        """
+        label = self._DATA_CONTENT_TYPES.get(ctype, ctype or "unknown type")
+        hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "*/*"}
+        try:
+            r = requests.get(url, timeout=timeout, headers=hdrs, stream=True)
+            if r.status_code >= 400:
+                return {"success": False, "error": f"HTTP {r.status_code}"}
+            raw = r.raw.read(self._DATA_MAX_BYTES + 1, decode_content=True) or b""
+            r.close()
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "error": f"{type(e).__name__}: {e}"}
+
+        over = len(raw) > self._DATA_MAX_BYTES
+        text = raw[:self._DATA_MAX_BYTES].decode("utf-8", "replace")
+        lines = text.splitlines()
+        if over and len(lines) > 1:
+            lines = lines[:-1]                      # drop a row cut mid-way
+            text = "\n".join(lines)
+        note = (f"[{label} file: {len(lines)} lines retrieved"
+                + (f"; TRUNCATED at {self._DATA_MAX_BYTES} bytes — this is NOT the whole file"
+                   if over else " (complete)") + "]")
+        return {"success": True, "content": f"{note}\n{text}", "data_label": label,
+                "lines": len(lines), "truncated": over}
+
     async def lookup_website(self, args: str) -> str:
         """
         Enhanced website content extractor using trafilatura for better HTML parsing.
@@ -2195,8 +2262,19 @@ class AsyncToolManager:
                     result = self._extract_pdf_content(url)
                     content_type = "PDF"
                 else:
-                    result = self._extract_web_content(url)
-                    content_type = "Web Page"
+                    # SI-028 P1: ask the server what it is before assuming HTML.
+                    _ct = self._probe_content_type(url)
+                    if _ct in self._DATA_CONTENT_TYPES and _ct != "text/plain":
+                        result = self._extract_data_content(url, _ct)
+                        content_type = result.get("data_label", "Data file")
+                    else:
+                        result = self._extract_web_content(url)
+                        content_type = "Web Page"
+                        # HTML extractor failed but the server declared a non-HTML type →
+                        # pass the bytes through labelled rather than reporting nothing.
+                        if not result.get("success") and _ct and "html" not in _ct:
+                            result = self._extract_data_content(url, _ct)
+                            content_type = result.get("data_label", _ct)
 
                 # Handle extraction errors
                 if not result["success"]:
@@ -3222,6 +3300,20 @@ _ARTIFACT_MARKER_RELAY = (
     "over), say so where the number appears and give the latest actual observation alongside it when you "
     "have one — an 'annual average' of a part-year understates or overstates the present whenever the "
     "series has trended, and a reader will act on it as if it were the current value.\n"
+    # SI-028 P1 guard — a generic fetch must never displace a specialized instrument tool.
+    "\n- FOR A LISTED SECURITY, USE THE SPECIALIZED ANALYZER — NOT A RAW WEB FETCH. If the question "
+    "is about a stock, ETF, fund, index, ADR or any traded instrument, the structured stock "
+    "analyzer is the correct source: it returns validated market data, computed technical "
+    "indicators and valuation ratios with the right units, and it is the ONLY path that renders a "
+    "price/technical chart. A page or file you fetch and read yourself cannot match it — you would "
+    "be inferring what columns mean and hand-computing indicators, which is exactly how wrong "
+    "numbers enter an answer that looks authoritative. Reach for a generic fetch ONLY when no "
+    "specialized tool covers the request (an agency data file, a statistical release, a dataset "
+    "with no dedicated source), and say which columns you used when you do.\n"
+    "- NAME WHAT YOU FETCHED. When you use data from a file you retrieved, state the source, the "
+    "URL, how many rows/observations you actually got and the exact column headings you read from. "
+    "A number lifted from a fetched file without that provenance is indistinguishable to the reader "
+    "from one you recalled, and only one of those is trustworthy."
     "- DO NOT REPORT A STATISTIC THE SAMPLE CANNOT SUPPORT. A correlation, trend or 'lockstep' claim "
     "computed over a handful of annual points carries no information, however precise the number looks; "
     "if you cite one, give the number of observations behind it in the same breath, and prefer plain "
