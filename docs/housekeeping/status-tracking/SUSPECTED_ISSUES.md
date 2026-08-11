@@ -11,22 +11,31 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-028 — Add a Treasury daily yield-curve source, distinct from FRED  [P3 — DEFERRED by user 2026-08-11]
-- **Why:** yield-curve questions currently resolve to four separate FRED `DGS*` series which are
-  then averaged to annual means (SI-027), so the daily path — the actual information — is lost.
-- **Better source, already proven:** `home.treasury.gov/resource-center/data-chart-center/`
-  `interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve` returns the
-  **ENTIRE curve, every maturity, every trading day, in ONE CSV** — no API key, no per-series
-  resolution. Working reference implementation: the user's `~/Development/mytools/tbondsrates.py`.
-- **Two shapes of fix (either is real code, neither started):**
-  1. NARROW — make the annual roll-up conditional in `fred_observations`: keep daily/monthly
-     resolution for short windows, aggregate only for long spans. Touches the handler plus the
-     `{year, value}` contract downstream.
-  2. BETTER — add the Treasury daily-curve source as its own catalog entry so rate questions get
-     the right instrument, and DIFFERENTIATE it from FRED (FRED for slow socioeconomic series,
-     Treasury for detailed rate paths).
-- **Do NOT start without sign-off** — the user deferred it explicitly; the SI-027 disclaimer holds
-  the user-visible symptom in the meantime.
+### SI-028 — Generalized search → extract → chart fallback  [P2 — INVESTIGATED, awaiting sign-off]
+- **Reframed 2026-08-11 by the user.** Originally logged as "add a Treasury daily yield-curve
+  source". **Withdrawn as a per-site band-aid** — the Generalization Directive forbids it: the next
+  request is BLS, then ECB, then a CSV on GitHub, each needing its own tool. The right question was
+  *why can RAICA not read a CSV?*
+- **ROOT CAUSE (traced on a live prod run, not assumed):** `fastapi_server_complete.py:2167`
+  `lookup_website` dispatches on the URL STRING with two branches — PDF, else assume HTML. CSV /
+  JSON / XML / TSV all fall into the HTML extractor and fail **closed and silent**
+  (`ERROR: Failed to extract content`). The server's honest `text/csv; charset=UTF-8` header is
+  never consulted. This blocks EVERY machine-readable data file on the web.
+- **Live evidence:** `@Ask` selected `lookup_website` correctly and called it TWICE (one file per
+  year, exactly as prompted), built both URLs correctly — and got zero rows. The endpoint returns
+  HTTP 200, 12,422 bytes, 153 rows, 15 maturities, fresher than FRED.
+- **KEY FINDING — the generic chart mechanism ALREADY EXISTS** and is only ever fed from the
+  dataset catalog: `publish_chart(png,hint)->url` (`chart_publisher.py:184`), `_marker()`
+  (`data_chart_builder.py:29`), `generate_data_chart(series,kind)`, and `DatasetSeries`
+  (`dataset_block.py:50`) whose provenance fields are MANDATORY and fail-closed. `_TIERS` already
+  contains `bulk_file` — precisely the fidelity tier for a downloaded CSV.
+- **Design + sizing:** `docs/RAICA_GENERALIZED_EXTRACT_CHART.md`. P1 content-type dispatch (~0.5
+  day) · P2 thin `plot_data` tool over the existing primitives, NO code-gen and NO sandbox (~1–1.5
+  days) · P3 whitelist (1 line) · P4 fallback-ordering policy. **≈3 days total.** P1 alone would
+  have answered the user's actual question.
+- **Explicitly rejected:** wiring `analytical_visualizer` — it generates and EXECUTES chart code,
+  emits no `[[chart:]]` marker, and writes to a sandbox path.
+- **Do NOT start without sign-off.** Open questions are listed in §7 of the design doc.
 
 
 ### SI-024 — Evidence budgeting silently DISCARDS computed tool output  →  **SUPERSEDED by SI-025, FIXED 2026-08-10 (v1.0.0.250)**  [was P1]
