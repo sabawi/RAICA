@@ -11,6 +11,36 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-029 — `data_charts_enabled()` returns FALSE on its first call — non-deterministic feature flag  [P1 — CONFIRMED on production]
+- **Found 2026-08-11** while checking whether Deep Research can reach the dataset tools.
+- **Reproduced on PROD, same process, four consecutive calls, no arguments:**
+  ```
+  call 1: False      <- first call always wrong
+  call 2: True
+  call 3: True
+  call 4: True
+  ```
+- **Consequence:** `DeepResearchEngine._allowed_sources` adds `search_datasets` and
+  `compare_datasets` only `if _data_charts_enabled()`. Whether DR can reach the dataset tools
+  therefore depends on **whether that property is the FIRST caller in the process** — feature
+  availability decided by import order. Measured on prod: DR's runtime source set is the bare 8
+  with **both dataset tools absent**, while the non-DR tool path (which asks later) has them. That
+  is why the yield-curve query could chart via `compare_datasets` but a DR run cannot.
+- **Irony to preserve:** the docstring reads *"SINGLE source of truth ... used by BOTH the planner
+  and the search_datasets tool, so they can never disagree (NO-INCONSISTENCY)"*. It disagrees with
+  itself between call 1 and call 2.
+- **Env is NOT the cause:** `RAICA_DATA_CHARTS_ENABLED` is unset on prod; the value comes from
+  `data_charts_cfg().get("enabled", False)`, and `data_charts_cfg()` returns populated keys on the
+  first call — so the miss is in how the flag is read/cached, not in the config being absent.
+- **Same class as SI-021:** a delegation that looks correct, is documented as authoritative, and
+  silently returns the wrong answer — invisible because both values are plausible.
+- **Do NOT "fix" by calling it twice.** Root-cause the lazy load/caching in
+  `datasources.data_charts_cfg` so the first read is correct.
+- **Clear only when:** call 1 returns the same value as call 4 in a fresh process, asserted by a
+  test that FAILS on current code, and DR's runtime `_allowed_sources` contains the dataset tools
+  on prod.
+
+
 ### SI-028 — Generalized search → extract → chart fallback  [P1 **DONE** v1.0.0.253; P2-P4 awaiting sign-off]
 - **P1 SHIPPED 2026-08-11 (v1.0.0.253):** `lookup_website` now dispatches on the SERVER-declared
   `Content-Type` (`_probe_content_type` → `_extract_data_content`), passing CSV/TSV/JSON/XML through
