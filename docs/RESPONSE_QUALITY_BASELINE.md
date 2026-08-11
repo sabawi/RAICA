@@ -109,9 +109,40 @@ Each rule below exists because breaking it produced a false finding on 2026-08-1
 - `tests/benchmark/run_benchmark.py` — Tier 0 (deterministic gates), Tier 1 (golden scenarios
   vs `baseline.json`), Tier 2 (latency)
 - `tests/benchmark/lib/spectrum.py` — the D1–D7 measurement helpers + `retain()`
-- `tests/benchmark/scenarios/s4..s8` — the full-spectrum suite: 8-ticker finance, 7-ticker
+- `tests/benchmark/scenarios/s4..s9` — the full-spectrum suite: 8-ticker finance, 7-ticker
   finance (prod-comparable), original commentary, simulation with charts/tables,
-  evidence-only history
+  evidence-only history, and a well-studied humanities question graded to an A+ bar
+- `tests/benchmark/lib/generic_quality.py` — TOPIC-AGNOSTIC metrics usable by any scenario:
+  citation mix by structural source class, citation reuse, unanchored-citation ratio,
+  retrieval depth, and scope violations against bounds PARSED FROM THE PROMPT
+
+---
+
+## 4. Two biases this suite deliberately refuses to encode
+
+Added 2026-08-11 after the first cut of the S9 instruments was found to be topic-locked (a
+hardcoded 700-1000 BC window, a list of ancient Near East inscriptions, a speech-vs-writing
+word list). Baselining on those and then "improving" would have tuned RAICA for one question
+about one century and reported it as a quality gain.
+
+1. **Disagreement is never scored.** A "does the answer show scholarly debate" metric marked
+   higher-is-better rewards MANUFACTURING controversy, and the topics where that does the
+   most damage — settled science, loaded political premises — are exactly the ones DR is
+   already weakest on. `debate_markers` is DIAGNOSTIC, with no direction.
+2. **Subdivision is never scored.** An answer covering a span that genuinely IS uniform
+   should say so, not invent phases. `span_subdivisions` is likewise diagnostic. What IS
+   scored is the falsifiable error: asserting out-of-bounds material as in-bounds.
+
+**Rule 9 — a metric must not be gameable by paraphrase.** The first name-dropping detector
+was a list of English phrases ("directly addresses", "explores these"); rewording to "sheds
+light on" would have zeroed the metric with the defect untouched. It was replaced by a
+structural test — does the citing sentence carry a figure, date, quotation or named entity —
+which holds across wordings, subjects and languages.
+
+**Rule 10 — measure a contrasting domain before shipping a shared-prompt change.** Anything
+edited into the synthesis system prompt affects EVERY answer. A humanities-motivated change
+must be measured on finance and on a second topic too, or a fix for one subject ships as an
+unseen regression in another.
 
 **Run Tier 1 before and after any change that can affect responses.** It exists; it was
 sitting unused with a clean pre-change baseline while a day of unmeasured work went by.

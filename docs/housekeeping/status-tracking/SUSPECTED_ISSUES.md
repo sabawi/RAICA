@@ -11,6 +11,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-031 — Finance evidence_items halved after a SYNTHESIS-only prompt change  [P3 — SUSPECTED, needs n>=3]
+- **Observed (2026-08-11, v1.0.0.256 -> v1.0.0.257):** the S5 7-ticker finance scenario returned
+  `evidence_items` PRE **[65, 89]** -> POST **[41, 24]**. The ranges do NOT overlap, which is why this is
+  logged rather than waved through as variance.
+- **Why it is only SUSPECTED:** the only change in v1.0.0.257 is three directives added to the DEEP RESEARCH
+  SYNTHESIS system prompt. Evidence gathering runs UPSTREAM of synthesis, so there is no plausible causal
+  path from the change to the count. Either the metric reads something synthesis-side, or this is run-to-run
+  variance at n=2 — and n=2 cannot distinguish them.
+- **Why it may not matter even if real:** every functional deliverable held in the same comparison — 7/7
+  tickers with a DCF, 7/7 with a recommendation, 23 chart markers, comparison table and as-of date present —
+  and `claims_unsupported_ratio` IMPROVED 0.0085 -> 0.0015. Fewer evidence items with equal or better output
+  is not obviously a regression.
+- **Evidence to gather:** re-run S5 at n>=3 on both versions; confirm whether `evidence_items` is derived
+  from the GATHER stage or from what synthesis retained. If it is gather-side, the cause is elsewhere and
+  this release is exonerated; if synthesis-side, check whether the longer prompt is displacing evidence.
+- **Do not clear** without one of: a reproduced n>=3 separation, or proof the metric is synthesis-side and
+  the drop is benign.
+
 ### SI-030 — Citing a download URL silently downloads files when the reader clicks  [P2 — CONFIRMED by the user, caused by SI-028 P1]
 - **Reported 2026-08-11:** the user clicked the Treasury citations in a RAICA answer and got
   **six files downloaded with no browser message and no notification.** *"was not expecting the
