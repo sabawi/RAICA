@@ -2183,8 +2183,15 @@ class AsyncToolManager:
     }
     _DATA_MAX_BYTES = 2_000_000          # refuse to stream a huge file into an LLM context
 
-    def _probe_content_type(self, url: str, timeout: int = 10) -> str:
-        """Ask the SERVER what it is. '' when unknown — callers then fall back to HTML."""
+    def _probe_content_type(self, url: str, timeout: int = 30) -> str:
+        """Ask the SERVER what it is. '' when unknown — callers then fall back to HTML.
+
+        Timeout MEASURED, not guessed. From the production host, home.treasury.gov answered
+        HEAD in 4.2s with 30s allowed but TIMED OUT at 10s, and a cold GET took 15.2s while a
+        warm one took 0.4s — a slow, highly variable origin. The original 10s default made the
+        probe return '' on prod, so every data file fell through to the HTML extractor and came
+        back "No content found" while working perfectly from a residential line.
+        """
         hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "*/*"}
         for meth in ("head", "get"):
@@ -2197,11 +2204,15 @@ class AsyncToolManager:
                         r.close()
                     if ct:
                         return ct
-            except Exception:
+            except Exception as e:  # noqa: BLE001
+                # LOG it. Swallowing this silently is precisely why a prod-only timeout looked
+                # like "the site has no content" for two round-trips.
+                logger.info(f"content-type probe {meth.upper()} failed for {url[:90]}: "
+                            f"{type(e).__name__}")
                 continue
         return ""
 
-    def _extract_data_content(self, url: str, ctype: str, timeout: int = 25) -> dict:
+    def _extract_data_content(self, url: str, ctype: str, timeout: int = 45) -> dict:
         """Pass a structured data file through VERBATIM (no HTML extraction).
 
         Truncation is DISCLOSED in the returned content — SI-027's lesson: a silently shortened

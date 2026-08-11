@@ -195,3 +195,28 @@ def test_data_and_html_return_the_same_key_set_for_the_caller():
     data_src = _grab("_extract_data_content")
     for key in set(required):
         assert f'"{key}"' in data_src, f"data path never sets {key!r} that the HTML path returns"
+
+
+# --------------------------------------------------- timeouts sized from measurement
+
+def test_probe_timeout_is_sized_for_a_slow_origin():
+    """PRODUCTION, 2026-08-11: the probe's 10s default TIMED OUT against home.treasury.gov
+    from the AWS host, so the data path never ran and every file fell through to the HTML
+    extractor as "No content found" — while working perfectly from a residential line.
+
+    Measured from prod: HEAD 10s -> ReadTimeout, HEAD 30s -> 4.2s OK, cold GET 15.2s,
+    warm GET 0.4s. A public data endpoint may be slow and highly variable; the timeout must
+    have headroom over the SLOW case, not the fast one.
+    """
+    probe = _grab("_probe_content_type")
+    fetch = _grab("_extract_data_content")
+    assert "timeout: int = 30" in probe, "probe timeout must clear the measured 15s+ worst case"
+    assert "timeout: int = 45" in fetch, "fetch timeout must exceed the measured cold-GET time"
+
+
+def test_probe_failures_are_logged_not_swallowed():
+    """A bare `except: continue` made a prod-only timeout indistinguishable from 'this site
+    has no content' — it cost two round-trips to diagnose."""
+    probe = _grab("_probe_content_type")
+    assert "logger.info" in probe, "a probe failure must leave a trace"
+    assert "content-type probe" in probe
