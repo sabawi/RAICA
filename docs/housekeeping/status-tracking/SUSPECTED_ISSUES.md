@@ -11,6 +11,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-028 — Add a Treasury daily yield-curve source, distinct from FRED  [P3 — DEFERRED by user 2026-08-11]
+- **Why:** yield-curve questions currently resolve to four separate FRED `DGS*` series which are
+  then averaged to annual means (SI-027), so the daily path — the actual information — is lost.
+- **Better source, already proven:** `home.treasury.gov/resource-center/data-chart-center/`
+  `interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve` returns the
+  **ENTIRE curve, every maturity, every trading day, in ONE CSV** — no API key, no per-series
+  resolution. Working reference implementation: the user's `~/Development/mytools/tbondsrates.py`.
+- **Two shapes of fix (either is real code, neither started):**
+  1. NARROW — make the annual roll-up conditional in `fred_observations`: keep daily/monthly
+     resolution for short windows, aggregate only for long spans. Touches the handler plus the
+     `{year, value}` contract downstream.
+  2. BETTER — add the Treasury daily-curve source as its own catalog entry so rate questions get
+     the right instrument, and DIFFERENTIATE it from FRED (FRED for slow socioeconomic series,
+     Treasury for detailed rate paths).
+- **Do NOT start without sign-off** — the user deferred it explicitly; the SI-027 disclaimer holds
+  the user-visible symptom in the meantime.
+
+
 ### SI-024 — Evidence budgeting silently DISCARDS computed tool output  →  **SUPERSEDED by SI-025, FIXED 2026-08-10 (v1.0.0.250)**  [was P1]
 - **Observed (2026-08-10, user's 8-stock @Ask query):** the report said *"No technical chart
   markers were provided in the evidence"* for **all 8 stocks** and contained **zero DCF
@@ -433,8 +451,18 @@ verbatim on sign-off.
   expectations are set BEFORE writing) and the non-DR answer directive `_ARTIFACT_MARKER_RELAY`
   (read when composing). The parallel-rise-read-as-divergence error is named explicitly —
   *"Two lines rising together with an unchanged gap are NOT diverging; check the gap first."*
-- **Known limitation, NOT fixed:** dataset charts remain annual-mean only. A true daily yield path
-  needs a frequency-capable data path — a code change, deliberately out of scope here.
+- **CORRECTION (2026-08-11, user challenge).** The original wording said the tool "cannot serve"
+  daily data. **That is FALSE and is retracted.** FRED returns **497 daily observations** for
+  DGS10 over 2 years; `datasources/shapes.py::fred_observations` sums them by year and emits 3
+  `{year, value}` records — **494 of 497 discarded (99%)**. RAICA HAS the daily data and throws it
+  away. The claim rested on a CONFIG COMMENT rather than the handler code — the same
+  trust-the-description-over-the-mechanism error logged elsewhere today.
+- **Why the aggregation exists, and where it stops being right:** `fred_observations` was built for
+  the socioeconomic catalog (GDP, unemployment, debt-to-GDP, inequality), where an annual mean is
+  the correct summary. Treasury yields are daily instruments whose PATH is the information, so the
+  shape is right for its original purpose and wrong for this one.
+- **Standing:** the SI-027 policy is a DISCLOSURE PATCH over a fixable data path, not a workaround
+  for a hard limit. Deferred by the user 2026-08-11 ("the disclaimer is sufficient for now").
 - **Tests:** `tests/unit/test_chart_granularity_policy.py` (8), incl. one asserting the policy
   never promises daily/weekly/monthly data the tool cannot serve.
 

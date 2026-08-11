@@ -38,10 +38,18 @@ The specific misreading is named so it cannot recur silently:
 *"Two lines rising together with an unchanged gap are NOT diverging; check the gap before you call
 it one."*
 
-## Known limitation — NOT fixed
+## Known limitation — corrected 2026-08-11
 
-Dataset charts remain **annual-mean only**. A true daily yield path requires a frequency-capable
-data path — a code change, deliberately out of scope for a policy-only fix.
+Dataset charts remain **annual-mean only**. The original wording here said the tool *cannot* serve
+daily data — **that was false and is retracted**. FRED returns **497 daily observations** for DGS10
+over 2 years; `fred_observations` sums them by year and emits **3** records, discarding **99%**.
+RAICA has the daily data and throws it away; the claim rested on a config comment rather than the
+handler code.
+
+The aggregation is correct for the catalog it was built for (GDP, unemployment, inequality) and
+wrong for daily instruments like yields. **This policy is therefore a disclosure patch over a
+fixable data path, not a workaround for a hard limit.** Tracked as SI-028 (deferred by the user);
+a Treasury daily-curve source would serve the whole curve at daily resolution in one request.
 
 ## Files changed
 
