@@ -412,6 +412,38 @@ verbatim on sign-off.
 
 ## Resolved
 
+### SI-026 — A missing market value silently killed technicals AND charts  →  **FIXED 2026-08-11 (v1.0.0.251)**  [was P1, user-reported from production]
+- **Reported:** user replied to an @Ask post — *"Show the 2 years chart of GPIQ"* — and got
+  prose with **no chart** (sabawi.net/post/6502).
+- **Gate chain traced end-to-end; the first three PASSED:** tool ALLOWED (in the @Ask
+  whitelist) ✓ · tool SELECTED (`Generated tool calls: ['comprehensive_stock_analyzer']`) ✓ ·
+  tool INVOKED ✓ · **marker PRODUCED ✗** — and not even the `chart NOT emitted` diagnostic
+  fired, proving the block was never reached.
+- **CAUSE (reproduced on prod, then locally):** the analyzer fills missing market fields with
+  the **STRING `"N/A"`** (`market_cap`, `volume`, `pe_ratio`, `analyst_target`). GPIQ is an
+  **ETF**: `quoteType: ETF`, marketCap/sector/industry `None`, all three financial statements
+  empty. `"N/A"` is **TRUTHY**, so every guard of the form `if market_cap and ...` passed and
+  the arithmetic raised — `market_cap / current_price` (shares outstanding), then
+  `market_cap + total_debt - cash` (enterprise value). Both sit inside one broad `except`, so
+  the detailed block aborted **silently**, taking the TECHNICAL ANALYSIS and the `[[chart:]]`
+  marker with it.
+- **Control run (prod, same build):** NVDA 12,634 chars / **4 charts** vs GPIQ 3,040 chars /
+  **0 charts** — proving charts were healthy and the defect was ETF-specific, not global.
+  A second control killed a red herring: `charts.enabled: false` in the config is an unused
+  key; `charts_enabled()` returns True.
+- **Fix:** module-level `_num()` coercion applied at the **single entry point** where market
+  values are read, so all five arithmetic sites are covered at once. Fixing only the first
+  crash was NOT enough — a second sentinel bug (`+` not `/`) surfaced immediately behind it.
+- **Verified:** GPIQ 0→**4 charts**, QQQI 0→**4 charts**, NVDA/KO/JPM unchanged at 4.
+  Pre-fix raises `TypeError: unsupported operand type(s) for /: 'str' and 'float'`; post-fix
+  returns cleanly.
+- **Scope:** affects EVERY instrument without a market cap — all ETFs, some ADRs and
+  thinly-traded names — not just this ticker.
+- **Tests:** `tests/unit/test_etf_sentinel_coercion.py` (18) — incl. a test pinning that
+  `"N/A"` is truthy (the root cause), that a real `0.0` still survives coercion, and that the
+  coercion stays at the single entry point.
+
+
 ### SI-025 — Duplicate YAML key halved the synthesis budget; flat truncation then destroyed computed tool output  →  **FIXED 2026-08-10 (v1.0.0.250)**  [was P0 — the product's flagship feature, unusable above ~3 tickers]
 - **Reported by the user:** an 8-stock `@Ask` query returned *"No technical chart markers were
   provided in the evidence"* for **all 8** stocks and **zero DCF values**, while the July prod

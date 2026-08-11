@@ -12,6 +12,36 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _num(value):
+    """Coerce a possibly-sentinel market value to float, or None.
+
+    The analyzer fills missing market fields with the STRING "N/A"
+    (comprehensive_stock_analyzer: market_cap, volume, pe_ratio, analyst_target), and a
+    truthiness guard cannot defend against that — `"N/A"` is truthy, so
+    `if market_cap and current_price:` passed and `"N/A" / np.float64(57.16)` raised
+    `TypeError: ufunc 'divide' not supported...`. The whole detailed-analysis block is
+    wrapped in a broad `except`, so the failure was SILENT: the user asked for a chart of
+    an ETF and got basic quote text with no technicals and no chart, and nothing in the
+    reply said why.
+
+    Reported from production 2026-08-11 on GPIQ (an ETF: marketCap absent, no financial
+    statements). Affects EVERY instrument without a market cap, not just this one.
+
+    Returns None for None, "", "N/A", NaN and anything non-numeric — so callers can guard
+    with `is not None` instead of truthiness, and 0.0 stays a real value.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    if out != out:            # NaN
+        return None
+    return out
+
+
+
 
 class FinancialRatioCalculator:
     """
@@ -365,10 +395,15 @@ class FinancialRatioCalculator:
         ratios = {}
         ticker_info = ticker_info or {}
 
-        # Extract market data
-        current_price = market_data.get('current_price')
-        market_cap = market_data.get('market_cap')
-        shares_outstanding = market_data.get('shares_outstanding')
+        # Extract market data — COERCED at the single entry point (SI-026).
+        # The analyzer fills missing market fields with the STRING "N/A", which is TRUTHY,
+        # so every downstream `if market_cap and ...` guard passed and the arithmetic blew
+        # up: `"N/A" / price` (shares outstanding) and `"N/A" + total_debt` (enterprise
+        # value). Coercing HERE fixes all five arithmetic sites at once instead of adding a
+        # guard to each — a per-site patch would leave the next one to be found in prod.
+        current_price = _num(market_data.get('current_price'))
+        market_cap = _num(market_data.get('market_cap'))
+        shares_outstanding = _num(market_data.get('shares_outstanding'))
 
         # Extract financial data (annual statement — used as FALLBACK only)
         net_income = self._get_value(income_stmt, 'Net Income')
