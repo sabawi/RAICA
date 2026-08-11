@@ -151,3 +151,47 @@ def test_policy_routes_securities_to_the_specialized_analyzer():
 
 def test_policy_requires_naming_the_fetched_source():
     assert "NAME WHAT YOU FETCHED" in FLAT
+
+
+# ------------------------------------------- the contract the caller actually requires
+
+def test_data_result_satisfies_the_same_contract_as_the_html_extractor():
+    """PRODUCTION BUG, 2026-08-11 (v1.0.0.253 first cut).
+
+    The data path fetched the CSV correctly and then died FORMATTING it: the caller builds
+    its source block from result['title'] / ['author'] / ['date'] unconditionally, which the
+    HTML and PDF extractors supply and the new data path did not. The model saw
+    "Website extraction error: 'title'" — a fetch that SUCCEEDED and was then lost.
+
+    A partial return contract is worse than no path at all: the old failure at least named
+    the URL. This pins every key the caller reads.
+    """
+    import types
+    import requests
+    s = _shim()
+    payload = b"Date,10 Yr\n08/10/2026,4.72\n08/07/2026,4.65\n"
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "text/csv"}
+        raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
+        def close(self): pass
+
+    orig, requests.get = requests.get, lambda *a, **k: _R()
+    try:
+        out = s._extract_data_content("http://x/d.csv", "text/csv")
+    finally:
+        requests.get = orig
+
+    for key in ("success", "title", "author", "date", "content"):
+        assert key in out, f"caller reads result[{key!r}] unconditionally — KeyError otherwise"
+    assert out["title"], "title must be non-empty; it labels the source block"
+
+
+def test_data_and_html_return_the_same_key_set_for_the_caller():
+    """Guards the SHAPE rather than one key, so a future field added to the HTML extractor
+    and consumed by the caller cannot silently break the data path again."""
+    required = re.findall(r'"(success|title|author|date|content)":', _grab("_extract_web_content"))
+    data_src = _grab("_extract_data_content")
+    for key in set(required):
+        assert f'"{key}"' in data_src, f"data path never sets {key!r} that the HTML path returns"

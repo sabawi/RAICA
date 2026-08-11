@@ -2228,8 +2228,17 @@ class AsyncToolManager:
         note = (f"[{label} file: {len(lines)} lines retrieved"
                 + (f"; TRUNCATED at {self._DATA_MAX_BYTES} bytes — this is NOT the whole file"
                    if over else " (complete)") + "]")
-        return {"success": True, "content": f"{note}\n{text}", "data_label": label,
-                "lines": len(lines), "truncated": over}
+        # Must satisfy the SAME contract as _extract_web_content — the caller reads
+        # result['title'] / ['author'] / ['date'] unconditionally when building the source
+        # block. Omitting them raised KeyError: 'title', which surfaced to the model as
+        # "Website extraction error: 'title'" AFTER the file had been fetched correctly —
+        # a fetch that succeeded and then died in formatting.
+        return {"success": True,
+                "title": f"{label} data file",
+                "author": None,
+                "date": None,
+                "content": f"{note}\n{text}",
+                "data_label": label, "lines": len(lines), "truncated": over}
 
     async def lookup_website(self, args: str) -> str:
         """
