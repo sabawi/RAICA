@@ -205,6 +205,79 @@ def span_subdivisions(text, span):
     return len(subs)
 
 
+# ---------------------------------------------------------------- disclosure of weak sourcing
+
+# The verifier appends its own italic notes ("— _This is an inference drawn from …_"). Those are
+# the VERIFIER speaking, not the synthesis model, and crediting them to a synthesis directive
+# would report someone else's work as the change's effect. Stripped before any disclosure metric.
+_VERIFIER_NOTE = re.compile(r"—\s*_[^_\n]{20,}_")
+
+
+def strip_verifier_notes(text):
+    return _VERIFIER_NOTE.sub(" ", text or "")
+
+
+# Grammatical attribution frames. This is a lexical list and therefore UNDER-counts a paraphrase
+# it does not know — a deliberate choice: the metric scores a behaviour the directive REQUIRES,
+# so failing toward "not disclosed" is conservative, whereas a generous matcher would credit
+# disclosure that never happened. Compare arms, never read the absolute value as truth.
+_ATTRIBUTION = re.compile(
+    r"\b(?:according to|per the|per [A-Z]|as (?:the )?\w+ (?:notes|states|puts it|describes)"
+    r"|general reference|reference works?|encyclopa?edi\w*|the entry (?:on|for)"
+    r"|\w+ (?:entry|article) (?:on|for)|summar(?:y|ises|izes) in)\b", re.I)
+
+
+def encyclopedic_attribution_ratio(text):
+    """Of the sentences citing a general-reference source, the share that ATTRIBUTE it in prose.
+
+    The directive requires that a point resting on an encyclopedia be visible as such to the
+    reader rather than passing as scholarship. 1.0 = every such citation is attributed;
+    0.0 = they all read as bare fact. Returns None when the answer cites no general-reference
+    source at all, which must be reported as "not applicable" and never as a perfect score.
+    """
+    body = strip_verifier_notes(text)
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    citing = [s for s in sentences
+              if any(_ENCYCLOPEDIC.search(u) for u in _CITE_RE.findall(s))]
+    if not citing:
+        return None
+    attributed = sum(1 for s in citing if _ATTRIBUTION.search(_CITE_RE.sub(" ", s)))
+    return round(attributed / len(citing), 3)
+
+
+def unattributed_encyclopedic_citations(text):
+    """Count of sentences citing a general-reference source with NO attribution in the prose.
+
+    Preferred over an attribution RATIO because the ratio is undefined when nothing
+    encyclopedic is cited — and that case is the BEST outcome, not a missing one. A sentinel
+    for "not applicable" in a scored metric inverts the direction (a clean run scores worst)
+    and repeats the sentinel-in-arithmetic defect that took charts down in SI-026.
+
+    0 is correct and achievable two ways: cite no general-reference source, or attribute every
+    one. Lower is better; the value is a COUNT of reader-invisible tertiary claims.
+    """
+    body = strip_verifier_notes(text)
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    citing = [s for s in sentences
+              if any(_ENCYCLOPEDIC.search(u) for u in _CITE_RE.findall(s))]
+    return sum(1 for s in citing if not _ATTRIBUTION.search(_CITE_RE.sub(" ", s)))
+
+
+def thin_evidence_disclosures(text):
+    """Count of explicit statements that evidence for some part of the request did not arrive.
+
+    The "honest-but-thin" goal: where scholarship was not retrieved, the answer should SAY so
+    rather than quietly filling the space with tertiary material. Verifier notes are stripped
+    first, so this counts only what the synthesis model chose to say.
+    """
+    body = strip_verifier_notes(text)
+    return len(re.findall(
+        r"\b(?:was not retrieved|were not retrieved|not reachable|no (?:peer-reviewed|scholarly|primary|"
+        r"academic) (?:source|sources|literature|work)\b|evidence (?:is|remains|was) (?:thin|sparse|limited)"
+        r"|little direct evidence|no direct evidence|not directly attested|the scholarship for)\b",
+        body, re.I))
+
+
 def debate_markers(text):
     """DIAGNOSTIC ONLY — never scored with a direction. See the module docstring.
 

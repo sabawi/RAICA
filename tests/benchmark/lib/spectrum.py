@@ -164,6 +164,18 @@ def retain(scenario, text, log_lines=None, tag=None):
     flagged claims could not be READ because the harness had measured the answer and thrown
     it away. A metric that moves without a retrievable artifact cannot be diagnosed — only
     argued about, which is how the whole day went wrong.
+
+    2026-08-12 — EVERY RUN IS KEPT, not just the last. The original wrote one file per
+    scenario+tag, so an n=3 arm silently left ONE arbitrary survivor and the other two were
+    destroyed. That is not a smaller sample, it is an UNREPRESENTATIVE one, and it produced a
+    false comparison immediately: the surviving PRE artifact happened to be a degenerate run
+    whose evidence included German tea shelf-life pages for a question about the Iron Age Near
+    East, and it was about to be compared against the LARGEST run of the POST arm. Retaining
+    the median-quality run is impossible when only one survives, and any per-artifact claim
+    from a single kept run is a claim about a sample of one.
+
+    Files are numbered per (scenario, tag) within a process, so the run index in the filename
+    matches the position in the metrics list that `run()` returns.
     """
     import os
     out = os.environ.get("BENCH_ARTIFACT_DIR")
@@ -171,10 +183,33 @@ def retain(scenario, text, log_lines=None, tag=None):
         return None
     os.makedirs(out, exist_ok=True)
     suffix = f"_{tag}" if tag else ""
-    path = os.path.join(out, f"{scenario}{suffix}.md")
+    key = (scenario, tag)
+    _RETAIN_SEQ[key] = _RETAIN_SEQ.get(key, 0) + 1
+    idx = _RETAIN_SEQ[key]
+    path = os.path.join(out, f"{scenario}{suffix}_run{idx}.md")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text or "")
     if log_lines:
-        with open(os.path.join(out, f"{scenario}{suffix}.log"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(out, f"{scenario}{suffix}_run{idx}.log"), "w", encoding="utf-8") as fh:
             fh.write("\n".join(log_lines))
     return path
+
+
+# run counter per (scenario, tag) so retained filenames line up with the metrics list order
+_RETAIN_SEQ = {}
+
+
+def retained_runs(scenario, tag=None, artifact_dir=None):
+    """Every retained answer for an arm, in run order — the input to any per-artifact metric.
+
+    Exists so a reviewer measures the WHOLE arm rather than whichever run happened to survive.
+    """
+    import glob
+    import os
+    out = artifact_dir or os.environ.get("BENCH_ARTIFACT_DIR")
+    if not out:
+        return []
+    suffix = f"_{tag}" if tag else ""
+    paths = sorted(glob.glob(os.path.join(out, f"{scenario}{suffix}_run*.md")),
+                   key=lambda p: int(p.rsplit("_run", 1)[1].split(".")[0]))
+    return [open(p, encoding="utf-8").read() for p in paths]

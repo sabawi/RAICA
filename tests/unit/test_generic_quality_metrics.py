@@ -157,3 +157,51 @@ def test_subdivision_is_diagnostic_not_a_target():
     assert span_subdivisions("The period from 1000 to 700 BC was the Iron Age.", (-1000, -700)) == 0
     assert span_subdivisions(
         "States formed 1000-900 BC; Assyria expanded 900-800 BC.", (-1000, -700)) == 2
+
+
+# --------------------------------------------------------------------- disclosure metrics
+
+from lib.generic_quality import (  # noqa: E402
+    encyclopedic_attribution_ratio, strip_verifier_notes, thin_evidence_disclosures,
+)
+
+
+def test_verifier_notes_are_not_credited_as_the_models_disclosure():
+    """The verifier appends italic notes of its own. Counting them would report ANOTHER
+    component's output as the effect of a synthesis directive — which nearly happened when a
+    post-change answer's honest-looking lines turned out to be verifier annotations."""
+    text = ("Aramaic spread widely. — _This is an inference drawn from the Ramesside example, "
+            "but it is not directly supported by the provided evidence._")
+    assert thin_evidence_disclosures(text) == 0
+    assert "inference drawn" not in strip_verifier_notes(text)
+
+
+def test_thin_evidence_disclosure_counts_the_models_own_statement():
+    assert thin_evidence_disclosures(
+        "No peer-reviewed source for Mannean was retrieved, so this section is brief.") >= 1
+
+
+def test_encyclopedic_attribution_distinguishes_bare_fact_from_attribution():
+    bare = "Aramaic became the lingua franca [Neo-Aramaic languages](https://en.wikipedia.org/wiki/X)."
+    attributed = ("According to the encyclopaedia entry, Aramaic became the lingua franca "
+                  "[Neo-Aramaic languages](https://en.wikipedia.org/wiki/X).")
+    assert encyclopedic_attribution_ratio(bare) == 0.0
+    assert encyclopedic_attribution_ratio(attributed) == 1.0
+
+
+def test_encyclopedic_attribution_is_none_when_no_encyclopedia_is_cited():
+    """Must read 'not applicable', never a perfect score — a scholarly answer that cites no
+    encyclopedia would otherwise appear to have perfect disclosure."""
+    assert encyclopedic_attribution_ratio(
+        "A finding is reported [Study](https://doi.org/10.1/a).") is None
+
+
+def test_unattributed_encyclopedic_is_zero_both_when_clean_and_when_attributed():
+    """Zero must be reachable two ways, and a run citing NO encyclopedia must not be
+    penalised — the failure mode of the attribution-ratio sentinel it replaced."""
+    from lib.generic_quality import unattributed_encyclopedic_citations as u
+    assert u("A finding is reported [Study](https://doi.org/10.1/a).") == 0
+    assert u("According to the encyclopaedia entry, X held "
+             "[Entry](https://en.wikipedia.org/wiki/X).") == 0
+    assert u("X held [Entry](https://en.wikipedia.org/wiki/X). "
+             "Y also held [Entry2](https://en.wikipedia.org/wiki/Y).") == 2

@@ -82,6 +82,15 @@ def run(base, repeats=1):
         runs.append([
             # --- sourcing SUBSTANCE (topic-agnostic; see lib/generic_quality.py) ---
             _m("unanchored_citation_ratio", "CODE", GQ.unanchored_citation_ratio(text), "ratio", "lower_better",  0),
+
+            # --- DISCLOSURE: the "honest-but-thin" bar. Success here is not a lower
+            #     encyclopedic share but SAYING SO when the sourcing is thin. Verifier
+            #     annotations are stripped inside these helpers, so they measure only what the
+            #     SYNTHESIS model chose to say.
+            _m("unattributed_encyclopedic", "CODE", GQ.unattributed_encyclopedic_citations(text),
+               "count", "lower_better", 0),
+            _m("thin_evidence_disclosures", "CODE", GQ.thin_evidence_disclosures(text),
+               "count", "higher_better", 0),
             _m("retrieval_depth_chars",     "CODE", GQ.retrieval_depth(text),           "chars", "higher_better", 0),
             _m("citation_reuse",            "CODE", GQ.citation_reuse(text),            "ratio", "lower_better",  0),
             _m("academic_share",            "CODE", mix["academic"],                    "ratio", "higher_better", 0),
