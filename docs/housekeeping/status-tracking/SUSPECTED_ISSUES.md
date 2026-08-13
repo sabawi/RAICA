@@ -11,6 +11,91 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-032 — Academic search is substantially BROKEN in production; the whole raw sub-question is sent as the API query  [P1 — cause CONFIRMED by falsification · fix shipped v1.0.0.260 · AWAITING prod re-measure before clearing]
+- **Observed (2026-08-12, across the retained prod logs, 12 DR runs):** 158 academic-source
+  failures. Two of them are OUR bug, not rate limiting:
+  ```
+  OpenAlex search error: 400, message='Bad Request',
+    url='https://api.openalex.org/works?search=What%20do%20independent%20analyses%20and%20
+         comparisons%20conclude%20about%20the%20suitability%20of%20GPIQ,%20QQQI,%20and%20TDAQ...'
+  DOAJ search error: 400, message='Bad Request',
+    url='https://doaj.org/api/v2/search/articles/What%20do%20independent%20analyses%20and%20...'
+  ```
+  **Success vs failure, measured:** OpenAlex **11 ok / 47 × 400 (81% failing)**; DOAJ
+  **4 ok / 51 × 400 (93% failing)**.
+- **Cause (CONFIRMED 2026-08-13 by falsification through the real code path, and CORRECTED —
+  the mechanism first recorded here was wrong in its details):** the planner's natural-language
+  SUB-QUESTION is passed verbatim as the bibliographic query, and these catalogues parse the
+  argument as a **query EXPRESSION, not as free text**. The killer is not length — it is that
+  every planner sub-question ends in `?`, which both APIs read as an OPERATOR. Each server names
+  its own rule in the 400 body:
+  ```
+  OpenAlex -> {"error":"Invalid query parameters error.",
+               "message":"Wildcards (* or ?) require exact (no-stem) search..."}
+  DOAJ     -> {"status":"bad_request","error":"Query contains disallowed Lucene features"}
+  ```
+  The named falsification test was run — same code path, short keyword query:
+  ```
+  source     arm    n_results  chars
+  openalex   LONG      0        243   <- the exact string from this log
+  openalex   SHORT     5         34
+  doaj       LONG      0        215
+  doaj       SHORT     3         33
+  ```
+  **A competing cause was REFUTED, not merely unconsidered:** re-issuing the identical query with
+  strict yarl/aiohttp encoding returned the same 400 from both APIs, so this is NOT a URL-encoding
+  bug on our side; removing the `?` alone returned 200. **Two claims originally recorded here are
+  withdrawn:** (a) *"DOAJ puts the query in the URL PATH, which a long sentence breaks outright"* —
+  a 131-char punctuation-free query returns HTTP **200** with 0 matches, so the path is fine and
+  length is a RELEVANCE problem, not a transport one; (b) *"arXiv/PubMed tolerate it"* — arXiv
+  does, **PubMed does not**: it returns an EMPTY SET (0 vs 5), which is worse than a 400 because
+  nothing errors.
+- **Scope, measured across all 11 corpora (WIDER than the 2 first logged):**
+  | effect | sources | mechanism |
+  |---|---|---|
+  | hard HTTP 400 | `openalex`, `doaj` | query-DSL operators |
+  | silent 0 results | `pubmed`, `core`, `doab`; `europe_pmc` 5→1 | over-long AND-ed term lists |
+  | unaffected | `arxiv`, `crossref` | — |
+- **Other channels failing in the same window:** `Semantic Scholar` 73 × 429 and `CORE` 26 ×
+  "likely needs API key" (both SI-006, awaiting free registration), plus **`Crossref` 23 × 429**,
+  which was NOT previously tracked.
+- **Why this is P1 and not housekeeping.** It is the most likely CAUSE of the user's standing
+  complaint that DR answers lean on Wikipedia. With five academic channels degraded, general web
+  search is what remains, and the encyclopedia is what general web search returns. **Two
+  consecutive policy-only attempts to fix the sourcing mix failed under measurement
+  (v1.0.0.257 reverted after external review; the v1.0.0.259 attempt dropped before shipping)
+  — because no directive can cite scholarship the retrieval layer never fetched.**
+- **Fix shipped v1.0.0.260** — two layers, because neither alone is sufficient (the first gate
+  produces a well-formed query; the second guarantees it stays valid on the wire):
+  - **Fix A — planner policy** (`research/engine.py`): `published_papers_search` was listed among
+    the sources for which the planner should OMIT a per-source query and let the sub-question
+    sentence be used. It is now told to send bibliographic keywords via the existing
+    `per_source_queries` mechanism, and the assessor's `next_queries` prompt says the same, so
+    rounds 2+ match round 1. Policy language, LLM-judged — no keyword lists.
+  - **Fix B — transport** (`user_tools/published_papers_search_tool.py`): the query is rendered
+    valid in each source's own query syntax at a single chokepoint (`_prepare_search_tasks`), so
+    every caller — DR or not — is covered even if `per_source_queries` is turned off. Protocol
+    constants, measured per API; nothing here interprets meaning.
+  - **Parity defect found by the adversarial audit and also fixed:** the below-`min_rounds`
+    re-issue rebuilt the plan's tasks INLINE without consulting `queries`, so on that path
+    published_papers_search silently received the raw sub-question again — re-opening the bug for
+    exactly the runs that gather hardest. Both callers now share `DeepResearchEngine._plan_tasks`.
+- **Evidence of recovery (real tool entry point, `execute()`, 3 scholarly topics):**
+  | arm | papers retrieved | HTTP 400s |
+  |---|---|---|
+  | PRE (pre-fix code, raw sub-question) | 42 | 6 |
+  | POST (fixed code, planner's keyword query) | **104** | **0** |
+
+  The planner half was verified on the REAL planner with the REAL model, n=3 (non-deterministic
+  decision): **3/3 runs** emitted bibliographic queries for every `published_papers_search` task.
+  Regression: `tests/unit/test_si032_academic_query_syntax.py`, 30 tests, all failing on pre-fix
+  code (the real-entry-path case fails on a genuine assertion, not a missing-attribute crash).
+- **Do not clear** until the post-fix OpenAlex/DOAJ 400-rates are confirmed on **real production
+  DR traffic** (the measurements above are local, through the tool's real entry point but not
+  through a live server run), and `encyclopedic_share` / `academic_share` are re-measured on the
+  S9 scenario. The retrieval layer is fixed; the SOURCING-MIX claim it was meant to explain is
+  still unproven.
+
 ### SI-031 — Finance evidence_items halved after a SYNTHESIS-only prompt change  [P3 — SUSPECTED, needs n>=3]
 - **Observed (2026-08-11, v1.0.0.256 -> v1.0.0.257):** the S5 7-ticker finance scenario returned
   `evidence_items` PRE **[65, 89]** -> POST **[41, 24]**. The ranges do NOT overlap, which is why this is

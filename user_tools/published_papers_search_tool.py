@@ -47,6 +47,24 @@ _BIORXIV_ROWS = 30
 _BIORXIV_MAX_PAGES = 8
 _BIORXIV_WINDOW_DAYS = 90
 
+# SI-032 — characters each API's query parser treats as OPERATORS rather than as text.
+# These are PROTOCOL constants (wire syntax, same category as urlencoding's safe-set), NOT an
+# interpretation of what a query MEANS — nothing here classifies intent, topic or capability, so
+# the LLM-Policy Gate's no-hardcoded-lists clause does not apply. The sets were MEASURED against
+# the live APIs, and each server names its own rule in the 400 body:
+#   OpenAlex -> {"error":"Invalid query parameters error.","message":"Wildcards (* or ?) require
+#                exact (no-stem) search..."}                      -> ? * ! |
+#   DOAJ     -> {"status":"bad_request","error":"Query contains disallowed Lucene features"}
+#                (the search string is handed to Lucene)          -> ? * " ( ) { } [ ] ^ ~
+# DOAJ's ':' is included for a different reason: it does NOT 400, it silently returns zero results
+# because Lucene reads `term:value` as a FIELD query — an invisible failure, which is worse.
+# Sources absent from this map (arXiv, Crossref, PubMed, CORE, Europe PMC, …) were measured to
+# accept the full punctuation sweep and are passed through untouched.
+_QUERY_OPERATOR_CHARS = {
+    "openalex": set('?*!|'),
+    "doaj": set('?*"(){}[]^~:'),
+}
+
 class PublishedPapersSearchTool(BaseUserTool):
     """
     A comprehensive academic paper search tool that queries multiple databases:
@@ -184,13 +202,48 @@ class PublishedPapersSearchTool(BaseUserTool):
         
         # Filter sources if specific ones requested
         if requested_sources:
-            sources_to_search = [(name, func) for name, func in all_sources 
+            sources_to_search = [(name, func) for name, func in all_sources
                                if name in requested_sources]
         else:
             sources_to_search = all_sources
-        
-        # Create tasks
-        return [(name, func, query, year, max_results) for name, func in sources_to_search]
+
+        # Create tasks. SI-032: the query is rendered valid in EACH source's own query syntax here —
+        # a single chokepoint, so no per-source path can drift out of sync (all 11 searches and every
+        # caller, DR or not, get the same treatment).
+        tasks = []
+        for name, func in sources_to_search:
+            source_query = self._query_for_source(name, query)
+            if not source_query:
+                # The query was operators only; there is nothing left to search for. Skipping beats
+                # issuing a request whose meaning we cannot predict (an empty `search=` matches all).
+                logger.debug(f"Papers search: {name} skipped — query is empty in that source's syntax")
+                continue
+            tasks.append((name, func, source_query, year, max_results))
+        return tasks
+
+    @staticmethod
+    def _query_for_source(source: str, query: str) -> str:
+        """Render `query` valid in `source`'s query syntax (SI-032).
+
+        Academic APIs do not take free text — they parse the argument as a query expression. An
+        unescaped operator is not ignored, it is a hard HTTP 400 (OpenAlex read the '?' ending every
+        planner sub-question as a wildcard; DOAJ rejected the same string as a disallowed Lucene
+        feature), which silently cost ~81%/93% of those two corpora in production.
+
+        Operators are replaced with a space rather than deleted, so 'multipolarity(hegemony)' stays
+        two searchable terms instead of fusing into one nonexistent one. Sources with no declared
+        operator set are returned unchanged.
+
+        Total by construction: task building runs OUTSIDE the per-source try/except, so raising here
+        would abort all eleven searches instead of the one that was malformed.
+        """
+        if not isinstance(query, str) or not query.strip():
+            return ""
+        operators = _QUERY_OPERATOR_CHARS.get(source)
+        if not operators:
+            return query
+        cleaned = "".join(" " if ch in operators else ch for ch in query)
+        return " ".join(cleaned.split())
     
     async def _execute_parallel_searches(self, search_tasks: List[tuple]) -> List[tuple]:
         """Execute search tasks in parallel with rate limiting"""

@@ -61,6 +61,27 @@ source that still slips through. Ship A + B together in shadow; they compound.
 2. **Phase 1 — enforce B** (drop off-topic cited sources; lowest-risk, output-side, keeps the answer text).
 3. **Phase 2 — enforce A** (domain-scoped source selection) after its shadow numbers look clean.
 
+### 4b. Status — the "sharpened query terms" half of A shipped v1.0.0.260 (SI-032)
+Layer A shipped its **corpus-routing** half only (`_judge_paper_corpora`, `fastapi_server_complete.py`).
+The **sharpened query terms** promised in §3A above (line 41) were never built — and that gap turned out
+to be far more damaging than the homonym problem this document was written for.
+
+Because the query was never sharpened, the raw sub-question went to the catalogues verbatim. This
+document's §2 already recorded the symptom — *"arXiv 500 on full-sentence queries"* — without following
+it: in production it was **HTTP 400 on 81% of OpenAlex calls and 93% of DOAJ calls**, because those APIs
+parse the argument as a query EXPRESSION and every planner sub-question ends in `?` (a wildcard operator
+to OpenAlex, a disallowed Lucene feature to DOAJ).
+
+v1.0.0.260 supplies the sharpening at the **planner** rather than in a second judge call — the planner
+already writes the sub-question, so it writes the bibliographic keywords too, via the existing
+`per_source_queries` map. No extra LLM round-trip, and it composes with the corpus routing already
+shipped. A transport-level guarantee in the tool backs it up for callers that bypass the planner. See
+`docs/housekeeping/status-tracking/CHANGELOG_v1.0.0.260.md`.
+
+**Still open from this document:** Layer B remains in SHADOW (relevance gate logs but does not drop),
+and the humanities-corpus additions are in place (OpenAlex/Crossref/CORE/DOAJ/DOAB/Internet Archive)
+but two of them are rate-limited pending API keys (SI-006).
+
 ## 5. Config (fail-open, reversible)
 ```yaml
 deep_research:

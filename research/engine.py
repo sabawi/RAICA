@@ -288,11 +288,22 @@ class ResearchPlanner:
         _queries_guidance = (
             "- PER-SOURCE QUERY (optional `queries` map per sub-question): MOST sources take a "
             "natural-language search string as their argument — for those (search_web, "
-            "get_news_summaries, wikipedia_query, published_papers_search, get_sec_filings, "
+            "get_news_summaries, wikipedia_query, get_sec_filings, "
             "document_search) OMIT the queries entry; the sub-question text is the correct query "
             "and is used by default. ONLY for sources whose argument is NOT a natural-language "
             "search string, add a `queries` entry mapping that source name to the EXACT argument "
             "string the tool expects:\n"
+            "  * published_papers_search -> a BIBLIOGRAPHIC KEYWORD query, NOT the sub-question "
+            "sentence. This source is a set of academic catalogues (OpenAlex, DOAJ, PubMed, CORE, "
+            "Crossref…) that match your argument against paper TITLES and ABSTRACTS, so a written-out "
+            "question retrieves nothing: every word has to appear in the paper, and question or "
+            "wildcard punctuation is rejected by the catalogue outright. Supply the handful of terms "
+            "a librarian would search — the concepts, proper nouns and terms of art the paper's own "
+            "title would contain — with no question words and no punctuation. For a sub-question "
+            "like \"What are the key scholarly debates about the decline of US hegemony and the rise "
+            "of multipolarity?\" the argument is \"multipolarity US hegemony decline international "
+            "order\". Give a LIST of 2-3 such queries when the sub-question spans distinct concepts "
+            "that no single paper would cover at once.\n"
             "  * comprehensive_stock_analyzer -> a JSON string {\"ticker\":\"PLTR\",\"detailed\":true} "
             "(single ticker; detailed=true for fundamentals/DCF/ratios/projections).\n"
             "  * get_stock_and_company_data -> \"PLTR\" (bare ticker) or {\"symbol\":\"PLTR\"}.\n"
@@ -620,6 +631,30 @@ class DeepResearchEngine:
             logger.warning("🔎 source '%s' failed for %r: %s", source, query[:60], e)
             return f"[source '{source}' returned no usable result: {e}]"
 
+    @staticmethod
+    def _plan_tasks(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Build the (source, query) tasks for the plan's sub-questions.
+
+        v1.0.0.157: if the planner emitted a per-source `queries` override for a source, dispatch one
+        task per provided arg string (list → multiple calls, e.g. several tickers under one
+        sub-question); otherwise the sub-question text is the query. _dispatch_round de-dupes by
+        (source, query) so duplicate arg strings never run twice.
+
+        SI-032: shared by BOTH callers — round 1 and the below-min_rounds re-issue. The re-issue used
+        to rebuild these tasks inline WITHOUT consulting `queries`, so a source that needs a
+        specially-shaped argument (published_papers_search's bibliographic keywords, a stock tool's
+        JSON) silently got the raw sub-question on that path only.
+        """
+        tasks: List[Dict[str, Any]] = []
+        for sq in plan["sub_questions"]:
+            sq_queries = sq.get("queries", {}) or {}
+            for src in sq["sources"]:
+                arg_strings = sq_queries.get(src) or [sq["question"]]
+                for arg in arg_strings:
+                    tasks.append({"sub_question_id": sq["id"], "question": sq["question"],
+                                  "source": src, "query": arg})
+        return tasks
+
     async def _dispatch_round(self, tasks: List[Dict[str, Any]], round_num: int,
                               executed: set) -> List[Dict[str, Any]]:
         """Dispatch a round's (source, query) tasks concurrently; return new evidence items."""
@@ -687,7 +722,11 @@ class DeepResearchEngine:
             "independent sources — NOT merely more material on a point already settled.\n\n"
             f"If NEEDS_MORE, propose targeted next_queries using ONLY these sources: {allowed}. "
             "Each next query must address a specific gap (an unanswered sub-question or a claim "
-            "with too few independent sources). Do not repeat queries already run.\n\n"
+            "with too few independent sources). Do not repeat queries already run.\n"
+            "Write each query in the form its source expects: published_papers_search matches "
+            "against paper TITLES and ABSTRACTS, so give it bibliographic keywords (the concepts and "
+            "terms of art a paper's own title would carry) — never a written-out question, which "
+            "retrieves nothing. The other sources take an ordinary natural-language search string.\n\n"
             "Respond with STRICT JSON only, no prose:\n"
             '{"status": "sufficient" | "needs_more", "gaps": ["..."], '
             '"next_queries": [{"sub_question_id": "q1", "source": "search_web", "query": "..."}]}'
@@ -767,23 +806,8 @@ class DeepResearchEngine:
         evidence: List[Dict[str, Any]] = []
         executed: set = set()
 
-        # Round 1 tasks come straight from the plan. v1.0.0.157: if the planner emitted a
-        # per-source `queries` override for a source, dispatch one task per provided arg string
-        # (list → multiple calls, e.g. several tickers under one sub-question); otherwise the
-        # sub-question text is the query (unchanged v1.0.0.155 behavior). _dispatch_round de-dupes
-        # by (source, query) so duplicate arg strings never run twice.
-        tasks = []
-        for sq in plan["sub_questions"]:
-            _sq_queries = sq.get("queries", {}) or {}
-            for src in sq["sources"]:
-                _arg_strings = _sq_queries.get(src)
-                if _arg_strings:
-                    for _q in _arg_strings:
-                        tasks.append({"sub_question_id": sq["id"], "question": sq["question"],
-                                      "source": src, "query": _q})
-                else:
-                    tasks.append({"sub_question_id": sq["id"], "question": sq["question"],
-                                  "source": src, "query": sq["question"]})
+        # Round 1 tasks come straight from the plan.
+        tasks = self._plan_tasks(plan)
 
         round_num = 1
         stop_reason = "max_rounds"
@@ -825,11 +849,7 @@ class DeepResearchEngine:
             # Below the floor with no proposed queries: re-issue the plan's sub-questions to
             # broaden the pool (dedup skips already-run source+query pairs) rather than stopping.
             if not tasks and below_floor:
-                tasks = [
-                    {"sub_question_id": sq["id"], "question": sq["question"],
-                     "source": src, "query": sq["question"]}
-                    for sq in plan["sub_questions"] for src in sq["sources"]
-                ]
+                tasks = self._plan_tasks(plan)
             if not tasks:
                 stop_reason = "no_further_queries"
                 break
