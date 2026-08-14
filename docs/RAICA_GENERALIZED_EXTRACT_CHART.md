@@ -127,6 +127,20 @@ for no benefit.
 
 ### P2b — Restricted numpy expression evaluator  *(supersedes a `series_stats` tool)*
 
+> **STATUS: BUILT v1.0.0.261 (2026-08-13), signed off by the user.**
+> `utils/restricted_numpy_eval.py` (fence + allow-lists + caps) · `user_tools/compute_tool.py`
+> (tool wrapper + wall-clock timeout) · `tests/unit/test_restricted_numpy_eval.py` (27 tests).
+> Reproduces the motivating failure exactly: `np.min(y30-y10)` = **0.18** and `np.max` = **0.69**
+> against the production answer's +0.19 and +0.53.
+> **All 12 attack vectors below were shown to DISCRIMINATE**, by running the suite against a
+> deliberately permissive plain-`eval` build: 27/27 pass on the real evaluator, and all 12 vectors
+> FAIL on the permissive one. Two vectors initially passed on the permissive build — V2 (numpy
+> 2.3.2 wraps the allowed functions in `_ArrayFunctionDispatcher`, which has no `__globals__`, so
+> the payload raised AttributeError instead of being blocked) and V12 (Cyrillic 'а' does not
+> NFKC-normalise to 'a', and the target file did not exist). Both were rewritten to attacks that
+> genuinely succeed when unguarded. **Still REQUIRED for this to reach the failure that motivated
+> it: P3** — `compute` is invisible to @Ask until it is added to that bot's `allowed_tools`.
+
 **Why this instead of more calculators.** The 2026-08-11 Treasury answer fetched 401 real daily
 rows and then reported the minimum 30Y-10Y spread as **+0.19** while quoting the two yields that
 produce **+0.67**, and named a maximum of +0.53 when the true maximum is **+0.69**, a year

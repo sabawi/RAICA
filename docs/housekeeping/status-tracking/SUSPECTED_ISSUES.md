@@ -11,6 +11,62 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-035 — Two files register the SAME tool name; which implementation is live depends on filesystem order  [P2 — CONFIRMED by invocation]
+- **Observed (2026-08-13, while verifying SI-028 P2b tool discovery):** `discover_user_tools()`
+  returns `analytical_visualizer` **twice**:
+  ```
+  ['analytical_visualizer', 'analytical_visualizer', 'calculator', 'compare_datasets', ...]
+  ```
+  Two files define it — `user_tools/analytical_visualizer.py` (name from `self._name`) and
+  `user_tools/analytical_visualizer_tool.py` (returns the literal `"analytical_visualizer"`).
+- **Why it matters:** registration is `self.available_functions[tool.name] = wrapper`
+  (`fastapi_server_complete.py:552`), so the second load **silently overwrites** the first. The
+  winner is decided by `os.listdir()` order in `tool_discovery.py:40` — filesystem order, which is
+  not guaranteed stable across machines or after a re-checkout. Local and production can therefore
+  run DIFFERENT implementations of the same tool name with no log line saying so.
+- **Sharper because of the design decision:** `docs/RAICA_GENERALIZED_EXTRACT_CHART.md` explicitly
+  REJECTS wiring `analytical_visualizer` (it generates and EXECUTES chart code, emits no
+  `[[chart:]]` marker, writes to a sandbox path). Two copies of a deliberately-rejected tool, one
+  shadowing the other, is worse than either.
+- **To resolve:** determine which file is the live one on prod, delete or rename the other, and add
+  a duplicate-name guard to `discover_user_tools()` that logs loudly rather than overwriting.
+  **Do not clear** without confirming which implementation prod was actually running.
+
+### SI-033 — OpenAlex rate limit is the NEXT binding constraint now that SI-032 unblocked the calls; RAICA is not in the polite pool  [P2 — CONFIRMED by counts, cause SUSPECTED]
+- **Observed (2026-08-13, S9 benchmark, 3 consecutive DR runs):** `OpenAlex search error: 429`
+  **103 times across 103 papers searches** — every single OpenAlex call in the arm. The preceding
+  arm on the same machine saw 17 × 429 starting only 8 minutes in, so the budget is consumed
+  quickly and does not recover between back-to-back runs. Crossref 66 × 429 and Semantic Scholar
+  96 × 429 in the same window.
+- **Why this appeared only now:** before SI-032, most OpenAlex calls died at HTTP 400 before they
+  could count against a quota. Making the query valid converted silent failures into real traffic,
+  and the quota became the limit. This is a consequence of the fix working, not a defect in it —
+  but it caps the benefit.
+- **Cause (SUSPECTED — not yet tested):** OpenAlex and Crossref both grant a much higher-rate
+  "polite pool" to callers that identify themselves with a **`mailto`**, either as a URL parameter
+  or inside the User-Agent. `_fetch_json_content` sends a UA whose comment claims the polite pool
+  (`"RAICA-research/1.0 (academic literature search)"`, tool line ~1076) but carries **no mailto**,
+  and `_search_openalex` (line ~937) adds no `mailto=` parameter — so RAICA is almost certainly in
+  the COMMON pool. **To confirm or refute:** issue the same burst with `mailto=` present and
+  compare the 429 rate. Do not record this as the cause until that is run.
+- **Impact if real:** OpenAlex is the largest all-discipline corpus (250M+ works) and the main
+  humanities channel after Layer A routing. Losing it to 429s returns DR to the general-web
+  sourcing SI-032 was meant to fix. Needs an operator-supplied contact address (.env, secrets only).
+
+### SI-034 — Higher retrieval volume overruns the synthesis budget; sources_truncated 0 → 17  [P2 — SUSPECTED, confounded]
+- **Observed (2026-08-13, S9, n=3 per arm):** `sources_truncated` **0 → 17** (runs [0,0,0] →
+  [17,12,23]; ranges do not overlap), with log lines of the form `truncated (~90892 tokens)`.
+  Alongside it `evidence_items` 34 → 56 and `unique_sources` 98 → 160, and `answer_chars`
+  44,735 → 27,641.
+- **Reading:** the SI-032 fix genuinely increases how much evidence DR gathers. That is the point —
+  but the extra evidence appears to exceed what synthesis can absorb, and the answer got SHORTER
+  while the evidence pool grew, which is the wrong direction and suggests material is being dropped
+  at the synthesis boundary rather than used.
+- **Why only SUSPECTED:** the same run was confounded by SI-033 (OpenAlex 429 on 103/103 calls in
+  that arm), so the shorter answer may reflect the lost corpus rather than truncation. **Do not
+  attribute either way** until the arms are re-run with the order reversed or a cooldown between
+  them. See the SI-032 benchmark note.
+
 ### SI-032 — Academic search is substantially BROKEN in production; the whole raw sub-question is sent as the API query  [P1 — cause CONFIRMED by falsification · fix shipped v1.0.0.260 · AWAITING prod re-measure before clearing]
 - **Observed (2026-08-12, across the retained prod logs, 12 DR runs):** 158 academic-source
   failures. Two of them are OUR bug, not rate limiting:
@@ -90,11 +146,35 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   decision): **3/3 runs** emitted bibliographic queries for every `published_papers_search` task.
   Regression: `tests/unit/test_si032_academic_query_syntax.py`, 30 tests, all failing on pre-fix
   code (the real-entry-path case fails on a genuine assertion, not a missing-attribute crash).
+- **S9 partial benchmark, 2026-08-13, n=3 per arm — the mechanical claim held, the QUALITY claim is
+  UNRESOLVED because the experiment was confounded.** Recorded in full because the confound is the
+  finding:
+  | metric | PRE (v1.0.0.259) | POST (v1.0.0.260) | note |
+  |---|---|---|---|
+  | OpenAlex 400 / DOAJ 400 | 14 / 17 | **0 / 0** | the fix, confirmed again |
+  | evidence_items | 34 | **56** | ranges do not overlap |
+  | unique_sources | 98 | **160** | ranges do not overlap |
+  | retrieval_depth_chars | 1,966 | **2,750** | ranges do not overlap |
+  | scope_violations | 5 | **0** | ranges do not overlap |
+  | academic_share | 0.739 | **0.429** | moved AGAINST the change |
+  | encyclopedic_share | 0.000 | **0.238** | moved AGAINST the change |
+  | answer_chars | 44,735 | 27,641 | moved against |
+  | sources_truncated | 0 | 17 | see SI-034 |
+
+  **The confound:** arm ORDER is entangled with rate-limit state. The PRE arm ran first and drew
+  down the shared OpenAlex quota (its own 429s begin 8 min in); the POST arm then 429'd on **103 of
+  103** papers searches, starting 56 seconds after it began. OpenAlex — the largest all-discipline
+  corpus and the main humanities channel after Layer A routing — contributed **nothing** to the POST
+  arm. That is sufficient on its own to explain academic_share falling and encyclopedic_share
+  rising, so those two numbers say nothing about the fix. See SI-033.
+  **Corrected experiment before any quality verdict:** re-run with the order REVERSED (or a cooldown
+  between arms, or interleaved). If the sourcing-mix delta FLIPS with order, it was the quota; if it
+  persists, it is the fix.
 - **Do not clear** until the post-fix OpenAlex/DOAJ 400-rates are confirmed on **real production
-  DR traffic** (the measurements above are local, through the tool's real entry point but not
-  through a live server run), and `encyclopedic_share` / `academic_share` are re-measured on the
-  S9 scenario. The retrieval layer is fixed; the SOURCING-MIX claim it was meant to explain is
-  still unproven.
+  DR traffic** (the measurements above are local), and `encyclopedic_share` / `academic_share` are
+  re-measured on an UNCONFOUNDED run. The retrieval layer is fixed; the SOURCING-MIX claim it was
+  meant to explain is still unproven — and note S9's incumbent already sat at encyclopedic_share
+  0.000, so S9 may have too little encyclopedic share to displace to test that claim at all.
 
 ### SI-031 — Finance evidence_items halved after a SYNTHESIS-only prompt change  [P3 — SUSPECTED, needs n>=3]
 - **Observed (2026-08-11, v1.0.0.256 -> v1.0.0.257):** the S5 7-ticker finance scenario returned
@@ -138,7 +218,19 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   labelled as a download, asserted by a test that fails on current behaviour.
 
 
-### SI-028 — Generalized search → extract → chart fallback  [P1 **DONE** v1.0.0.253; P2-P4 awaiting sign-off]
+### SI-028 — Generalized search → extract → chart fallback  [P1 **DONE** v1.0.0.253; **P2b DONE v1.0.0.261**; P2a/P3/P4 outstanding]
+- **P2b SHIPPED 2026-08-13 (v1.0.0.261)**, on the user's sign-off. `utils/restricted_numpy_eval.py`
+  + `user_tools/compute_tool.py` + 27 tests. Reproduces the motivating failure exactly:
+  `np.min(y30-y10)` = **0.18**, `np.max` = **0.69** (the production answer said +0.19 and +0.53).
+  The 12 pre-registered escape vectors were shown to DISCRIMINATE against a permissive plain-`eval`
+  build — 27/27 pass on the real evaluator, all 12 fail on the permissive one. Two of them
+  (V2, V12) initially passed on the permissive build by ERRORING rather than being blocked, and
+  were rewritten into attacks that genuinely succeed when unguarded.
+- **⚠️ P2b is NOT yet reachable from the failure it was built for.** `@Ask` sends an
+  `allowed_tools` whitelist and the server filters to it (`fastapi_server_complete.py:9808`), so
+  `compute` is invisible there until P3 adds one line to
+  `../NewX/newx/ai_plugins/Ask.yaml`. Verified: that whitelist currently lists the same 8 tools the
+  prod log showed, and `calculator` is absent from it for exactly this reason.
 - **P1 SHIPPED 2026-08-11 (v1.0.0.253):** `lookup_website` now dispatches on the SERVER-declared
   `Content-Type` (`_probe_content_type` → `_extract_data_content`), passing CSV/TSV/JSON/XML through
   verbatim with the line count stated and truncation DISCLOSED. Unknown types are returned labelled
