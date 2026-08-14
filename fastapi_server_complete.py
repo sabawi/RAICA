@@ -7816,6 +7816,28 @@ def _summarise_round_results(results, max_per_tool: int, max_total: int) -> str:
     return "\n\n".join(blocks)
 
 
+def _arg_shape(value, depth: int = 0):
+    """Describe an argument's SHAPE, not its contents (SI-036 diagnosis).
+
+    `compute` keeps failing with "data['mag'] is not numeric: … not 'dict'", meaning a data
+    reference reached the tool UNRESOLVED — while the same round resolves `plot_data` correctly.
+    The resolver recognises a reference as a dict carrying both `from` and `column`, so the model
+    must be emitting some other shape for compute, and nothing currently records what it is.
+    Logging raw arguments is not an option: after resolution they hold hundreds of numbers.
+    """
+    if isinstance(value, dict):
+        if depth >= 2:
+            return f"dict{sorted(value)[:6]}"
+        return {k: _arg_shape(v, depth + 1) for k, v in list(value.items())[:8]}
+    if isinstance(value, list):
+        kinds = sorted({type(v).__name__ for v in value[:5]})
+        head = _arg_shape(value[0], depth + 1) if value and isinstance(value[0], dict) else None
+        return f"list[{len(value)}]{kinds}" + (f" first={head}" if head else "")
+    if isinstance(value, str):
+        return f"str[{len(value)}]" + (f"={value!r}" if len(value) <= 60 else "")
+    return type(value).__name__
+
+
 def _resolve_call_references(calls: list, prior_results) -> list:
     """Substitute data references in round-2 tool arguments with the REAL prior output (SI-036).
 
@@ -7838,12 +7860,29 @@ def _resolve_call_references(calls: list, prior_results) -> list:
         if not isinstance(args, dict):
             out.append(call)
             continue
+        # SI-036 diagnosis: shapes BEFORE resolution, so an unrecognised reference form is visible.
+        # The previous log only fired when a TOP-LEVEL list changed length, which is why compute —
+        # whose references sit nested inside `data` — never appeared here at all.
+        logger.info("🔬 second-round-args: tool=%s available=%s shapes=%s",
+                    fn.get("name"), sorted(index), _arg_shape(args))
         try:
             resolved = resolve_references(args, index)
-            counts = {k: len(v) for k, v in resolved.items() if isinstance(v, list)}
-            if counts != {k: len(v) for k, v in args.items() if isinstance(v, list)}:
+            def _sizes(d):
+                out = {}
+                for k, v in (d or {}).items():
+                    if isinstance(v, list):
+                        out[k] = len(v)
+                    elif isinstance(v, dict):
+                        out[k] = {ik: (len(iv) if isinstance(iv, list) else type(iv).__name__)
+                                  for ik, iv in list(v.items())[:8]}
+                return out
+            before, after = _sizes(args), _sizes(resolved)
+            if before != after:
                 logger.info(f"🔗 SECOND ROUND: resolved data references for "
-                            f"'{fn.get('name')}' → {counts}")
+                            f"'{fn.get('name')}' → {after}")
+            else:
+                logger.info(f"🔬 second-round-args: NOTHING RESOLVED for '{fn.get('name')}' "
+                            f"— no argument matched the reference form")
         except ReferenceError_ as e:
             logger.warning(f"🔗 SECOND ROUND: reference unresolved for '{fn.get('name')}': {e}")
             resolved = dict(args)
