@@ -108,6 +108,13 @@ class ComputeTool(BaseUserTool):
         }
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
+        # SI-036: a data reference that could not be resolved fails the call HERE, with the real
+        # reason, rather than reaching the evaluator as a raw dict and surfacing as a confusing
+        # type error.
+        if kwargs.get("_reference_error"):
+            return {"success": False,
+                    "error": f"{'compute'}: could not use the referenced data — "
+                             f"{kwargs['_reference_error']}"}
         expr = kwargs.get("expr")
         data = kwargs.get("data")
         label = kwargs.get("label") or ""

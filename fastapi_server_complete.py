@@ -7884,9 +7884,14 @@ def _resolve_call_references(calls: list, prior_results) -> list:
                 logger.info(f"🔬 second-round-args: NOTHING RESOLVED for '{fn.get('name')}' "
                             f"— no argument matched the reference form")
         except ReferenceError_ as e:
+            # FAIL THE CALL, do not pass the unresolved references through. Previously this kept
+            # the original arguments, so the tool received raw {"from":…,"column":…} dicts and
+            # reported "data['mag'] is not numeric: … not 'dict'" — a type error that hid the real
+            # problem (an unknown reference id) and cost a diagnosis round to see through. The tool
+            # now receives ONLY the reference error and reports it verbatim, so the model learns
+            # what was actually wrong and can correct the id.
             logger.warning(f"🔗 SECOND ROUND: reference unresolved for '{fn.get('name')}': {e}")
-            resolved = dict(args)
-            resolved["_reference_error"] = str(e)
+            resolved = {"_reference_error": str(e)}
         new_call = dict(call)
         new_call["function"] = {**fn, "arguments": resolved}
         out.append(new_call)

@@ -244,3 +244,32 @@ class TestRoundCap:
         sr = cfg["tool_calling"]["second_round"]
         assert sr["max_chars_per_tool"] >= 50000
         assert sr["max_chars_total"] >= 2 * sr["max_chars_per_tool"] - 1
+
+
+class TestUnresolvableReferenceFailsTheCall:
+    """FOUND ON PRODUCTION 2026-08-14. An unresolvable reference used to leave the ORIGINAL
+    arguments in place, so the tool received raw {"from":…,"column":…} dicts and reported
+
+        data['mag'] is not numeric: float() argument must be … not 'dict'
+
+    — a type error that hid the real problem (an unknown output id) and cost a whole diagnosis
+    round to see through. The call must fail with the reference's own message instead."""
+
+    def test_unresolved_reference_replaces_the_arguments(self):
+        srv = _srv()
+        calls = [call("compute", {"expr": "np.min(y)",
+                                  "data": {"y": {"from": "nope#7", "column": "mag"}}})]
+        out = srv._resolve_call_references(calls, [("lookup_website", "a,b\n1,2\n3,4", 0, False, None)])
+        args = out[0]["function"]["arguments"]
+        assert "_reference_error" in args
+        assert "nope#7" in args["_reference_error"]
+        assert "data" not in args, "unresolved reference dicts must NOT reach the tool"
+
+    def test_a_resolvable_reference_is_untouched_by_this_path(self):
+        srv = _srv()
+        calls = [call("compute", {"expr": "np.min(b)",
+                                  "data": {"b": {"from": "lookup_website#1", "column": "b"}}})]
+        out = srv._resolve_call_references(calls, [("lookup_website", "a,b\n1,2\n3,4", 0, False, None)])
+        args = out[0]["function"]["arguments"]
+        assert "_reference_error" not in args
+        assert args["data"]["b"] == [2.0, 4.0]

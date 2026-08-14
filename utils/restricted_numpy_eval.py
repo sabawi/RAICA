@@ -68,6 +68,10 @@ ALLOWED_NUMPY = frozenset({
     # reductions
     "min", "max", "mean", "median", "sum", "prod", "std", "var", "ptp",
     "percentile", "quantile", "argmin", "argmax", "average", "count_nonzero",
+    # `np.size` was rejected on production while answering "how many events are in the file" —
+    # a pure shape query with no I/O, no callable and no allocation. Same for the sort/select
+    # helpers, which are how a caller reaches the row an extremum lives in.
+    "size", "amin", "amax", "argsort", "take",
     # nan-aware equivalents (real series have gaps)
     "nanmin", "nanmax", "nanmean", "nanmedian", "nansum", "nanstd", "nanvar",
     "nanpercentile", "nanquantile", "nanargmin", "nanargmax",
@@ -186,8 +190,18 @@ def _prepare_data(data: Dict[str, Any]) -> Dict[str, np.ndarray]:
                 f"data key {key!r} must be a valid identifier and must not be 'np'")
         try:
             arr = np.asarray(values, dtype=np.float64)
-        except (TypeError, ValueError) as e:
-            raise RestrictedEvalError(f"data['{key}'] is not numeric: {e}") from e
+        except (TypeError, ValueError):
+            # A TEXT series is legitimate input, not an error. `place[np.argmax(mag)]` — which row
+            # holds the extremum — is exactly the question "where did the largest earthquake
+            # occur", and rejecting it forced the model back to reading the table by eye, which is
+            # what this tool exists to prevent. Numeric coercion is still tried first, so arithmetic
+            # is unaffected; only genuinely non-numeric columns arrive as strings, where indexing
+            # and comparison are all that is needed.
+            try:
+                arr = np.asarray(["" if v is None else str(v) for v in values])
+            except (TypeError, ValueError) as e:
+                raise RestrictedEvalError(f"data['{key}'] could not be read as numbers or text: "
+                                          f"{e}") from e
         if arr.size > MAX_ELEMENTS_PER_ARRAY:
             raise RestrictedEvalError(
                 f"data['{key}'] has {arr.size} elements, over the {MAX_ELEMENTS_PER_ARRAY} cap")

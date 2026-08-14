@@ -186,8 +186,14 @@ class TestFenceRules:
     def test_expression_length_is_capped(self):
         assert "characters" in blocked("np.min(y30) + " * 200 + "0")
 
-    def test_non_numeric_data_is_rejected_cleanly(self):
-        assert "not numeric" in blocked("np.min(a)", {"a": ["x", "y"]})
+    def test_arithmetic_on_a_text_column_fails_cleanly(self):
+        """PREMISE CHANGED 2026-08-14 (see TestTextSeries). This asserted that non-numeric data was
+        REJECTED — correct when compute was numbers-only, and wrong now: a text column is
+        legitimate input, because `place[np.argmax(mag)]` is how you name the row an extremum is
+        in. What must still hold is that ARITHMETIC over text fails as a clean rejection rather
+        than a traceback."""
+        msg = blocked("np.mean(a) + 1", {"a": ["x", "y"]})
+        assert "evaluation failed" in msg or "could not be read" in msg
 
     def test_evaluation_errors_do_not_crash(self):
         """A numpy error is the caller's problem and must surface as a rejection, not a traceback."""
@@ -272,3 +278,39 @@ class TestGapMaskingIdioms:
         blocked("~y30.__class__")
         blocked("np.min(s[~np.isnan(s)]).__class__", {"s": [1.0, 2.0]})
         blocked("s[~np.isnan(s)] & open('/etc/passwd')", {"s": [1.0, 2.0]})
+
+
+class TestTextSeries:
+    """FOUND ON PRODUCTION 2026-08-14 by the USGS earthquake prompt, which asked for the place and
+    date of the largest event. The model wrote exactly the right expressions —
+
+        place[np.argmax(mag)]        time[np.argmax(mag)]        np.size(mag)
+
+    — and compute rejected all of them:
+
+        data['place'] is not numeric: could not convert string to float: '226 km ...'   (x12)
+        data['time']  is not numeric: could not convert string to float: '2026-...'     (x12)
+        np.size is not in the allowed function list                                     (x5)
+
+    A tool built to stop the model eyeballing a table could not answer "which row holds the
+    extremum", so the model went back to eyeballing and reported the wrong place and depth.
+    """
+    D = {"mag": [5.5, 7.8, 6.1], "place": ["Chile", "Philippines", "Japan"],
+         "time": ["2026-01-02", "2026-06-07", "2026-03-01"]}
+
+    def test_a_text_column_can_be_indexed_by_an_extremum(self):
+        assert evaluate("place[np.argmax(mag)]", self.D) == "Philippines"
+        assert evaluate("time[np.argmax(mag)]", self.D) == "2026-06-07"
+
+    def test_np_size_answers_how_many_rows(self):
+        assert evaluate("np.size(mag)", self.D) == 3
+
+    def test_numeric_columns_are_still_numeric(self):
+        """Coercion is tried FIRST, so arithmetic is unaffected — only genuinely non-numeric
+        columns arrive as text."""
+        assert evaluate("np.max(mag)", self.D) == pytest.approx(7.8)
+        assert evaluate("np.count_nonzero(mag >= 7.0)", self.D) == 1
+
+    def test_text_series_do_not_reopen_the_fence(self):
+        blocked("place.__class__", self.D)
+        blocked("np.load(place[0])", self.D)
