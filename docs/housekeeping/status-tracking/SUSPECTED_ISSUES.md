@@ -11,6 +11,40 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-041 — Three defects surfaced by a statistics+chart request  [P2 — CONFIRMED by measurement]
+**Request (prod, v1.0.0.274):** USGS M5.5+ catalogue, first half 2026 — "sample size, mean, median,
+std-dev … plot the bell curve … probabilities for tail events and most likely next magnitude".
+
+- **(a) `linspace` / `arange` are blocked, so a fitted curve cannot be built.** 47 `Expression
+  rejected` in one request; the surviving expressions were `np.linspace(np.min(mag)…)` and
+  `np.arange(5.0…)`. They were excluded from the numpy allow-list as "allocate BY SIZE" — correct
+  as a memory-safety concern, wrong as a blanket ban, because building x-axis points for a
+  distribution curve is exactly what they are for. The gate consequently ran to `max_rounds`
+  without reaching `sufficient`, and no chart was produced.
+- **(b) A chart was DESCRIBED but never rendered.** The answer says "The plot below shows the
+  frequency of events by magnitude" and there is no `plot_data` call and no `[[chart:…]]` marker in
+  the log. This is a NEW fabrication shape: not an invented marker (SI-038), but prose narrating a
+  visual that does not exist. `plot_data`'s failure path cannot cover it because the tool was never
+  called.
+- **(c) The header row counted as an observation — again.** Reported **226 events**; the file has
+  226 LINES = 1 header + **225** events. The same off-by-one produced "250 daily observations"
+  against 249 for the Treasury data. Two occurrences make it a pattern, not a slip.
+- **Also wrong, but downstream of the above:** std-dev **0.44** against a true **0.4218**;
+  "mean and median are very close, suggesting the distribution is nearly symmetric" against a
+  measured **skewness of 1.97**.
+- **The most damaging error is not arithmetic.** The answer reports **P(M≥7.0) = 0.54%**, "roughly
+  once in every 185 events", **in a dataset containing 8 such events (3.56%)** — a normal-model
+  tail estimate contradicted by its own data, stated in the conclusion without a hedge. Magnitudes
+  follow Gutenberg-Richter (exponential), so a normal fit understates the tail ~9x. The answer even
+  cites Gutenberg-Richter in its "most likely next magnitude" section and does not connect it to
+  the tail probabilities it just reported. **This class — correct inputs, correct arithmetic, wrong
+  MODEL — is invisible to every check RAICA has**, because nothing verifies that the distribution
+  assumed matches the data.
+- **Fixed in v1.0.0.275:** (a) only. (b) and (c) remain open; the model-choice problem in the last
+  bullet is unaddressed and may not be fixable by tooling alone.
+- **Do not clear** without: a request of this shape producing a real chart, and a tail estimate
+  that either uses an appropriate distribution or states that the normal fit understates it.
+
 ### SI-039 — Deep Research synthesis latency 8.7x the baseline  [P2 — CONFIRMED by measurement, cause UNATTRIBUTED]
 - **Observed (2026-08-14, first Tier-1 run against v1.0.0.272):**
   ```

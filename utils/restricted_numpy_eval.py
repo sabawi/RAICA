@@ -92,6 +92,11 @@ ALLOWED_NUMPY = frozenset({
     "any", "all", "nonzero", "searchsorted",
     # conversion
     "array", "asarray", "float64", "int64",
+    # SIZE-TAKING, permitted with an argument bound (see _SIZE_TAKING below). Blocked outright
+    # until v1.0.0.275, which cost a request 47 rejections and produced no chart: building the
+    # x-axis of a fitted distribution curve is precisely what these are for. The memory concern is
+    # real but is about the SIZE ARGUMENT, not the function.
+    "linspace", "arange",
 })
 
 # Builtins whose numpy equivalent has a DIFFERENT name. Everything else that shares a name with an
@@ -138,6 +143,46 @@ _REJECTION_HINTS = {
     "conditional expression": " — use `np.where(cond, a, b)`",
     "boolean operator": " — use `&` and `|` on arrays, e.g. `x[(x > 1) & (x < 5)]`",
 }
+
+
+# Functions whose arguments determine an allocation SIZE. Permitted, but any numeric literal they
+# are given must stay under the element cap — `np.arange(10**12)` is 8 TB, `np.linspace(0, 1, 10**10)`
+# likewise. A literal check catches the realistic case; the post-evaluation size check below catches
+# what a computed argument slips through.
+_SIZE_TAKING = frozenset({"linspace", "arange"})
+
+
+def _static_value(node):
+    """Value of a CONSTANT-ONLY subtree, or None.
+
+    `np.arange(10**12)` is not a Constant — it is BinOp(10, Pow, 12) — so a literal-only check
+    misses it and the call proceeds to allocate. Observed: `np.arange(0, 10**9)` allocated 8 GB
+    before the post-evaluation size check rejected it, which is a denial of service that happens to
+    report itself politely. Folding constant arithmetic at validation time stops it BEFORE numpy is
+    reached. Only literals and arithmetic operators are folded — never a name, never a call — so
+    this evaluates nothing the caller controls beyond numbers.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, (int, float)) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        v = _static_value(node.operand)
+        return None if v is None else (-v if isinstance(node.op, ast.USub) else v)
+    if isinstance(node, ast.BinOp):
+        a, b = _static_value(node.left), _static_value(node.right)
+        if a is None or b is None:
+            return None
+        try:
+            if isinstance(node.op, ast.Pow):
+                if abs(a) > 1e6 or abs(b) > 64:      # refuse to fold an absurd power
+                    return float("inf")
+                return a ** b
+            if isinstance(node.op, ast.Add):   return a + b
+            if isinstance(node.op, ast.Sub):   return a - b
+            if isinstance(node.op, ast.Mult):  return a * b
+            if isinstance(node.op, ast.Div):   return a / b if b else None
+        except (OverflowError, ZeroDivisionError, ValueError):
+            return float("inf")
+    return None
 
 
 def _reject(msg: str):
@@ -216,6 +261,15 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
         if isinstance(node, ast.Subscript):
             _check_subscript_slice(node.slice)
 
+        # Bound the size argument of an allocating call.
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _SIZE_TAKING):
+            for arg in list(node.args) + [k.value for k in (node.keywords or [])]:
+                v = _static_value(arg)
+                if v is not None and abs(v) > MAX_ELEMENTS_PER_ARRAY:
+                    _reject(f"np.{node.func.attr} argument {v:g} exceeds the "
+                            f"{MAX_ELEMENTS_PER_ARRAY} element cap")
+
 
 def _prepare_data(data: Dict[str, Any]) -> Dict[str, np.ndarray]:
     if not isinstance(data, dict) or not data:
@@ -278,7 +332,13 @@ def evaluate(expr: str, data: Dict[str, Any]) -> Any:
     env["np"] = np
 
     try:
-        return eval(compile(tree, "<compute>", "eval"), env)  # noqa: S307 — validated above
+        result = eval(compile(tree, "<compute>", "eval"), env)  # noqa: S307 — validated above
+        # Defence in depth: a computed size argument can evade the literal check above.
+        size = getattr(result, "size", None)
+        if isinstance(size, int) and size > MAX_ELEMENTS_PER_ARRAY:
+            raise RestrictedEvalError(
+                f"result has {size} elements, over the {MAX_ELEMENTS_PER_ARRAY} cap")
+        return result
     except RestrictedEvalError:
         raise
     except Exception as e:  # noqa: BLE001 — numpy errors are the caller's problem, not a crash

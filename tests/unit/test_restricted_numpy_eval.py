@@ -396,3 +396,53 @@ class TestFailClosed:
         assert r["success"] is True
         assert "NO FIGURE WAS CALCULATED" not in str(r)
         assert "computed as:" in r["result"]
+
+
+class TestSizeTakingFunctions:
+    """SI-041. `linspace` and `arange` were banned outright as "allocate BY SIZE". The memory
+    concern is real, the blanket ban was not: building the x-axis of a fitted distribution curve is
+    exactly what they are for. One production request asking for a bell curve produced **47
+    rejections**, ran the gather gate to its round cap without reaching `sufficient`, and rendered
+    no chart at all.
+
+    They are now permitted with the SIZE ARGUMENT bounded — which is where the danger actually
+    lived."""
+
+    D = {"mag": [5.5, 6.1, 7.8, 5.7]}
+
+    def test_a_distribution_curve_can_be_built(self):
+        out = evaluate("np.linspace(np.min(mag), np.max(mag), 5)", self.D)
+        assert len(out) == 5 and out[0] == pytest.approx(5.5) and out[-1] == pytest.approx(7.8)
+
+    def test_histogram_bins_can_be_built(self):
+        assert list(evaluate("np.arange(5.0, 7.0, 0.5)", self.D)) == [5.0, 5.5, 6.0, 6.5]
+
+    @pytest.mark.parametrize("bomb", [
+        "np.arange(10**12)",            # BinOp, not a Constant — the literal check missed this
+        "np.linspace(0, 1, 10**10)",
+        "np.arange(0, 10**9)",          # allocated 8 GB before the post-check caught it
+        "np.arange(0, 500000)",
+    ])
+    def test_an_allocation_bomb_is_refused_before_numpy_sees_it(self, bomb):
+        """Refused at VALIDATION, not after allocating. `10**9` is BinOp(10, Pow, 9), so a
+        literal-only check let it through and 8 GB was allocated before rejection — a denial of
+        service that reported itself politely. Constant arithmetic is folded at validation time."""
+        import time
+        t0 = time.time()
+        msg = blocked(bomb, self.D)
+        assert "exceeds the" in msg and "element cap" in msg
+        assert time.time() - t0 < 0.5, "rejection must not require the allocation to be attempted"
+
+    def test_a_computed_size_is_still_caught_after_evaluation(self):
+        """Defence in depth for what constant folding cannot see."""
+        big = {"n": [300000.0]}
+        assert "over the" in blocked("np.arange(np.max(n))", big)
+
+    def test_folding_never_evaluates_anything_but_numbers(self):
+        """The folder must not become an evaluator: names and calls stay unfolded, so a
+        size argument it cannot prove safe simply falls through to the runtime guards."""
+        srv_mod = __import__("utils.restricted_numpy_eval", fromlist=["_static_value"])
+        import ast as _ast
+        assert srv_mod._static_value(_ast.parse("mag", mode="eval").body) is None
+        assert srv_mod._static_value(_ast.parse("np.min(mag)", mode="eval").body) is None
+        assert srv_mod._static_value(_ast.parse("10**3", mode="eval").body) == 1000
