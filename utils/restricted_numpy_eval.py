@@ -94,6 +94,11 @@ ALLOWED_NUMPY = frozenset({
     "array", "asarray", "float64", "int64",
 })
 
+# Builtins whose numpy equivalent has a DIFFERENT name. Everything else that shares a name with an
+# allowed numpy function maps to itself, so this stays two entries rather than a list to maintain.
+# This is error-message help text only — it changes no decision, and the call is rejected either way.
+_BUILTIN_TO_NUMPY = {"len": "size", "sorted": "sort"}
+
 # --------------------------------------------------------------------------- AST allow-list
 _ALLOWED_NODES = (
     ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load,
@@ -172,7 +177,23 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
         # result, never the return value of another call.
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Attribute):
-                _reject("only `np.<function>(...)` calls are permitted")
+                # The rule stands — a bare-name call is how `open(...)`, `getattr(...)` and
+                # `__import__(...)` would arrive, so it stays rejected. What changes is that the
+                # refusal now names the form to use instead. Production showed the model writing
+                # `len(mag)` to count rows and getting a message that told it only what was
+                # forbidden; the run survived only because it happened to also call np.size.
+                # A rejection the caller can act on is worth as much as the rejection itself —
+                # the same reason the column-not-found error lists the available columns.
+                called = getattr(node.func, "id", None)
+                equiv = None
+                if called:
+                    # Generic: any builtin sharing a name with an allowed numpy function maps to
+                    # itself. _BUILTIN_TO_NUMPY covers only the few whose numpy name differs.
+                    equiv = _BUILTIN_TO_NUMPY.get(called) or (called if called in ALLOWED_NUMPY
+                                                              else None)
+                _reject("only `np.<function>(...)` calls are permitted"
+                        + (f" — write `np.{equiv}(...)` instead of `{called}(...)`" if equiv
+                           else f"; `{called}` is not available" if called else ""))
 
         if isinstance(node, ast.Subscript):
             _check_subscript_slice(node.slice)

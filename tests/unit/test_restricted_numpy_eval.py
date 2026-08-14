@@ -314,3 +314,31 @@ class TestTextSeries:
     def test_text_series_do_not_reopen_the_fence(self):
         blocked("place.__class__", self.D)
         blocked("np.load(place[0])", self.D)
+
+
+class TestRejectionsAreActionable:
+    """A refusal the caller cannot act on wastes the call. Production showed the model writing
+    `len(mag)` to count rows and getting only "only `np.<function>(...)` calls are permitted" —
+    true, but it never says what to write instead. The run survived only because the model
+    happened to also call np.size(mag); a single-figure question would have had no such cushion.
+
+    The bare-name rule itself is unchanged — it is what stops open(), getattr() and __import__().
+    """
+
+    def test_len_points_at_np_size(self):
+        msg = blocked("len(mag)", {"mag": [1.0, 2.0, 3.0]})
+        assert "np.size" in msg and "len" in msg
+
+    def test_a_builtin_sharing_a_numpy_name_points_at_itself(self):
+        for name in ("sum", "min", "max", "abs", "round"):
+            msg = blocked(f"{name}(mag)", {"mag": [1.0, 2.0]})
+            assert f"np.{name}" in msg, msg
+
+    def test_an_unavailable_name_says_so(self):
+        msg = blocked("exec('x=1')", {"mag": [1.0, 2.0]})
+        assert "exec" in msg
+
+    def test_the_rule_still_rejects_every_bare_call(self):
+        """The hint must not become a loophole."""
+        for expr in ("len(mag)", "open('/etc/passwd')", "getattr(np,'load')", "eval('1')"):
+            blocked(expr, {"mag": [1.0, 2.0]})
