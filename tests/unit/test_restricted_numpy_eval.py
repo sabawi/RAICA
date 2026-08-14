@@ -242,3 +242,33 @@ class TestCorrectness:
         t0 = time.time()
         evaluate("np.std(a)", big)
         assert time.time() - t0 < 2.0
+
+
+class TestGapMaskingIdioms:
+    """FOUND ON PRODUCTION 2026-08-14. `compute` failed intermittently with
+
+        Expression rejected: Invert is not permitted in a compute expression
+
+    `Invert` is `~`. Real referenced series contain gaps (a missing observation stays None), and
+    `np.min(s[~np.isnan(s)])` is THE numpy idiom for an extremum that skips them. Rejecting it made
+    compute fail on precisely the expressions a careful caller writes — and the model then fell
+    back to reading the table by eye, reporting a minimum of 0.10 beside quoted values giving 0.52.
+
+    Simple expressions passed, masking ones did not, which is why the failure looked random.
+    """
+    S = {"s": [1.0, float("nan"), 3.0, 2.0]}
+
+    def test_tilde_mask_over_a_series_with_gaps(self):
+        assert evaluate("np.min(s[~np.isnan(s)])", self.S) == pytest.approx(1.0)
+        assert evaluate("np.max(s[~np.isnan(s)])", self.S) == pytest.approx(3.0)
+
+    def test_combined_masks(self):
+        assert evaluate("np.max(s[(~np.isnan(s)) & (s < 3)])", self.S) == pytest.approx(2.0)
+        assert evaluate("np.min(s[(s > 1) | (s < 0)])", self.S) == pytest.approx(2.0)
+
+    def test_masking_does_not_reopen_the_fence(self):
+        """The operators are pure value operations — they must not become a path to attributes,
+        calls or names that the allow-lists forbid."""
+        blocked("~y30.__class__")
+        blocked("np.min(s[~np.isnan(s)]).__class__", {"s": [1.0, 2.0]})
+        blocked("s[~np.isnan(s)] & open('/etc/passwd')", {"s": [1.0, 2.0]})

@@ -98,6 +98,14 @@ _ALLOWED_NODES = (
     # operators
     ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
     ast.USub, ast.UAdd, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    # Boolean-array masking. `~`, `&` and `|` are how numpy skips gaps —
+    # `np.min(s[~np.isnan(s)])` is THE idiom for an extremum over a series with missing
+    # observations, and referenced real-world data has gaps. Rejecting `~` made `compute` fail on
+    # exactly the expressions a careful caller writes, and the model then fell back to reading the
+    # table by eye: a wrong minimum quoted beside values that contradict it. These are pure
+    # value operators — they grant no attribute access, no calls and no names, so the fence
+    # (attribute rule, name binding, empty builtins, numpy allow-list) is untouched.
+    ast.Invert, ast.BitAnd, ast.BitOr, ast.BitXor,
 )
 
 # Everything below is REJECTED by omission, but these are named in the error message because they
