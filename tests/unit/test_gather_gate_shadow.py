@@ -208,3 +208,67 @@ class TestTheGateActuallySeesTheRequest:
             srv.llm_manager.generate_stream = original
         assert "average 10-year yield in 2025" in stub.prompt, \
             "the actual question was truncated away — every verdict would be about nothing"
+
+
+class TestEnvOverride:
+    """A measurement flag must survive a deploy.
+
+    The documented RAICA deploy runs `git checkout -- config/llm_config.yaml` before pulling, to
+    discard stale prod config. That is right in general and fatal here: it silently reverts an
+    operator's `enabled: true`, leaving the gate deployed, healthy, and collecting NOTHING —
+    SI-021's silent inertness arriving by a different route. RAICA_GATHER_GATE_ENABLED is
+    server-local and survives.
+
+    ORDER MATTERS (SI-029): load_config() is what populates os.environ from .env, so the override
+    must be read AFTER it. Reading it first made the FIRST caller in a process miss the override
+    entirely — a flag decided by import order.
+    """
+
+    def _cfg(self, **env):
+        import os
+        srv = _srv()
+        saved = {k: os.environ.get(k) for k in
+                 ("RAICA_GATHER_GATE_ENABLED", "RAICA_GATHER_GATE_SHADOW")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            for k, v in env.items():
+                os.environ[k] = v
+            return srv._gather_gate_config()
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_env_enables_a_gate_the_file_disables(self):
+        assert self._cfg()["enabled"] is False                       # shipped default
+        assert self._cfg(RAICA_GATHER_GATE_ENABLED="true")["enabled"] is True
+
+    def test_env_can_also_disable(self):
+        """A kill switch that does not need a config edit or a redeploy."""
+        assert self._cfg(RAICA_GATHER_GATE_ENABLED="false")["enabled"] is False
+
+    def test_shadow_stays_on_unless_explicitly_turned_off(self):
+        """Enforcement must be a deliberate act, never a side effect of enabling the measurement."""
+        assert self._cfg(RAICA_GATHER_GATE_ENABLED="true")["shadow"] is True
+        assert self._cfg(RAICA_GATHER_GATE_ENABLED="true",
+                         RAICA_GATHER_GATE_SHADOW="true")["shadow"] is True
+        assert self._cfg(RAICA_GATHER_GATE_ENABLED="true",
+                         RAICA_GATHER_GATE_SHADOW="false")["shadow"] is False
+
+    def test_the_config_is_read_before_the_env_is_consulted(self):
+        """SI-029 guard: if the env were read first, a process whose .env has not yet been loaded
+        would miss the override. Asserted by checking the config load happens at all."""
+        srv = _srv()
+        calls = []
+        original = srv.config_loader.load_config
+        try:
+            def spy(*a, **k):
+                calls.append(1)
+                return original(*a, **k)
+            srv.config_loader.load_config = spy
+            srv._gather_gate_config()
+        finally:
+            srv.config_loader.load_config = original
+        assert calls, "load_config() must run — it is what populates os.environ from .env"

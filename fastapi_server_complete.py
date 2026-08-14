@@ -7772,10 +7772,22 @@ async def _judge_paper_corpora(user_prompt: str, generate_stream) -> "Optional[l
 def _gather_gate_config() -> dict:
     """Config for the non-DR GATHER GATE (docs/RAICA_NONDR_GATHER_GATE.md). Fail-closed."""
     try:
+        # ORDER MATTERS — SI-029. `load_config()` is what POPULATES os.environ from .env, so the
+        # override must be read AFTER it. Reading the env first made the FIRST caller in a process
+        # see None and fall through to the file value, while every later caller saw the override:
+        # a feature flag decided by import order. Same shape as data_charts_enabled().
         cfg = (config_loader.load_config().get('tool_calling', {}) or {}).get('gather_gate', {}) or {}
+        # Server-local switch that SURVIVES a deploy. The documented deploy step runs
+        # `git checkout -- config/llm_config.yaml` to discard stale prod config, which silently
+        # reverts an operator's `enabled: true` and leaves the gate looking deployed while
+        # collecting nothing — the SI-021 silent-inertness failure by another route.
+        _env = os.getenv("RAICA_GATHER_GATE_ENABLED")
+        _env_shadow = os.getenv("RAICA_GATHER_GATE_SHADOW")
         return {
-            'enabled': bool(cfg.get('enabled', False)),
-            'shadow': bool(cfg.get('shadow', True)),
+            'enabled': (_env.strip().lower() == "true") if _env is not None
+                       else bool(cfg.get('enabled', False)),
+            'shadow': (_env_shadow.strip().lower() != "false") if _env_shadow is not None
+                      else bool(cfg.get('shadow', True)),
             'max_gather_rounds': int(cfg.get('max_gather_rounds', 3) or 0),
             'wall_clock_seconds': float(cfg.get('wall_clock_seconds', 90) or 0),
             'model': cfg.get('model') or None,
