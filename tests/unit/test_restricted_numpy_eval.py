@@ -342,3 +342,57 @@ class TestRejectionsAreActionable:
         """The hint must not become a loophole."""
         for expr in ("len(mag)", "open('/etc/passwd')", "getattr(np,'load')", "eval('1')"):
             blocked(expr, {"mag": [1.0, 2.0]})
+
+
+class TestFailClosed:
+    """FOUND ON PRODUCTION 2026-08-14 by a SINGLE-FIGURE request — "the average 10-year yield in
+    2025, and nothing else". compute was called once and rejected 4/4 (comprehension); the log
+    shows zero "over n=… data point" strings, so no result ever existed. The answer said:
+
+        "4.30% … computed as the arithmetic mean of all available daily DGS10 observations"
+
+    right by luck (true mean 4.2932) and indistinguishable from a grounded figure. Earlier
+    multi-figure runs hid this because 3-12 compute calls meant another attempt usually succeeded.
+
+    The standing directive already forbade it ("NEVER CLAIM A CALCULATION YOU DID NOT PERFORM")
+    and was ignored — a general system-prompt rule sits too far from the moment of failure. The
+    prohibition now travels WITH the failure, in the tool result the model reads.
+    """
+
+    @staticmethod
+    def _fail(**kw):
+        import asyncio
+        from user_tools.compute_tool import ComputeTool
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(ComputeTool().execute(**kw))
+        finally:
+            loop.close()
+
+    def test_a_rejected_expression_forbids_stating_the_figure(self):
+        r = self._fail(expr="np.mean([float(v) for v in x])", data={"x": [1, 2]})
+        assert r["success"] is False
+        assert "NO FIGURE WAS CALCULATED" in r["error"]
+        assert "FORBIDDEN to state it" in r["error"]
+
+    def test_the_rejection_still_says_how_to_fix_it(self):
+        """Fail-closed must not remove the route to success — the model should retry, not give up."""
+        r = self._fail(expr="np.mean([float(v) for v in x])", data={"x": [1, 2]})
+        assert "np.nanmean" in r["error"]
+        assert "call compute again" in r["error"]
+
+    def test_every_failure_path_carries_the_notice(self):
+        for kw in (
+            {"expr": "np.mean([v for v in x])", "data": {"x": [1, 2]}},   # rejected
+            {"expr": "np.min(y)", "data": {"x": [1, 2]}},                  # unknown name
+            {"_reference_error": "unknown output reference 'a#9'"},        # bad reference
+        ):
+            r = self._fail(**kw)
+            assert r["success"] is False
+            assert "NO FIGURE WAS CALCULATED" in r["error"], kw
+
+    def test_success_carries_no_such_notice(self):
+        r = self._fail(expr="np.mean(x)", data={"x": [1.0, 2.0, 3.0]})
+        assert r["success"] is True
+        assert "NO FIGURE WAS CALCULATED" not in str(r)
+        assert "computed as:" in r["result"]

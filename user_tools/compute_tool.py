@@ -47,6 +47,28 @@ _TIMEOUT_SECONDS = 5.0
 _MAX_RETURNED_ELEMENTS = 200
 
 
+
+# FAIL-CLOSED NOTICE (SI-036). Appended to EVERY compute failure.
+#
+# Production, 2026-08-14: a single-figure request ("the average 10-year yield in 2025") called
+# compute once; it was rejected 4/4 (comprehension). No result ever existed — the log shows zero
+# "over n=... data point" strings. The answer nonetheless stated "4.30% ... computed as the
+# arithmetic mean of all available daily DGS10 observations", which was RIGHT BY LUCK and
+# indistinguishable from a grounded figure.
+#
+# The standing directive already forbade exactly this ("NEVER CLAIM A CALCULATION YOU DID NOT
+# PERFORM", NewX v1.0.0.178) and was ignored. A general system-prompt rule is evidently too far
+# from the moment of failure, so the prohibition now travels WITH the failure, inside the tool
+# result the model actually reads. Multi-figure requests hid the problem because 3-12 compute calls
+# meant some other attempt usually succeeded; with a single figure there is no cushion.
+_FAIL_CLOSED = (
+    "\n\nNO FIGURE WAS CALCULATED. You do NOT have a computed value for this quantity. You are "
+    "therefore FORBIDDEN to state it \u2014 do not report the mean, minimum, maximum, total, "
+    "correlation or any other derived number this call was for, and do not write \"computed as\", "
+    "an expression, or an observation count for it. Say plainly that the calculation could not be "
+    "completed, and why. If you can correct the expression, call compute again instead."
+)
+
 class ComputeTool(BaseUserTool):
     """Evaluate a numpy expression over caller-supplied numeric series."""
 
@@ -113,8 +135,8 @@ class ComputeTool(BaseUserTool):
         # type error.
         if kwargs.get("_reference_error"):
             return {"success": False,
-                    "error": f"{'compute'}: could not use the referenced data — "
-                             f"{kwargs['_reference_error']}"}
+                    "error": f"compute: could not use the referenced data — "
+                             f"{kwargs['_reference_error']}{_FAIL_CLOSED}"}
         expr = kwargs.get("expr")
         data = kwargs.get("data")
         label = kwargs.get("label") or ""
@@ -128,14 +150,14 @@ class ComputeTool(BaseUserTool):
             logger.warning(f"compute: expression exceeded {_TIMEOUT_SECONDS}s: {str(expr)[:120]}")
             return {"success": False,
                     "error": f"Expression took longer than {_TIMEOUT_SECONDS}s and was stopped. "
-                             f"Try a simpler expression or fewer data points."}
+                             f"Try a simpler expression or fewer data points.{_FAIL_CLOSED}"}
         except RestrictedEvalError as e:
             # Rejections are EXPECTED traffic, not incidents: the model gets a precise reason so it
             # can correct itself, and the reason never leaks internals.
-            return {"success": False, "error": f"Expression rejected: {e}"}
+            return {"success": False, "error": f"Expression rejected: {e}{_FAIL_CLOSED}"}
         except Exception as e:  # noqa: BLE001
             logger.error(f"compute: unexpected failure: {type(e).__name__}: {e}")
-            return {"success": False, "error": f"Computation failed: {type(e).__name__}: {e}"}
+            return {"success": False, "error": f"Computation failed: {type(e).__name__}: {e}{_FAIL_CLOSED}"}
 
         return {"success": True, "result": self._format(raw, expr, data, label)}
 

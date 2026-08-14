@@ -273,3 +273,32 @@ class TestUnresolvableReferenceFailsTheCall:
         args = out[0]["function"]["arguments"]
         assert "_reference_error" not in args
         assert args["data"]["b"] == [2.0, 4.0]
+
+
+class TestUncomputedClaimAudit:
+    """SHADOW measurement for the fail-closed notice. Two prompt-only fixes in this line of work
+    already failed under measurement, so the directive is instrumented rather than trusted."""
+
+    def test_flags_a_claim_with_no_successful_compute(self):
+        a = _srv().audit_uncomputed_claim(
+            "The average was 4.30%, computed as the arithmetic mean over 251 observations.",
+            "Tool: compute\nExpression rejected: comprehension …\nNO FIGURE WAS CALCULATED. …")
+        assert a["unsupported"] is True
+
+    def test_does_not_flag_a_genuinely_computed_figure(self):
+        a = _srv().audit_uncomputed_claim(
+            "The minimum was 0.18, computed as np.min(y30 - y10) over n=404 data points.",
+            "Tool: compute\ncomputed as: np.min(y30 - y10)\nover n=404 data point(s)")
+        assert a["unsupported"] is False and a["compute_succeeded"] is True
+
+    def test_does_not_flag_an_honest_omission(self):
+        """compute failed and the answer made no claim — the behaviour the notice is meant to
+        produce."""
+        a = _srv().audit_uncomputed_claim(
+            "The calculation could not be completed, so I cannot give the average.",
+            "Tool: compute\nNO FIGURE WAS CALCULATED. …")
+        assert a["unsupported"] is False and a["compute_failed"] is True
+
+    def test_no_compute_involved_is_never_flagged(self):
+        a = _srv().audit_uncomputed_claim("Barcelona is in Spain.", "Tool: search_web\n…")
+        assert a["unsupported"] is False

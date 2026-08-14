@@ -128,6 +128,18 @@ _NAMED_REJECTIONS = {
 }
 
 
+# What to write INSTEAD, per rejected construct. Help text only — the construct stays rejected.
+_REJECTION_HINTS = {
+    "comprehension": " — numpy works on whole arrays, so you do not need one: missing values are "
+                     "already parsed as gaps, so use `np.nanmean(x)` / `np.nanmin(x)`, or mask "
+                     "with `x[~np.isnan(x)]`",
+    "generator": " — use a whole-array numpy call such as `np.mean(x)` instead",
+    "lambda": " — no callable can be passed; use a numpy function directly, e.g. `np.mean(x)`",
+    "conditional expression": " — use `np.where(cond, a, b)`",
+    "boolean operator": " — use `&` and `|` on arrays, e.g. `x[(x > 1) & (x < 5)]`",
+}
+
+
 def _reject(msg: str):
     raise RestrictedEvalError(msg)
 
@@ -153,7 +165,13 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
     for node in ast.walk(tree):
         for bad, label in _NAMED_REJECTIONS.items():
             if isinstance(node, bad):
-                _reject(f"{label} is not permitted in a compute expression")
+                # Name the idiom that replaces it. Production: the model wrote
+                # `np.mean([float(v) for v in dgs10 if v != '.'])` to skip FRED's '.' missing
+                # markers, was told only "comprehension is not permitted", and gave up on the tool
+                # — then asserted the figure anyway. numpy already handles gaps, so the rejection
+                # only needed to say so.
+                _reject(f"{label} is not permitted in a compute expression"
+                        + (_REJECTION_HINTS.get(label, "")))
 
         if not isinstance(node, _ALLOWED_NODES):
             _reject(f"{type(node).__name__} is not permitted in a compute expression")

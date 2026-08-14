@@ -3403,6 +3403,31 @@ def _caption_of(marker: str) -> str:
     return ((m.group(1) or m.group(2)) if m else "").strip()
 
 
+
+_COMPUTE_CLAIM_RE = re.compile(r"computed as|over n=\s*[0-9]", re.IGNORECASE)
+
+
+def audit_uncomputed_claim(answer: str, tools_results: str) -> dict:
+    """SHADOW — did the answer claim a calculation that no compute call produced? (SI-036)
+
+    Production 2026-08-14: a single-figure request had `compute` rejected 4/4 and the answer still
+    said "4.30% ... computed as the arithmetic mean of all available daily DGS10 observations". It
+    was right by luck and indistinguishable from a grounded figure. The standing directive already
+    forbade this and was ignored, so v1.0.0.269 moved the prohibition into the failure message
+    itself — and this measures whether that WORKED, rather than assuming it did. Two prompt-only
+    fixes in this same line of work failed under measurement.
+
+    A successful compute always returns "computed as: <expr>" and "over n=N data point(s)" in its
+    tool result. Matching our OWN output protocol, not interpreting the model's prose.
+    """
+    ans, res = answer or "", tools_results or ""
+    claimed = bool(_COMPUTE_CLAIM_RE.search(ans))
+    succeeded = "computed as:" in res
+    failed = "NO FIGURE WAS CALCULATED" in res
+    return {"claimed": claimed, "compute_succeeded": succeeded, "compute_failed": failed,
+            "unsupported": claimed and failed and not succeeded}
+
+
 def _repair_answer_chart_markers(answer: str, auth_markers):
     """Replace every `[[chart:...]]` the answer contains with its AUTHORITATIVE counterpart from tool evidence,
     and append any authoritative marker the answer dropped entirely. Deterministic; never raises — returns
@@ -12001,6 +12026,20 @@ END OF CONTEXT
                     # modify) the finished answer for fabricated / reused / bare-homepage citations, to baseline
                     # the rate on real traffic before enforcing. DR requests are excluded (they have their own
                     # grounding). See docs/RAICA_NONDR_CITATION_GROUNDING.md.
+                    # SI-036 SHADOW: a computation claimed but never computed. Log-only — it
+                    # measures whether the fail-closed notice in the compute error actually changes
+                    # behaviour, instead of assuming a directive worked.
+                    try:
+                        _uc = audit_uncomputed_claim(complete_llm_response, locals().get('tools_results', '') or '')
+                        if _uc["unsupported"]:
+                            logger.warning("🧮 uncomputed-claim [SHADOW]: the answer states a "
+                                           "calculation but every compute call FAILED — %s", _uc)
+                        elif _uc["compute_failed"]:
+                            logger.info("🧮 uncomputed-claim [SHADOW]: compute failed and the answer "
+                                        "made no computation claim (correct) — %s", _uc)
+                    except Exception as _uc_err:  # noqa: BLE001 — an audit must never break a reply
+                        logger.debug(f"🧮 uncomputed-claim audit skipped: {_uc_err}")
+
                     try:
                         _nondr_cg = config_loader.load_config().get('non_dr', {}).get('citation_grounding', {})
                         if _nondr_cg.get('enabled') and not bool(locals().get('_dr_on', False)):
