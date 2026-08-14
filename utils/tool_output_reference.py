@@ -92,12 +92,23 @@ def _locate_table(text: str) -> Tuple[str, str]:
     lines = (text or "").splitlines()
     best = (0, 0, 0, ",")                      # (length, start, end, delimiter)
     for delim in (",", "\t", ";", "|"):
+        # Field counts must come from a CSV PARSE, not from counting raw delimiters. A quoted field
+        # may legitimately contain the delimiter — USGS place names look like
+        # "22 km ENE of Baculin, Philippines" — so raw counts vary line to line and the longest
+        # matching run collapses. On a 226-line earthquake catalogue that produced a 14-line block
+        # whose "header" was a data row: every derived figure was then computed over 13 of 225
+        # events (mean depth 32.6 against a true 60.5, correlation 0.43 against 0.12). The Treasury
+        # CSV has no quoted fields, which is why this stayed invisible.
+        try:
+            rows = list(csv.reader(lines, delimiter=delim))
+        except csv.Error:
+            continue
         i = 0
-        while i < len(lines):
-            n = lines[i].count(delim)
-            if n >= 1:
+        while i < len(rows):
+            n = len(rows[i])
+            if n >= 2:
                 j = i + 1
-                while j < len(lines) and lines[j].count(delim) == n:
+                while j < len(rows) and len(rows[j]) == n:
                     j += 1
                 if (j - i) > best[0]:
                     best = (j - i, i, j, delim)

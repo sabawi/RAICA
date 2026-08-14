@@ -194,3 +194,56 @@ class TestChartOrdering:
             "title": "t", "source": "s", "url": "u", "x_name": "Region", "x_type": "categorical",
             "x": ["North", "East", "South"], "series": [{"name": "a", "y": [3, 1, 2]}]})
         assert out["x"] == ["North", "East", "South"]
+
+
+class TestQuotedFieldsContainingTheDelimiter:
+    """FOUND ON PRODUCTION 2026-08-14 by a second test prompt, on the USGS earthquake catalogue.
+
+    A 226-line file was parsed as a 14-line block whose "header" was a data row, so every derived
+    figure was computed over 13 of 225 events:
+
+        mean magnitude 5.71  (true 5.883)      mean depth 32.6 km (true 60.461)
+        correlation    0.43  (true 0.1214)     deepest    629 km  (true 636.265)
+
+    CAUSE: _locate_table counted RAW delimiters to find rows of equal width. A quoted field may
+    legitimately contain the delimiter — USGS place names look like
+    "22 km ENE of Baculin, Philippines" — so raw counts vary line to line and the longest matching
+    run collapsed to whichever 13 lines happened to agree.
+
+    The Treasury CSV that every earlier test used has NO quoted fields, which is why this stayed
+    invisible through five releases. Field counts now come from a CSV parse.
+
+    The model disclosed the subset ("this compute was run on a subset") and reported the numbers
+    anyway — a disclosed wrong number is still a wrong number.
+    """
+
+    # Shape of the real file: a quoted place name containing a comma, on most rows but not all.
+    QUOTED = (
+        "time,depth,mag,place,type\n"
+        "2026-01-02T00:00:00Z,10.0,5.5,\"12 km N of Somewhere, Chile\",earthquake\n"
+        "2026-01-03T00:00:00Z,20.0,6.0,\"Fiji region\",earthquake\n"
+        "2026-01-04T00:00:00Z,30.0,6.5,\"5 km SW of Elsewhere, Japan\",earthquake\n"
+        "2026-01-05T00:00:00Z,40.0,7.0,\"South Pacific\",earthquake\n"
+        "2026-01-06T00:00:00Z,50.0,7.5,\"9 km E of Nowhere, Peru\",earthquake\n"
+    )
+
+    def test_every_row_is_parsed_not_just_the_widest_run(self):
+        header_desc = describe_reference("lookup_website#1", self.QUOTED)
+        assert "5 data rows" in header_desc, header_desc
+        assert "'mag'" in header_desc and "'place'" in header_desc
+
+    def test_columns_are_complete_and_correct(self):
+        assert extract_column(self.QUOTED, "mag") == [5.5, 6.0, 6.5, 7.0, 7.5]
+        assert extract_column(self.QUOTED, "depth") == [10.0, 20.0, 30.0, 40.0, 50.0]
+
+    def test_a_quoted_delimiter_does_not_split_the_field(self):
+        places = extract_column(self.QUOTED, "place", numeric=False)
+        assert places[0] == "12 km N of Somewhere, Chile"
+        assert len(places) == 5
+
+    def test_a_derived_figure_covers_the_whole_file(self):
+        """The consequence that mattered: an average over part of a file is simply wrong, and
+        nothing downstream can tell."""
+        import statistics
+        mags = extract_column(self.QUOTED, "mag")
+        assert statistics.mean(mags) == pytest.approx(6.5)
