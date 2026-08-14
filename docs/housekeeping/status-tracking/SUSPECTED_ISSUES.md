@@ -11,6 +11,45 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-039 — Deep Research synthesis latency 8.7x the baseline  [P2 — CONFIRMED by measurement, cause UNATTRIBUTED]
+- **Observed (2026-08-14, first Tier-1 run against v1.0.0.272):**
+  ```
+  REGRESSION  PERF  dr_synthesize_s   368   (base 42.4, lower_better)   8.7x
+  REGRESSION  PERF  dr_latency_s      621   (base 141,  lower_better)   4.4x
+  PASS        PERF  dr_verify_s        80   (base 53.8)
+  ```
+  Concentrated in SYNTHESIS — verify passed. Consistent with a 426 KB synthesis prompt observed
+  in the log during the run, which routes to the heavy `pro` model
+  (`deep_research.engine.heavy_threshold_chars`).
+- **Every CODE metric PASSED** in all three baselined scenarios (S1 citation_count 12/base 13 and
+  specific_url_ratio 1.0; S3 vision_ran + keyword hits; S2 dr_completed, attachment_count 2,
+  pdf_valid, html_self_contained, doc_title_is_section). So this is a performance regression, not a
+  correctness one.
+- **Cause NOT established — two candidates, deliberately not chosen between:**
+  1. Something in the v1.0.0.259-272 work. The second round and gather gate add model calls, but
+     both sit on the **non-DR** path and should not touch DR synthesis at all. If they are
+     implicated, that is a scope leak worth finding.
+  2. **Baseline staleness.** `baseline.json` predates this session and the DR scenarios run
+     `repeats=1` — a single sample of a stochastic multi-minute pipeline against a possibly-old
+     baseline is weak evidence in either direction.
+- **To attribute it:** run S2 alone against the pre-session commit (`cda77be`) and compare. ~10
+  minutes. That either exonerates this work or finds a real problem. **Do not record a cause before
+  that runs.**
+- **Do not clear** without a like-for-like S2 comparison, n>=2 per arm given the variance.
+
+### SI-040 — The Tier-1 benchmark takes 30-45 min, so it is never run  [P3 — CONFIRMED]
+- **Observed:** `make benchmark-full` advertises ~15 min and took **30+ min** to complete, with the
+  two DR scenarios accounting for nearly all of it (7-10 min per request).
+- **Why it matters:** the pre-commit hook asks for this suite on every core-workflow change. It went
+  **unrun across thirteen consecutive releases** (v1.0.0.259-272) partly for this reason. A gate
+  that costs 30-45 minutes will not be run before a deploy, so in practice it gates nothing.
+- **Also found:** `S4_multi_ticker_8` has **no baseline entries at all** — every metric printed as
+  `INFO (base —)`, so the suite cannot fail on it however bad the numbers get. Its values looked
+  healthy (249 claims checked, 0.024 unsupported ratio, 212 unique sources, 0 truncated) but
+  `chart_markers_in_answer: 0` on an 8-ticker stock scenario is worth a separate look.
+- **Direction (not started):** a fast lane that runs S1+S3 (~1 min, both baselined) on every commit,
+  with the DR scenarios promoted to a nightly or pre-deploy-only job.
+
 ### SI-038 — A FABRICATED `[[chart:...]]` marker can launder an ungrounded answer past NewX's citation guard  [P1 — CONFIRMED by invocation]
 - **Observed (2026-08-14, local, the Treasury request, 3 runs of 3):** EVERY run emitted an invalid
   marker, in three different shapes:
