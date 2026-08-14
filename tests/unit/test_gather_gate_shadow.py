@@ -272,3 +272,64 @@ class TestEnvOverride:
         finally:
             srv.config_loader.load_config = original
         assert calls, "load_config() must run — it is what populates os.environ from .env"
+
+
+class TestPhase1Dampers:
+    """PHASE 1 — the gate now ACTS on its verdict, so every bound must be real.
+
+    A loop that can request more tools is a control loop, and an undamped one oscillates rather
+    than converging. These pin the config side of each damper; the loop itself is exercised on the
+    real path.
+
+    Enforcement was authorised by production evidence: asked for the 2025 average 10-year yield the
+    gate returned `needs_more`, was ignored because shadow was on, and the answer stated 4.33%
+    against a true 4.2932% — with `compute` never called. The mechanism that would have caught it
+    was already deployed and deliberately muzzled.
+    """
+
+    def _gg(self):
+        return _srv()._gather_gate_config()
+
+    def test_a_hard_ceiling_on_rounds_exists(self):
+        assert 1 <= self._gg()["max_gather_rounds"] <= 5
+
+    def test_a_wall_clock_exists(self):
+        """Mirrors deep_research's wall_clock: a slow tool must not hold a reply open forever."""
+        assert 10 <= self._gg()["wall_clock_seconds"] <= 300
+
+    def test_shipped_default_is_still_shadow(self):
+        """Enforcement is an OPERATOR decision, taken per-deployment via the env override. The
+        committed default must not turn it on for everyone."""
+        import yaml
+        gg = yaml.safe_load((ROOT / "config/llm_config.yaml").read_text())["tool_calling"]["gather_gate"]
+        assert gg["shadow"] is True
+
+    def test_enforcement_requires_an_explicit_false(self):
+        import os
+        srv = _srv()
+        saved = os.environ.get("RAICA_GATHER_GATE_SHADOW")
+        try:
+            os.environ["RAICA_GATHER_GATE_SHADOW"] = "false"
+            assert srv._gather_gate_config()["shadow"] is False
+            os.environ["RAICA_GATHER_GATE_SHADOW"] = "true"
+            assert srv._gather_gate_config()["shadow"] is True
+        finally:
+            os.environ.pop("RAICA_GATHER_GATE_SHADOW", None)
+            if saved is not None:
+                os.environ["RAICA_GATHER_GATE_SHADOW"] = saved
+
+
+class TestNoKeywordClassifier:
+    """CARDINAL RULE. The removed `audit_uncomputed_claim` matched the ANSWER against
+    `computed as|over n=` to decide whether a calculation had been claimed — a regex deciding
+    MEANING, which the project forbids, and which duly failed: production wrote "is calculated
+    from the complete set of 250 daily observations" and the audit stayed silent.
+
+    Whether a derived figure is missing is a STRUCTURAL fact — a quantity was asked for, no compute
+    result exists — and the gate already judges it in language. This pins the regex out of the
+    codebase so it cannot come back as a convenience."""
+
+    def test_the_answer_is_not_pattern_matched_for_claims(self):
+        src = (ROOT / "fastapi_server_complete.py").read_text()
+        assert "_COMPUTE_CLAIM_RE" not in src
+        assert "audit_uncomputed_claim" not in src

@@ -1,6 +1,7 @@
 # RAICA — Gating the non-DR answer on GATHERED DATA (porting the DR assessor) — Design
 
-**Status:** DESIGN FOR SIGN-OFF. **No code written.**
+**Status:** PHASE 0 shipped v1.0.0.270 · **PHASE 1 (enforce) shipped v1.0.0.274**, off by default
+(operator opt-in via `RAICA_GATHER_GATE_SHADOW=false`).
 **Drafted:** 2026-08-14
 **Scope:** the non-DR tool path in `fastapi_server_complete.py` (`llama_stream`). Deep Research is
 untouched — it already does this correctly and is the model being copied.
@@ -180,3 +181,52 @@ tool_calling:
    `insufficient_and_unobtainable`.
 4. **Does DR keep its own assessor, or do both paths converge on one?** Convergence is the right
    long-term shape; doing it now doubles the blast radius.
+
+
+---
+
+## 9. Phase 1 result (v1.0.0.274)
+
+Authorised by production evidence: asked for the 2025 average 10-year yield, the gate returned
+`needs_more`, was ignored because shadow was on, and the answer stated **4.33%** against a true
+**4.2932%** with `compute` never called. The mechanism that would have caught it was already
+deployed and deliberately muzzled.
+
+Enforcing, on the identical request:
+
+```
+round=1  needs_more  "10-year Treasury yield data for 2025"          -> executing ['lookup_website']
+round=2  needs_more  "the average must be calculated from the ..."   -> executing ['compute']
+round=3  sufficient                                                   -> STOPPED reason=sufficient
+```
+
+Answer: **"4.29%, computed as the arithmetic mean over 249 daily observations"** — correct on both
+the value and the count.
+
+**Round 2 is the round a counter can never reach.** The data was already in hand; what was missing
+was the CALCULATION. That is the precise state that produced 4.24%, 4.33%, and a "computed as the
+arithmetic mean" claim with no computation behind it.
+
+### Division of labour
+
+The gate decides WHETHER more is needed; the existing second-round selector decides WHAT to call.
+Whitelist filtering, dedup and reference resolution are therefore reused rather than duplicated.
+
+### Dampers, all live
+
+| bound | behaviour |
+|---|---|
+| `max_gather_rounds` | 3 — used all three above and stopped on `sufficient`, not the cap |
+| `wall_clock_seconds` | 90 |
+| dedup | by name + canonicalised arguments |
+| whitelist | re-checked every round — a gate round can never widen a bot's `allowed_tools` |
+| **no-progress** | a round adding no new reference id ends the loop — the line that makes oscillation impossible |
+| fail-open | any error returns to prior behaviour |
+
+### What was removed
+
+`audit_uncomputed_claim` and its `computed as|over n=` regex. It matched the ANSWER to decide
+whether a calculation had been claimed — a pattern deciding MEANING, which the Cardinal Rule
+forbids — and it had already failed: production wrote "is calculated from the complete set of 250
+daily observations" and the audit stayed silent. Whether a derived figure is missing is structural,
+and the gate judges it in language. A test pins the regex out of the codebase.

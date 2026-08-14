@@ -3404,38 +3404,6 @@ def _caption_of(marker: str) -> str:
 
 
 
-_COMPUTE_CLAIM_RE = re.compile(r"computed as|over n=\s*[0-9]", re.IGNORECASE)
-
-
-def audit_uncomputed_claim(answer: str, tools_results: str) -> dict:
-    """SHADOW — did the answer claim a calculation that no compute call produced? (SI-036)
-
-    Production 2026-08-14: a single-figure request had `compute` rejected 4/4 and the answer still
-    said "4.30% ... computed as the arithmetic mean of all available daily DGS10 observations". It
-    was right by luck and indistinguishable from a grounded figure. The standing directive already
-    forbade this and was ignored, so v1.0.0.269 moved the prohibition into the failure message
-    itself — and this measures whether that WORKED, rather than assuming it did. Two prompt-only
-    fixes in this same line of work failed under measurement.
-
-    A successful compute always returns "computed as: <expr>" and "over n=N data point(s)" in its
-    tool result. Matching our OWN output protocol, not interpreting the model's prose.
-    """
-    ans, res = answer or "", tools_results or ""
-    claimed = bool(_COMPUTE_CLAIM_RE.search(ans))
-    succeeded = "computed as:" in res
-    failed = "NO FIGURE WAS CALCULATED" in res
-    # Two DISTINCT unsupported cases; the first version only caught the second and was blind to a
-    # run where compute was never called at all — which is exactly what production did next.
-    #   after_failure : compute was attempted, failed, and the answer claimed a figure anyway
-    #   no_compute    : no compute call at all, yet the answer claims one. Lower confidence — a
-    #                   source's own methodology can legitimately be described as "computed as …" —
-    #                   so it is reported separately rather than folded in.
-    return {"claimed": claimed, "compute_succeeded": succeeded, "compute_failed": failed,
-            "unsupported_after_failure": claimed and failed and not succeeded,
-            "unsupported_no_compute": claimed and not failed and not succeeded,
-            "unsupported": claimed and not succeeded}
-
-
 def _repair_answer_chart_markers(answer: str, auth_markers):
     """Replace every `[[chart:...]]` the answer contains with its AUTHORITATIVE counterpart from tool evidence,
     and append any authoritative marker the answer dropped entirely. Deterministic; never raises — returns
@@ -10792,35 +10760,84 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         # reason about otherwise, and execute_single_tool is scoped to this
                                         # block (calling it from outside would be a ReferenceError, silent
                                         # inside a try).
-                                        # ── GATHER GATE, PHASE 0 (SHADOW) ──────────────
-                                        # docs/RAICA_NONDR_GATHER_GATE.md. Logs a verdict and
-                                        # acts on NOTHING. Every round is logged including the
-                                        # first `sufficient`: SI-021 had this class of assessor
-                                        # dead for 7 builds behind a catch-all while reporting
-                                        # success, so silence must never be the success signal.
+                                        # ── GATHER GATE (docs/RAICA_NONDR_GATHER_GATE.md) ──
+                                        # PHASE 1. The loop stops on a CONDITION, not a count:
+                                        # "can this be answered accurately with what is gathered?"
+                                        # Deep Research has worked this way since it was written
+                                        # (research/engine.py:709); this is that shape for the path
+                                        # that never had it. Production evidence: asked for the 2025
+                                        # average 10-year yield the gate said needs_more, was
+                                        # ignored because shadow, and the answer stated 4.33%
+                                        # against a true 4.2932% with compute never called.
+                                        #
+                                        # DIVISION OF LABOUR: the gate decides WHETHER more is
+                                        # needed; the existing second-round selector decides WHAT to
+                                        # call, so whitelist filtering, dedup and reference
+                                        # resolution are reused rather than duplicated.
                                         _gg = _gather_gate_config()
                                         if _gg['enabled']:
                                             try:
-                                                _gg_verdict = await _gather_gate_assess(
-                                                    user_message=user_message,
-                                                    prior_results=phase1_results,
-                                                    tools_array=tools_array,
-                                                    model=(_gg['model'] or tools_model),
-                                                    round_num=1)
-                                                if _gg_verdict is None:
-                                                    logger.info("🚪 gather-gate: round=1 verdict=UNAVAILABLE "
-                                                                "(no prior output or assessment failed)")
-                                                else:
+                                                from utils.tool_output_reference import build_reference_index
+                                                _gg_start = time.monotonic()
+                                                _gg_keys = {_tool_call_key(c) for c in tool_calls}
+                                                _gg_round, _gg_stop = 0, "sufficient"
+                                                while True:
+                                                    _gg_round += 1
+                                                    _v = await _gather_gate_assess(
+                                                        user_message=user_message,
+                                                        prior_results=phase1_results,
+                                                        tools_array=tools_array,
+                                                        model=(_gg['model'] or tools_model),
+                                                        round_num=_gg_round)
+                                                    if _v is None:
+                                                        logger.info("🚪 gather-gate: round=%s verdict=UNAVAILABLE",
+                                                                    _gg_round)
+                                                        _gg_stop = "unavailable"
+                                                        break
                                                     logger.info(
-                                                        "🚪 gather-gate: round=%s verdict=%s missing=%r "
-                                                        "next=%s model=%s%s",
-                                                        _gg_verdict["round"], _gg_verdict["status"],
-                                                        _gg_verdict["missing"], _gg_verdict["next_tools"],
-                                                        _gg_verdict["model"],
+                                                        "🚪 gather-gate: round=%s verdict=%s missing=%r next=%s "
+                                                        "model=%s%s", _v["round"], _v["status"], _v["missing"],
+                                                        _v["next_tools"], _v["model"],
                                                         " [SHADOW — not acted on]" if _gg['shadow'] else "")
-                                                    logger.info("🚪 gather-gate: STOPPED reason=%s",
-                                                                "shadow" if _gg['shadow'] else _gg_verdict["status"])
-                                            except Exception as _gg_err:  # noqa: BLE001
+                                                    if _gg['shadow'] or _v["status"] == "sufficient":
+                                                        _gg_stop = "shadow" if _gg['shadow'] else "sufficient"
+                                                        break
+                                                    if _gg_round >= _gg['max_gather_rounds']:
+                                                        _gg_stop = "max_rounds"      # the ceiling
+                                                        break
+                                                    if (time.monotonic() - _gg_start) > _gg['wall_clock_seconds']:
+                                                        _gg_stop = "wall_clock"      # a slow tool cannot hold a reply
+                                                        break
+                                                    _more = await _second_round_tool_calls(
+                                                        user_message=user_message,
+                                                        prior_results=phase1_results,
+                                                        tools_array=tools_array,
+                                                        executed_keys=_gg_keys,
+                                                        tools_model=tools_model,
+                                                        generate_tools=llm_manager.generate_tools)
+                                                    if not _more:
+                                                        _gg_stop = "no_further_queries"
+                                                        break
+                                                    _before_refs = set(build_reference_index(phase1_results))
+                                                    _more = _resolve_call_references(_more, phase1_results)
+                                                    logger.info("🚪 gather-gate: round=%s executing %s",
+                                                                _gg_round, [c['function']['name'] for c in _more])
+                                                    _res = await asyncio.gather(
+                                                        *[execute_single_tool(c) for c in _more],
+                                                        return_exceptions=True)
+                                                    phase1_results = list(phase1_results) + list(_res)
+                                                    all_results.extend(_res)
+                                                    for _c in _more:
+                                                        tools_called.append(_c['function']['name'])
+                                                    # THE DAMPER. A round that adds no new output cannot
+                                                    # make the next one better — this is the line that
+                                                    # makes an oscillating loop impossible.
+                                                    if set(build_reference_index(phase1_results)) == _before_refs:
+                                                        _gg_stop = "no_progress"
+                                                        break
+                                                logger.info("🚪 gather-gate: STOPPED reason=%s rounds=%s",
+                                                            _gg_stop, _gg_round)
+                                            except Exception as _gg_err:  # noqa: BLE001 — never lose an answer
                                                 logger.warning(f"🚪 gather-gate skipped ({_gg_err})")
 
                                         _sr_cfg = _second_round_config()
@@ -12168,23 +12185,6 @@ END OF CONTEXT
                     # modify) the finished answer for fabricated / reused / bare-homepage citations, to baseline
                     # the rate on real traffic before enforcing. DR requests are excluded (they have their own
                     # grounding). See docs/RAICA_NONDR_CITATION_GROUNDING.md.
-                    # SI-036 SHADOW: a computation claimed but never computed. Log-only — it
-                    # measures whether the fail-closed notice in the compute error actually changes
-                    # behaviour, instead of assuming a directive worked.
-                    try:
-                        _uc = audit_uncomputed_claim(complete_llm_response, locals().get('tools_results', '') or '')
-                        if _uc["unsupported_after_failure"]:
-                            logger.warning("🧮 uncomputed-claim [SHADOW]: the answer states a "
-                                           "calculation but every compute call FAILED — %s", _uc)
-                        elif _uc["unsupported_no_compute"]:
-                            logger.warning("🧮 uncomputed-claim [SHADOW]: the answer states a "
-                                           "calculation but compute was NEVER CALLED — %s", _uc)
-                        elif _uc["compute_failed"]:
-                            logger.info("🧮 uncomputed-claim [SHADOW]: compute failed and the answer "
-                                        "made no computation claim (correct) — %s", _uc)
-                    except Exception as _uc_err:  # noqa: BLE001 — an audit must never break a reply
-                        logger.debug(f"🧮 uncomputed-claim audit skipped: {_uc_err}")
-
                     try:
                         _nondr_cg = config_loader.load_config().get('non_dr', {}).get('citation_grounding', {})
                         if _nondr_cg.get('enabled') and not bool(locals().get('_dr_on', False)):
