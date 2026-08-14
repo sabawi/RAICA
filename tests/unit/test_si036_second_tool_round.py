@@ -302,3 +302,34 @@ class TestUncomputedClaimAudit:
     def test_no_compute_involved_is_never_flagged(self):
         a = _srv().audit_uncomputed_claim("Barcelona is in Spain.", "Tool: search_web\n…")
         assert a["unsupported"] is False
+
+
+class TestAuditSeesAClaimWithNoComputeAtAll:
+    """The hole in the first version of the audit, found on production one release later.
+
+    `unsupported = claimed and failed and not succeeded` only fired when compute was ATTEMPTED and
+    failed. The very next run called no compute at all — search_datasets → search_web →
+    lookup_website — so `failed` was False and a computation claim would have gone unrecorded. An
+    audit blind to the commonest shape of the thing it measures is worse than none, because its
+    silence reads as a pass."""
+
+    def test_claim_with_no_compute_call_is_flagged(self):
+        a = _srv().audit_uncomputed_claim(
+            "The average was 4.30%, computed as the arithmetic mean over 251 observations.",
+            "Tool: search_web\nTool: lookup_website\n… no compute anywhere …")
+        assert a["unsupported_no_compute"] is True
+        assert a["unsupported"] is True
+        assert a["unsupported_after_failure"] is False
+
+    def test_the_two_cases_stay_distinguishable(self):
+        srv = _srv()
+        after = srv.audit_uncomputed_claim("… computed as the mean …",
+                                           "Tool: compute\nNO FIGURE WAS CALCULATED. …")
+        assert after["unsupported_after_failure"] is True
+        assert after["unsupported_no_compute"] is False
+
+    def test_a_real_computation_is_still_never_flagged(self):
+        a = _srv().audit_uncomputed_claim(
+            "minimum 0.18, computed as np.min(y30 - y10) over n=404 data points",
+            "Tool: compute\ncomputed as: np.min(y30 - y10)\nover n=404 data point(s)")
+        assert a["unsupported"] is False

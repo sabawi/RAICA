@@ -197,6 +197,20 @@ lookup_website:
   max_data_bytes: 2000000
 
 tool_calling:
+  # SI-036 / docs/RAICA_NONDR_GATHER_GATE.md — GATHER GATE.
+  # The non-DR path stops gathering on a COUNT, not a CONDITION, so a request whose data arrives
+  # after the counter is spent is answered without it: production quoted 4.24% from a web article
+  # for a figure the fetched CSV gives as 4.2932%. Deep Research has had the right shape since it
+  # was written (_assess -> sufficient/needs_more, research/engine.py:709); this is that shape for
+  # the path that never had it.
+  # PHASE 0 = SHADOW: the verdict is logged and acted on by nothing. Enable to MEASURE how often
+  # `needs_more` is the right answer before letting it change behaviour.
+  gather_gate:
+    enabled: false
+    shadow: true
+    max_gather_rounds: 3        # hard ceiling once enforcement lands
+    wall_clock_seconds: 90      # mirrors deep_research's wall_clock
+    model: null                 # null = the tool-calling model (already loaded)
   second_round:
     enabled: true
     # Hard cap on EXTRA selection rounds. 1 means exactly one additional round: tools it requests

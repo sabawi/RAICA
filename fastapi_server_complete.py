@@ -3424,8 +3424,16 @@ def audit_uncomputed_claim(answer: str, tools_results: str) -> dict:
     claimed = bool(_COMPUTE_CLAIM_RE.search(ans))
     succeeded = "computed as:" in res
     failed = "NO FIGURE WAS CALCULATED" in res
+    # Two DISTINCT unsupported cases; the first version only caught the second and was blind to a
+    # run where compute was never called at all — which is exactly what production did next.
+    #   after_failure : compute was attempted, failed, and the answer claimed a figure anyway
+    #   no_compute    : no compute call at all, yet the answer claims one. Lower confidence — a
+    #                   source's own methodology can legitimately be described as "computed as …" —
+    #                   so it is reported separately rather than folded in.
     return {"claimed": claimed, "compute_succeeded": succeeded, "compute_failed": failed,
-            "unsupported": claimed and failed and not succeeded}
+            "unsupported_after_failure": claimed and failed and not succeeded,
+            "unsupported_no_compute": claimed and not failed and not succeeded,
+            "unsupported": claimed and not succeeded}
 
 
 def _repair_answer_chart_markers(answer: str, auth_markers):
@@ -7761,6 +7769,86 @@ async def _judge_paper_corpora(user_prompt: str, generate_stream) -> "Optional[l
     return sources
 
 
+def _gather_gate_config() -> dict:
+    """Config for the non-DR GATHER GATE (docs/RAICA_NONDR_GATHER_GATE.md). Fail-closed."""
+    try:
+        cfg = (config_loader.load_config().get('tool_calling', {}) or {}).get('gather_gate', {}) or {}
+        return {
+            'enabled': bool(cfg.get('enabled', False)),
+            'shadow': bool(cfg.get('shadow', True)),
+            'max_gather_rounds': int(cfg.get('max_gather_rounds', 3) or 0),
+            'wall_clock_seconds': float(cfg.get('wall_clock_seconds', 90) or 0),
+            'model': cfg.get('model') or None,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🚪 gather-gate config unreadable ({e}) → disabled")
+        return {'enabled': False, 'shadow': True, 'max_gather_rounds': 0,
+                'wall_clock_seconds': 0, 'model': None}
+
+
+async def _gather_gate_assess(user_message: str, prior_results, tools_array: list,
+                              model: str, round_num: int = 1) -> "Optional[dict]":
+    """Ask whether the request can be answered ACCURATELY with what has been gathered.
+
+    THE FLAW THIS ADDRESSES (docs/RAICA_NONDR_GATHER_GATE.md §1). The non-DR path terminates
+    gathering on a COUNT, not a CONDITION: `max_extra_rounds > 0`. Production, on "the average
+    10-year yield in 2025":
+
+        03:33:20 selection : ['search_datasets']            (catalog metadata)
+        03:33:23 SECOND ROUND: ['search_web','search_datasets']   <- budget spent here
+        03:33:33 selection : ['lookup_website']             <- the CSV finally arrives
+                 (no further selection — the counter was exhausted)
+
+    No selector ever saw the CSV. `compute` was not rejected and not overlooked, it was
+    UNREACHABLE, and the answer quoted 4.24% from a web article against a true 4.2932%.
+
+    Deep Research has solved this since it was written — `_assess` (research/engine.py:709) returns
+    sufficient / needs_more with next steps, and the loop stops on an evaluated condition. This is
+    that same shape, for the path that never had it.
+
+    PHASE 0: the verdict is LOGGED and nothing acts on it. Returns None on any failure — a gate
+    that cannot run must never cost an answer.
+    """
+    from research.engine import extract_json_object
+    summary = _describe_round_results(prior_results)
+    if not summary.strip():
+        return None
+    names = sorted({(t.get('function', {}) or {}).get('name') for t in (tools_array or [])
+                    if (t.get('function', {}) or {}).get('name')})
+    prompt = (
+        # TAIL, not head. `user_message` is CONSTRUCTED (:10135-10164): a directive preamble first,
+        # with the real request appended LAST as "User Prompt: …". Truncating from the front kept
+        # the preamble and cut the question — with NewX's ~7,000-char system prompt merged in, the
+        # gate saw no request at all and answered "No user prompt was provided", which would have
+        # made every shadow verdict worthless while looking like it was working.
+        f"USER REQUEST:\n{(user_message or '')[-4000:]}\n\n"
+        f"{summary}\n\n"
+        f"TOOLS AVAILABLE: {', '.join(names)}\n\n"
+        "Judge ONLY this: can the user's request be answered ACCURATELY and COMPLETELY from what "
+        "has been gathered above? A figure the user asked for that must be DERIVED from the data "
+        "(an average, extremum, total, correlation, count) is NOT in hand merely because the data "
+        "is — it has to be calculated. Data described above by column names and row counts IS in "
+        "hand and does not need fetching again.\n\n"
+        "Respond with STRICT JSON only, no prose:\n"
+        '{"status": "sufficient" | "needs_more", "missing": "<one short line, or empty>", '
+        '"next_tools": ["<tool name>", ...]}'
+    )
+    try:
+        chunks = []
+        async for ch in llm_manager.generate_stream(prompt, model=model, temperature=0,
+                                                    max_tokens=600, stream=False):
+            chunks.append(ch)
+        data = extract_json_object("".join(chunks)) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🚪 gather-gate round={round_num}: assessment failed ({e})")
+        return None
+    status = "needs_more" if str(data.get("status", "")).lower() == "needs_more" else "sufficient"
+    next_tools = [n for n in (data.get("next_tools") or []) if n in names]
+    return {"round": round_num, "status": status,
+            "missing": str(data.get("missing") or "")[:200], "next_tools": next_tools,
+            "model": model}
+
+
 def _second_round_config() -> dict:
     """Config for the SI-036 second tool-selection round. Fail-closed: any error → disabled."""
     try:
@@ -10681,6 +10769,37 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         # reason about otherwise, and execute_single_tool is scoped to this
                                         # block (calling it from outside would be a ReferenceError, silent
                                         # inside a try).
+                                        # ── GATHER GATE, PHASE 0 (SHADOW) ──────────────
+                                        # docs/RAICA_NONDR_GATHER_GATE.md. Logs a verdict and
+                                        # acts on NOTHING. Every round is logged including the
+                                        # first `sufficient`: SI-021 had this class of assessor
+                                        # dead for 7 builds behind a catch-all while reporting
+                                        # success, so silence must never be the success signal.
+                                        _gg = _gather_gate_config()
+                                        if _gg['enabled']:
+                                            try:
+                                                _gg_verdict = await _gather_gate_assess(
+                                                    user_message=user_message,
+                                                    prior_results=phase1_results,
+                                                    tools_array=tools_array,
+                                                    model=(_gg['model'] or tools_model),
+                                                    round_num=1)
+                                                if _gg_verdict is None:
+                                                    logger.info("🚪 gather-gate: round=1 verdict=UNAVAILABLE "
+                                                                "(no prior output or assessment failed)")
+                                                else:
+                                                    logger.info(
+                                                        "🚪 gather-gate: round=%s verdict=%s missing=%r "
+                                                        "next=%s model=%s%s",
+                                                        _gg_verdict["round"], _gg_verdict["status"],
+                                                        _gg_verdict["missing"], _gg_verdict["next_tools"],
+                                                        _gg_verdict["model"],
+                                                        " [SHADOW — not acted on]" if _gg['shadow'] else "")
+                                                    logger.info("🚪 gather-gate: STOPPED reason=%s",
+                                                                "shadow" if _gg['shadow'] else _gg_verdict["status"])
+                                            except Exception as _gg_err:  # noqa: BLE001
+                                                logger.warning(f"🚪 gather-gate skipped ({_gg_err})")
+
                                         _sr_cfg = _second_round_config()
                                         if _sr_cfg['enabled'] and _sr_cfg['max_extra_rounds'] > 0:
                                             try:
@@ -12031,9 +12150,12 @@ END OF CONTEXT
                     # behaviour, instead of assuming a directive worked.
                     try:
                         _uc = audit_uncomputed_claim(complete_llm_response, locals().get('tools_results', '') or '')
-                        if _uc["unsupported"]:
+                        if _uc["unsupported_after_failure"]:
                             logger.warning("🧮 uncomputed-claim [SHADOW]: the answer states a "
                                            "calculation but every compute call FAILED — %s", _uc)
+                        elif _uc["unsupported_no_compute"]:
+                            logger.warning("🧮 uncomputed-claim [SHADOW]: the answer states a "
+                                           "calculation but compute was NEVER CALLED — %s", _uc)
                         elif _uc["compute_failed"]:
                             logger.info("🧮 uncomputed-claim [SHADOW]: compute failed and the answer "
                                         "made no computation claim (correct) — %s", _uc)
