@@ -46,6 +46,12 @@ def _shim():
            "    _DATA_CONTENT_TYPES = "
            + re.search(r"_DATA_CONTENT_TYPES = \{[^}]*\}", SRC).group(0).split("=", 1)[1] + "\n"
            "    _DATA_MAX_BYTES = 2_000_000\n"
+           # SI-037: the byte budget moved to config (llm_config.yaml lookup_website.max_data_bytes)
+           # and _extract_data_content now resolves it through _lookup_website_limits(). The shim
+           # supplies that accessor reading _DATA_MAX_BYTES, so the tests below keep forcing
+           # truncation by setting that attribute — their assertions are unchanged.
+           "    def _lookup_website_limits(self):\n"
+           "        return (10000, self._DATA_MAX_BYTES)\n"
            + "\n".join(_grab(n) for n in ("_probe_content_type", "_extract_data_content")))
     ns = {}
     exec(cls, ns)

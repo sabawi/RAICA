@@ -11,6 +11,67 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-038 — A FABRICATED `[[chart:...]]` marker can launder an ungrounded answer past NewX's citation guard  [P1 — CONFIRMED by invocation]
+- **Observed (2026-08-14, local, the Treasury request):** the answer emitted
+  ```
+  [[chart:6a2e2a6b-1e0e-4e0e-8e0e-6e0e-6e0e-6e0e-6e0e]]
+  ```
+  a hallucinated UUID-shaped string where a real marker carries base64 chart data. An earlier run
+  of the SAME request emitted a genuine base64 payload, so the model can produce either.
+- **Why this is P1 and not a broken image.** NewX treats the marker as PROOF of tool-sourcing.
+  `newx/app/ai_connector/responder.py` (`_ARTIFACT_MARKER_RE` / `_has_tool_artifact`) states it
+  outright: markers "are emitted ONLY when a RAICA data tool actually produced a real, rendered
+  asset ... Their presence is therefore proof the reply is TOOL-SOURCED, not hallucinated", and the
+  citation guard accepts them **in place of a source URL**. That premise is now false. A reply with
+  no valid citation and one invented marker passes a guard designed to stop exactly that.
+- **Cause (SUSPECTED — not yet traced):** nothing validates a marker's payload before the reply is
+  accepted. The renderer presumably fails or draws nothing, but the GUARD has already been
+  satisfied by the marker's mere presence. **To confirm or refute:** post a reply containing a
+  syntactically valid but meaningless marker and no URL, and see whether the citation guard admits
+  it. Do not record the cause until that is run.
+- **Fix direction (not started):** validate the marker payload where the guard reads it — a real
+  marker decodes to the chart JSON the builder emits (`data_chart_builder.py:29` `_marker()`); an
+  invented one will not. Validation belongs at the guard, not only at the renderer.
+- **Do not clear** without a test showing a fabricated marker is rejected while a real one passes.
+
+### SI-036 — `compute` cannot be selected for FETCH-then-CALCULATE: the non-DR path runs ONE tool round, decided before any data exists  [P1 — CONFIRMED on production by the user's own test]
+- **Observed (2026-08-14, live prod, the user's Treasury request, run TWICE):** `compute` was
+  loaded, whitelisted and offered — `Available tools: [... 'compute']` — and was **never called**:
+  ```
+  tool calls: ['lookup_website', 'lookup_website']
+  ```
+  Run 1 without the Ask system prompt, run 2 with the `DERIVED FIGURES MUST BE CALCULATED`
+  directive verifiably present in the merged prompt (assertion in the harness, 7,378 chars). Same
+  result both times. **The directive did not change tool selection.**
+- **CAUSE — CONFIRMED from the request's own log, and it is architectural, not a prompt problem.**
+  The non-DR path performs exactly **one** tool-calling round:
+  ```
+  About to call LLM Manager for tool calling
+  tool calls: ['lookup_website', 'lookup_website']   <- chosen ONCE, before any data exists
+  LLM Manager tool calling response received  -> synthesis -> POST-LLM
+  ```
+  Every tool is chosen **up front**, before the CSVs are fetched. `compute` is inherently a
+  SECOND-round tool — what to calculate is unknowable until the data is in hand — so on this path
+  it can essentially never be selected for the fetch-then-calculate pattern. No prompt wording can
+  fix this; the round structure is the gate. `compute` is also **absent from the DR path's
+  `sources.allowed`**, so the multi-round path cannot reach it either.
+- **Consequence:** the answer degraded in exactly the way the user's prompt forbade — the minimum
+  spread was **estimated** ("narrowed to around 20-22 basis points", "approximately"), for a number
+  sitting in a CSV it had already fetched, against an explicit "do not fill gaps with estimates —
+  say so plainly instead". Run 1 was arithmetically self-refuting (minimum +0.52 reported beside a
+  start value of +0.23). It also claimed the 5Y "rose from approximately 4.35% to 4.32%".
+- **This was a DESIGN miss, and the process guard that should have caught it did not fire.** The
+  architecture-first gate was applied to tool REGISTRATION and WHITELIST reachability (both traced,
+  both correct) but never asked *"can a tool be invoked AFTER another tool's output exists?"* — the
+  stage that actually defeats the feature. Worse, the pre-ship validation used a prompt with the
+  data **inline**, which makes `compute` a legitimate FIRST-round call — so the isolated test
+  passed and hid the real-path failure. That is the textbook bypass the gate exists to prevent.
+- **Options (NOT started, need sign-off):** (a) a second tool-calling round on the non-DR path when
+  the first round returned data — the general fix, and it would help any compute-like tool;
+  (b) add `compute` to the DR `sources.allowed` so at least the multi-round path can reach it;
+  (c) fold computation into the data-fetch tool's own return. **Do not clear** until `compute` is
+  observed in `tool calls:` on a real fetch-then-calculate request.
+
 ### SI-035 — Two files register the SAME tool name; which implementation is live depends on filesystem order  [P2 — CONFIRMED by invocation]
 - **Observed (2026-08-13, while verifying SI-028 P2b tool discovery):** `discover_user_tools()`
   returns `analytical_visualizer` **twice**:

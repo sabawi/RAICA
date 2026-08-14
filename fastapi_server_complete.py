@@ -2136,8 +2136,29 @@ class AsyncToolManager:
                 "error": f"Error extracting content from {url}: {e}",
             }
 
-    def _safe_truncate(self, content: str, max_chars: int = 10000) -> str:
-        """Simple, safe truncation that guarantees we stay under buffer limits."""
+    @staticmethod
+    def _lookup_website_limits() -> tuple:
+        """(max_article_chars, max_data_bytes) from config — SI-037.
+
+        Both were hardcoded constants. Configuration belongs in llm_config.yaml, and the article
+        limit in particular is one an operator needs to raise when answers start reporting figures
+        over half a table.
+        """
+        try:
+            cfg = config_loader.load_config().get('lookup_website', {}) or {}
+            return (int(cfg.get('max_article_chars', 10000)),
+                    int(cfg.get('max_data_bytes', 2_000_000)))
+        except Exception:  # noqa: BLE001
+            return (10000, 2_000_000)
+
+    def _safe_truncate(self, content: str, max_chars: int = None) -> str:
+        """Truncate PROSE to stay under buffer limits.
+
+        SI-037: for ARTICLES only. It cuts at a sentence boundary, which is meaningless for a table
+        and silently discards rows. Data files bypass this entirely — see the call site.
+        """
+        if max_chars is None:
+            max_chars, _ = self._lookup_website_limits()
         if len(content) <= max_chars:
             return content
 
@@ -2221,23 +2242,24 @@ class AsyncToolManager:
         label = self._DATA_CONTENT_TYPES.get(ctype, ctype or "unknown type")
         hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "*/*"}
+        _max_bytes = self._lookup_website_limits()[1]
         try:
             r = requests.get(url, timeout=timeout, headers=hdrs, stream=True)
             if r.status_code >= 400:
                 return {"success": False, "error": f"HTTP {r.status_code}"}
-            raw = r.raw.read(self._DATA_MAX_BYTES + 1, decode_content=True) or b""
+            raw = r.raw.read(_max_bytes + 1, decode_content=True) or b""
             r.close()
         except Exception as e:  # noqa: BLE001
             return {"success": False, "error": f"{type(e).__name__}: {e}"}
 
-        over = len(raw) > self._DATA_MAX_BYTES
-        text = raw[:self._DATA_MAX_BYTES].decode("utf-8", "replace")
+        over = len(raw) > _max_bytes
+        text = raw[:_max_bytes].decode("utf-8", "replace")
         lines = text.splitlines()
         if over and len(lines) > 1:
             lines = lines[:-1]                      # drop a row cut mid-way
             text = "\n".join(lines)
         note = (f"[{label} file: {len(lines)} lines retrieved"
-                + (f"; TRUNCATED at {self._DATA_MAX_BYTES} bytes — this is NOT the whole file"
+                + (f"; TRUNCATED at {_max_bytes} bytes — this is NOT the whole file"
                    if over else " (complete)") + "]")
         # Must satisfy the SAME contract as _extract_web_content — the caller reads
         # result['title'] / ['author'] / ['date'] unconditionally when building the source
@@ -2300,8 +2322,21 @@ class AsyncToolManager:
                 if not result["success"]:
                     return f"ERROR: Failed to extract content from {url}: {result['error']}"
 
-                # Apply safe truncation to avoid buffer overflow
-                content = self._safe_truncate(result["content"])
+                # Apply safe truncation to avoid buffer overflow.
+                # SI-037: a DATA file must NOT go through the prose truncator. _extract_data_content
+                # already bounds it by BYTES (_DATA_MAX_BYTES) and discloses the result honestly
+                # ("N lines retrieved (complete)" / "TRUNCATED at N bytes"). Running _safe_truncate
+                # on top cut a 20,198-char Treasury CSV to 10,000 at a SENTENCE boundary — a rule
+                # meant for articles, applied to a table — silently discarding the second half of
+                # the year. Every figure derived from what survived was then wrong in a way nothing
+                # could detect: the true maximum 30Y-10Y spread (0.69 on 09/04/2025) was in the
+                # discarded rows, so the answer reported 0.67 from a partial series.
+                # `data_label` is set by RAICA's own data path, so this is a structural check on our
+                # own marker, not an interpretation of content.
+                if result.get("data_label"):
+                    content = result["content"]
+                else:
+                    content = self._safe_truncate(result["content"])
 
                 # Build additional metadata for enhanced source block
                 metadata_parts = []
@@ -7701,6 +7736,128 @@ async def _judge_paper_corpora(user_prompt: str, generate_stream) -> "Optional[l
     return sources
 
 
+def _second_round_config() -> dict:
+    """Config for the SI-036 second tool-selection round. Fail-closed: any error → disabled."""
+    try:
+        cfg = (config_loader.load_config().get('tool_calling', {}) or {}).get('second_round', {}) or {}
+        return {
+            'enabled': bool(cfg.get('enabled', False)),
+            'max_extra_rounds': int(cfg.get('max_extra_rounds', 1) or 0),
+            'max_chars_per_tool': int(cfg.get('max_chars_per_tool', 20000) or 0),
+            'max_chars_total': int(cfg.get('max_chars_total', 40000) or 0),
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🔁 second-round config unreadable ({e}) → disabled")
+        return {'enabled': False, 'max_extra_rounds': 0,
+                'max_chars_per_tool': 0, 'max_chars_total': 0}
+
+
+def _tool_call_key(tool_call: dict) -> tuple:
+    """Identity of a tool call for de-duplication: (name, canonicalised arguments).
+
+    Arguments arrive as either a JSON string or a dict depending on provider, so both are
+    normalised to a sorted-key JSON string — otherwise the SAME call reaches round 2 looking
+    different and gets run twice.
+    """
+    fn = tool_call.get('function', {}) or {}
+    name = fn.get('name', '')
+    args = fn.get('arguments', '')
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            return (name, args)
+    try:
+        return (name, json.dumps(args, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return (name, str(args))
+
+
+def _summarise_round_results(results, max_per_tool: int, max_total: int) -> str:
+    """Render prior tool output for the SELECTOR, disclosing any truncation.
+
+    Truncation is stated in-band because a selector that cannot see it will happily compute a
+    'maximum' over the half of a series it was shown — the silent-wrong-number failure this whole
+    feature exists to remove (SI-028 P2b).
+    """
+    blocks, total = [], 0
+    for item in results or []:
+        if not (isinstance(item, tuple) and len(item) >= 2):
+            continue
+        name, result = item[0], item[1]
+        text = result if isinstance(result, str) else str(result)
+        if max_per_tool and len(text) > max_per_tool:
+            text = (text[:max_per_tool] +
+                    f"\n[TRUNCATED: showing {max_per_tool} of {len(result)} characters — "
+                    f"do NOT compute an extremum or total over this partial view; say so instead]")
+        if max_total and total + len(text) > max_total:
+            blocks.append(f"[further tool output omitted — {max_total} character budget reached]")
+            break
+        total += len(text)
+        blocks.append(f"=== OUTPUT OF {name} ===\n{text}")
+    return "\n\n".join(blocks)
+
+
+async def _second_round_tool_calls(user_message: str, prior_results, tools_array: list,
+                                   executed_keys: set, tools_model, generate_tools) -> list:
+    """SI-036 — ask the tool-calling model, ONCE, whether the data now in hand warrants more tools.
+
+    The non-DR path selects all tools in a single call made BEFORE any tool runs
+    (fastapi_server_complete.py:9834, prompt = the user message only), so a tool whose arguments
+    depend on another tool's OUTPUT is unreachable there by construction. That is the confirmed
+    cause of SI-036: `compute` was offered on production and never called, because what to
+    calculate is unknowable until the CSV has been fetched.
+
+    Returns NEW tool calls only. Guarantees, in order:
+      * tools offered are exactly `tools_array` — already whitelist-filtered upstream, and the
+        returned names are re-checked against it, so this cannot become a whitelist bypass
+      * calls already run in an earlier round are dropped (dedup by name+arguments)
+      * failure is fail-open: any error returns [] and the request proceeds as it does today
+    """
+    cfg = _second_round_config()
+    allowed_names = {t.get('function', {}).get('name') for t in (tools_array or [])}
+    summary = _summarise_round_results(prior_results, cfg['max_chars_per_tool'],
+                                       cfg['max_chars_total'])
+    if not summary.strip():
+        return []
+
+    prompt = (
+        f"{user_message}\n\n"
+        "=== TOOL OUTPUT GATHERED SO FAR ===\n"
+        f"{summary}\n"
+        "===================================\n\n"
+        "The data above has already been retrieved for this request. Decide whether answering it "
+        "ACCURATELY needs any further tool call now that this data exists — in particular, any "
+        "figure that must be DERIVED from the data rather than read from it (an extremum, total, "
+        "average, correlation, spread, percentile or growth rate) should be produced by the "
+        "appropriate calculation tool, passing the actual values from the output above, rather "
+        "than estimated by reading the table. Do NOT repeat a call that already appears above. "
+        "If the data in hand is sufficient to answer accurately, return NO tool calls."
+    )
+    try:
+        response = await generate_tools(
+            prompt=prompt, tools=tools_array, model=tools_model,
+            system_prompt=load_tool_model_system_prompt(), temperature=0, max_tokens=4096)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"🔁 SECOND ROUND: selection call failed ({e}) → continuing with round-1 results")
+        return []
+
+    calls = (response or {}).get('tool_calls') or []
+    fresh = []
+    for call in calls:
+        name = (call.get('function', {}) or {}).get('name')
+        if name not in allowed_names:
+            logger.warning(f"🔁 SECOND ROUND: dropped '{name}' — not in the offered tool set")
+            continue
+        key = _tool_call_key(call)
+        if key in executed_keys:
+            logger.info(f"🔁 SECOND ROUND: skipped duplicate call to '{name}'")
+            continue
+        executed_keys.add(key)
+        fresh.append(call)
+    return fresh
+
+
 def _dr_dispatch_failed(result_str: str) -> bool:
     """Detect a tool failure from RAICA's OWN structured result markers (NOT NLP on tool content):
     the user-tool wrapper returns leading '❌' or \"Tool '<n>' error:\"; safe_function_call returns
@@ -10332,8 +10489,51 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         phase1_tasks = [execute_single_tool(call) for call in phase1_tools]
                                         phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
                                         all_results.extend(phase1_results)
-                                        
+
                                         logger.info(f"✅ PHASE 1 COMPLETE: All {len(phase1_tools)} search tools finished")
+
+                                        # ── SI-036: SECOND TOOL-SELECTION ROUND ──────────────────────────
+                                        # Round 1 chose every tool BEFORE any tool ran, so a tool whose
+                                        # arguments depend on another tool's OUTPUT was unreachable. Now that
+                                        # phase-1 data exists, offer the selector one more turn.
+                                        # Deliberately INSIDE `if phase1_tools:` — there is no prior output to
+                                        # reason about otherwise, and execute_single_tool is scoped to this
+                                        # block (calling it from outside would be a ReferenceError, silent
+                                        # inside a try).
+                                        _sr_cfg = _second_round_config()
+                                        if _sr_cfg['enabled'] and _sr_cfg['max_extra_rounds'] > 0:
+                                            try:
+                                                _executed_keys = {_tool_call_key(c) for c in tool_calls}
+                                                _extra_calls = await _second_round_tool_calls(
+                                                    user_message=user_message,
+                                                    prior_results=phase1_results,
+                                                    tools_array=tools_array,
+                                                    executed_keys=_executed_keys,
+                                                    tools_model=tools_model,
+                                                    generate_tools=llm_manager.generate_tools)
+                                                if _extra_calls:
+                                                    logger.info(
+                                                        f"🔁 SECOND ROUND: {len(_extra_calls)} additional tool(s) — "
+                                                        f"{[c['function']['name'] for c in _extra_calls]}")
+                                                    _extra_results = await asyncio.gather(
+                                                        *[execute_single_tool(c) for c in _extra_calls],
+                                                        return_exceptions=True)
+                                                    # Feed synthesis AND phase-2 dependency resolution: phase2's
+                                                    # stage_outputs is built from phase1_results, so a delivery
+                                                    # tool must see round-2 output too.
+                                                    phase1_results = list(phase1_results) + list(_extra_results)
+                                                    all_results.extend(_extra_results)
+                                                    for _c in _extra_calls:
+                                                        tools_called.append(_c['function']['name'])
+                                                    logger.info(
+                                                        f"✅ SECOND ROUND COMPLETE: {len(_extra_results)} result(s); "
+                                                        f"no further rounds (max_extra_rounds="
+                                                        f"{_sr_cfg['max_extra_rounds']})")
+                                                else:
+                                                    logger.info("🔁 SECOND ROUND: no further tools requested")
+                                            except Exception as _sr_err:  # noqa: BLE001
+                                                # Fail-open: the request proceeds exactly as it does today.
+                                                logger.warning(f"🔁 SECOND ROUND skipped ({_sr_err})")
                                     
                                     # Phase 2: Execute file creation and email tools (sequential, with smart decisions)
                                     if phase2_tools:

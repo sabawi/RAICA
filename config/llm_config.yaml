@@ -177,6 +177,40 @@ performance:
   max_concurrent_requests: 5
   request_timeout: 1200
   streaming_chunk_size: 1024
+# SI-036 — SECOND TOOL-SELECTION ROUND (non-DR path).
+# The non-DR path selects every tool in ONE call, BEFORE any tool has run, so a tool whose
+# arguments depend on another tool's OUTPUT can never be chosen. That is why `compute` was never
+# called on the Treasury request: you cannot know what to calculate until the CSV is fetched.
+# When enabled, after phase-1 tools return, the tool-calling model is shown their output and may
+# request FURTHER tools. Off by default — it costs one extra tool-model call per request that
+# gathered data.
+# SI-037 — lookup_website content limits. These were hardcoded in the tool, which is both a
+# configuration-directive violation and how a 20,198-char CSV came to be cut to 10,000 chars by a
+# limit written for prose articles.
+lookup_website:
+  # ARTICLES only. HTML prose is truncated to this many characters, cut at a sentence boundary.
+  max_article_chars: 10000
+  # DATA files (CSV/TSV/JSON/XML) are bounded by BYTES instead, passed through verbatim, and their
+  # truncation is disclosed in-band. A whole year of daily Treasury rates is ~20 KB, so this must
+  # be generous enough that ordinary public data files arrive COMPLETE — a partial table produces
+  # extrema and totals that are wrong with no way to tell.
+  max_data_bytes: 2000000
+
+tool_calling:
+  second_round:
+    enabled: true
+    # Hard cap on EXTRA selection rounds. 1 means exactly one additional round: tools it requests
+    # run, but cannot trigger another round. This is the damper — a round that can request more
+    # tools is a control loop, and an undamped one oscillates forever.
+    max_extra_rounds: 1
+    # How much round-1 output the SELECTOR sees. It must be enough to judge what to do next and,
+    # for a tool like `compute`, to re-emit the values as arguments. Truncation is DISCLOSED to
+    # the model rather than applied silently.
+    # SI-037: sized from MEASURED data, not guessed. One year of daily Treasury rates is ~20 KB and
+    # two years ~34 KB, so a 20,000 budget would have re-truncated the very file the truncation fix
+    # just repaired — reintroducing the same silent-wrong-extremum bug one layer further in.
+    max_chars_per_tool: 100000
+    max_chars_total: 200000
 platform:
   config_dir:
     linux: ${HOME}/.config/agentic_rag
