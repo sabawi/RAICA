@@ -7745,11 +7745,13 @@ def _second_round_config() -> dict:
             'max_extra_rounds': int(cfg.get('max_extra_rounds', 1) or 0),
             'max_chars_per_tool': int(cfg.get('max_chars_per_tool', 20000) or 0),
             'max_chars_total': int(cfg.get('max_chars_total', 40000) or 0),
+            'selector_max_tokens': int(cfg.get('selector_max_tokens', 16384) or 16384),
         }
     except Exception as e:  # noqa: BLE001
         logger.warning(f"🔁 second-round config unreadable ({e}) → disabled")
         return {'enabled': False, 'max_extra_rounds': 0,
-                'max_chars_per_tool': 0, 'max_chars_total': 0}
+                'max_chars_per_tool': 0, 'max_chars_total': 0,
+                'selector_max_tokens': 16384}
 
 
 def _tool_call_key(tool_call: dict) -> tuple:
@@ -7771,6 +7773,22 @@ def _tool_call_key(tool_call: dict) -> tuple:
         return (name, json.dumps(args, sort_keys=True, default=str))
     except (TypeError, ValueError):
         return (name, str(args))
+
+
+def _describe_round_results(results) -> str:
+    """SI-036 — show the selector WHAT it has, not the whole of it.
+
+    Dumping the raw output made the prompt 43,013 chars and pushed the model into emitting the
+    dataset back as tool arguments, which truncated at every cap tried (4,096 and 32,768) and
+    produced zero parseable calls. A schema preview — columns, row count, a few sample rows, and a
+    reference id — is what it actually needs to choose a tool and name a column.
+    """
+    from utils.tool_output_reference import REFERENCE_HELP, build_reference_index, describe_reference
+    index = build_reference_index(results)
+    if not index:
+        return ""
+    blocks = [describe_reference(ref, text) for ref, text in index.items()]
+    return "AVAILABLE TOOL OUTPUT\n" + "\n\n".join(blocks) + "\n\n" + REFERENCE_HELP
 
 
 def _summarise_round_results(results, max_per_tool: int, max_total: int) -> str:
@@ -7798,6 +7816,93 @@ def _summarise_round_results(results, max_per_tool: int, max_total: int) -> str:
     return "\n\n".join(blocks)
 
 
+def _resolve_call_references(calls: list, prior_results) -> list:
+    """Substitute data references in round-2 tool arguments with the REAL prior output (SI-036).
+
+    A call whose reference cannot be resolved is REWRITTEN so the tool receives the error text and
+    reports it, rather than being dropped silently or — worse — run with a missing series, which
+    would produce a confident answer over the wrong data.
+    """
+    from utils.tool_output_reference import ReferenceError_, build_reference_index, resolve_references
+    index = build_reference_index(prior_results)
+    out = []
+    for call in calls:
+        fn = call.get("function", {}) or {}
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                out.append(call)
+                continue
+        if not isinstance(args, dict):
+            out.append(call)
+            continue
+        try:
+            resolved = resolve_references(args, index)
+            counts = {k: len(v) for k, v in resolved.items() if isinstance(v, list)}
+            if counts != {k: len(v) for k, v in args.items() if isinstance(v, list)}:
+                logger.info(f"🔗 SECOND ROUND: resolved data references for "
+                            f"'{fn.get('name')}' → {counts}")
+        except ReferenceError_ as e:
+            logger.warning(f"🔗 SECOND ROUND: reference unresolved for '{fn.get('name')}': {e}")
+            resolved = dict(args)
+            resolved["_reference_error"] = str(e)
+        new_call = dict(call)
+        new_call["function"] = {**fn, "arguments": resolved}
+        out.append(new_call)
+    return out
+
+
+def _second_round_audit(response, prompt: str, tools_array: list, dispositions: list):
+    """SI-036 DIAGNOSIS — log WHY the second-round selector did what it did.
+
+    Four consecutive fixes failed at the same point: two correctly-built, whitelisted, OFFERED
+    tools (`compute`, `plot_data`) were never called, and the only signal was the outcome line
+    "no further tools requested" — which says nothing about the reasoning. This is the measurement
+    that should have come first.
+
+    It discriminates between the three live hypotheses, which demand different fixes:
+      (a) the selector answered in PROSE instead of tool calls, and we discarded it silently
+      (b) it DID return calls that our own whitelist/dedup filter dropped
+      (c) it genuinely judged no further tool was needed
+    Only (c) is a model-judgement problem; (a) and (b) are ours.
+
+    Deliberately no behaviour change: this round ships instrumentation ALONE, so a later green
+    result cannot be confused between "the fix worked" and "the flakiness moved".
+    """
+    try:
+        keys = sorted((response or {}).keys()) if isinstance(response, dict) else type(response).__name__
+        calls = (response or {}).get('tool_calls') if isinstance(response, dict) else None
+        # What the model SAID when it returned no calls is the datum we have never had.
+        text = ""
+        if isinstance(response, dict):
+            for field in ("content", "response", "message", "text"):
+                v = response.get(field)
+                if isinstance(v, dict):
+                    v = v.get("content")
+                if isinstance(v, str) and v.strip():
+                    text = v.strip()
+                    break
+        # `truncated` and `usage` are the provider's own account of whether the call was CUT OFF —
+        # an empty answer with truncated=True is a capacity failure, not a judgement.
+        trunc = (response or {}).get("truncated") if isinstance(response, dict) else None
+        usage = (response or {}).get("usage") if isinstance(response, dict) else None
+        logger.info(
+            "🔬 second-round-audit: prompt_chars=%d tools_offered=%d response_keys=%s "
+            "tool_calls_returned=%d dispositions=%s truncated=%r usage=%r narrative=%r",
+            len(prompt or ""), len(tools_array or []), keys,
+            len(calls or []) if isinstance(calls, list) else -1,
+            dispositions or [], trunc, usage,
+            (text[:600] + "…") if len(text) > 600 else text)
+        # When the call truncated and yielded NOTHING, the raw object is the only remaining
+        # evidence of what those completion tokens actually were.
+        if trunc and not calls and not text:
+            logger.info("🔬 second-round-audit RAW: %s", repr(response)[:900])
+    except Exception as e:  # noqa: BLE001 — instrumentation must never affect the request
+        logger.warning(f"🔬 second-round-audit failed: {e}")
+
+
 async def _second_round_tool_calls(user_message: str, prior_results, tools_array: list,
                                    executed_keys: set, tools_model, generate_tools) -> list:
     """SI-036 — ask the tool-calling model, ONCE, whether the data now in hand warrants more tools.
@@ -7816,8 +7921,8 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
     """
     cfg = _second_round_config()
     allowed_names = {t.get('function', {}).get('name') for t in (tools_array or [])}
-    summary = _summarise_round_results(prior_results, cfg['max_chars_per_tool'],
-                                       cfg['max_chars_total'])
+    # SI-036: a SCHEMA PREVIEW plus reference ids, not the raw output. See _describe_round_results.
+    summary = _describe_round_results(prior_results)
     if not summary.strip():
         return []
 
@@ -7830,31 +7935,38 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
         "ACCURATELY needs any further tool call now that this data exists — in particular, any "
         "figure that must be DERIVED from the data rather than read from it (an extremum, total, "
         "average, correlation, spread, percentile or growth rate) should be produced by the "
-        "appropriate calculation tool, passing the actual values from the output above, rather "
-        "than estimated by reading the table. Do NOT repeat a call that already appears above. "
+        "appropriate calculation tool, and any chart of this data by the charting tool, rather "
+        "than estimated or drawn by hand. Pass the data BY REFERENCE as described above — never "
+        "retype the rows. Do NOT repeat a call that already appears above. "
         "If the data in hand is sufficient to answer accurately, return NO tool calls."
     )
     try:
         response = await generate_tools(
             prompt=prompt, tools=tools_array, model=tools_model,
-            system_prompt=load_tool_model_system_prompt(), temperature=0, max_tokens=4096)
+            system_prompt=load_tool_model_system_prompt(), temperature=0,
+            max_tokens=cfg['selector_max_tokens'])
     except Exception as e:  # noqa: BLE001
         logger.warning(f"🔁 SECOND ROUND: selection call failed ({e}) → continuing with round-1 results")
         return []
 
     calls = (response or {}).get('tool_calls') or []
     fresh = []
+    dispositions = []                       # SI-036 diagnosis: what happened to each returned call
     for call in calls:
         name = (call.get('function', {}) or {}).get('name')
         if name not in allowed_names:
             logger.warning(f"🔁 SECOND ROUND: dropped '{name}' — not in the offered tool set")
+            dispositions.append(f"{name}:dropped_not_offered")
             continue
         key = _tool_call_key(call)
         if key in executed_keys:
             logger.info(f"🔁 SECOND ROUND: skipped duplicate call to '{name}'")
+            dispositions.append(f"{name}:dropped_duplicate")
             continue
         executed_keys.add(key)
+        dispositions.append(f"{name}:kept")
         fresh.append(call)
+    _second_round_audit(response, prompt, tools_array, dispositions)
     return fresh
 
 
@@ -10515,6 +10627,11 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                     logger.info(
                                                         f"🔁 SECOND ROUND: {len(_extra_calls)} additional tool(s) — "
                                                         f"{[c['function']['name'] for c in _extra_calls]}")
+                                                    # SI-036: substitute {"from": ..., "column": ...}
+                                                    # with the REAL values from the referenced
+                                                    # output, so the model never retypes a dataset.
+                                                    _extra_calls = _resolve_call_references(
+                                                        _extra_calls, phase1_results)
                                                     _extra_results = await asyncio.gather(
                                                         *[execute_single_tool(c) for c in _extra_calls],
                                                         return_exceptions=True)

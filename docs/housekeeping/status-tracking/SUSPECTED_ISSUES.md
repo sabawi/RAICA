@@ -12,12 +12,28 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 ## Open
 
 ### SI-038 — A FABRICATED `[[chart:...]]` marker can launder an ungrounded answer past NewX's citation guard  [P1 — CONFIRMED by invocation]
-- **Observed (2026-08-14, local, the Treasury request):** the answer emitted
+- **Observed (2026-08-14, local, the Treasury request, 3 runs of 3):** EVERY run emitted an invalid
+  marker, in three different shapes:
   ```
-  [[chart:6a2e2a6b-1e0e-4e0e-8e0e-6e0e-6e0e-6e0e-6e0e]]
+  run 1  [[chart:eyJuYW1lIjoiVVMgVHJlYXN1cnkgRGFpbHkgWWll...   (base64 of a chart JSON)
+  run 2  [[chart:6a2e2a6b-1e0e-4e0e-8e0e-6e0e-6e0e-6e0e-6e0e]] (UUID-shaped)
+  run 3  [[chart:ea2e5e6e-5e5e-4e5e-8e5e-5e5e5e5e5e5e]]        (UUID-shaped)
   ```
-  a hallucinated UUID-shaped string where a real marker carries base64 chart data. An earlier run
-  of the SAME request emitted a genuine base64 payload, so the model can produce either.
+  **The real format is a PUBLISHED IMAGE URL**, and only the acquire→store→render→publish chain can
+  mint one — `datasources/data_chart_builder.py`:
+  ```python
+  return f'[[chart:{url}|align={align}|caption="{cap}"]]'
+  ```
+  So none of the three is a chart, including the base64 one. (An earlier note in this session called
+  that run's marker genuine; it is not — base64 JSON is no more a published URL than a UUID is.
+  Correcting it here so the record is not wrong.)
+- **Why the model invents them:** the request asked for a chart over a FETCHED CSV, and no tool can
+  produce that — SI-028 **P2a (`plot_data`) is not built**. `search_datasets`/`compare_datasets`
+  chart only from the dataset catalog. Faced with an explicit chart instruction and no capability,
+  the model emits the marker it has seen in its instructions. This is the LLM-Policy Gate's
+  no-inconsistency clause biting: @Ask's prompt tells it to "reproduce every [[chart:...]] marker
+  EXACTLY as returned" and never to redirect the user elsewhere, while it holds no tool that can
+  chart a fetched file.
 - **Why this is P1 and not a broken image.** NewX treats the marker as PROOF of tool-sourcing.
   `newx/app/ai_connector/responder.py` (`_ARTIFACT_MARKER_RE` / `_has_tool_artifact`) states it
   outright: markers "are emitted ONLY when a RAICA data tool actually produced a real, rendered
@@ -29,9 +45,13 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   satisfied by the marker's mere presence. **To confirm or refute:** post a reply containing a
   syntactically valid but meaningless marker and no URL, and see whether the citation guard admits
   it. Do not record the cause until that is run.
-- **Fix direction (not started):** validate the marker payload where the guard reads it — a real
-  marker decodes to the chart JSON the builder emits (`data_chart_builder.py:29` `_marker()`); an
-  invented one will not. Validation belongs at the guard, not only at the renderer.
+- **Fix direction (not started), two independent halves:**
+  1. **Validate the marker where the guard reads it.** A real marker's payload is a URL on our own
+     publisher host; a UUID or a base64 blob is not. Validation belongs at the guard — the place
+     that treats the marker as evidence — not only at the renderer, which merely draws nothing.
+  2. **Remove the reason to invent one:** build SI-028 P2a (`plot_data`) so a fetched CSV can
+     actually be charted. Until then the honest behaviour is to say a chart cannot be produced,
+     which the @Ask prompt currently discourages.
 - **Do not clear** without a test showing a fabricated marker is rejected while a real one passes.
 
 ### SI-036 — `compute` cannot be selected for FETCH-then-CALCULATE: the non-DR path runs ONE tool round, decided before any data exists  [P1 — CONFIRMED on production by the user's own test]

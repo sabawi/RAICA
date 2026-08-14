@@ -211,6 +211,12 @@ tool_calling:
     # just repaired — reintroducing the same silent-wrong-extremum bug one layer further in.
     max_chars_per_tool: 100000
     max_chars_total: 200000
+    # MEASURED, not guessed. At 4096 the selector consumed its entire completion budget and
+    # returned nothing at all — truncated=True, tool_calls=[], content='' — so `compute` and
+    # `plot_data` were never called and four separate fixes appeared to fail for the wrong reason.
+    # The tokens go on the model's own reasoning before it reaches the call. At 16384 the same
+    # request returned 5 tool calls with truncated=False.
+    selector_max_tokens: 16384
 platform:
   config_dir:
     linux: ${HOME}/.config/agentic_rag

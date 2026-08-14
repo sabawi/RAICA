@@ -84,9 +84,16 @@ class ComputeTool(BaseUserTool):
                 "data": {
                     "type": "object",
                     "description": (
-                        "Named numeric series, e.g. {\"y30\": [4.64, 4.55, ...], "
-                        "\"y10\": [3.97, 3.95, ...]}. Keys must be valid identifiers and are the "
-                        "names usable in `expr`. Values must be numbers."
+                        "Named numeric series. Each value is EITHER a list of numbers, e.g. "
+                        "{\"y30\": [4.64, 4.55, ...]}, OR — for data another tool already "
+                        "fetched — a reference to that output and a column, e.g. "
+                        "{\"y30\": {\"from\": \"lookup_website#1\", \"column\": \"30 Yr\"}}. "
+                        "`from` may be a LIST to span several outputs — "
+                        "{\"from\": [\"lookup_website#1\", \"lookup_website#2\"]} — which is how "
+                        "you cover a period split across files. "
+                        "PREFER THE REFERENCE for anything longer than a few points: retyping a "
+                        "table does not fit in one reply and risks transcription errors. Keys must "
+                        "be valid identifiers and are the names usable in `expr`."
                     ),
                 },
                 "label": {
