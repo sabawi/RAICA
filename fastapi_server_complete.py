@@ -7912,7 +7912,18 @@ def _describe_round_results(results) -> str:
     index = build_reference_index(results)
     if not index:
         return ""
-    blocks = [describe_reference(ref, text) for ref, text in index.items()]
+    # Total cap across outputs: prose now carries a real budget each, so several results must not
+    # compound into an unbounded prompt. Tables stay tiny regardless (schema only).
+    from utils.tool_output_reference import _TOTAL_PREVIEW_CHARS
+    blocks, used = [], 0
+    for ref, text in index.items():
+        block = describe_reference(ref, text)
+        if used + len(block) > _TOTAL_PREVIEW_CHARS:
+            blocks.append(f"[further tool output omitted — {_TOTAL_PREVIEW_CHARS} character "
+                          f"budget reached; {len(index) - len(blocks)} output(s) not shown]")
+            break
+        used += len(block)
+        blocks.append(block)
     return "AVAILABLE TOOL OUTPUT\n" + "\n\n".join(blocks) + "\n\n" + REFERENCE_HELP
 
 

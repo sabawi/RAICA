@@ -247,3 +247,46 @@ class TestQuotedFieldsContainingTheDelimiter:
         import statistics
         mags = extract_column(self.QUOTED, "mag")
         assert statistics.mean(mags) == pytest.approx(6.5)
+
+
+class TestProseIsNotSummarisedLikeATable:
+    """FOUND IN THE FIRST PHASE-0 SHADOW SAMPLE, in three production requests.
+
+    The gather gate answered `needs_more` to "who is the current UN Secretary-General", explaining:
+
+        "The current Secretary-General's name is not explicitly stated in the truncated tool output"
+
+    It was reasoning correctly about a mutilated input. Prose was previewed at 400 characters, so a
+    5,859-char search result reached the gate as 449 chars and the answer was simply not in it.
+
+    The two output kinds are summarised for OPPOSITE reasons and must not share a budget:
+      * a TABLE — the answer is not in the rows; columns and a row count suffice, which is why
+        20,730 chars reduce to 579 losslessly for this purpose
+      * PROSE  — the content IS the answer; truncating it destroys exactly what is being judged
+
+    Reading the verdict alone (3/3 needs_more) looked identical to the model agreeing with
+    everything — the opposite failure, needing the opposite fix. Only the REASON separated them.
+    """
+
+    PROSE = "Reported today: " + ("context sentence about the topic. " * 200) + "ANSWER=Guterres."
+    TABLE = "[CSV file: 250 lines (complete)]\nDate,10 Yr\n" + "\n".join(
+        f"01/{i:02d}/2025,4.{i:02d}" for i in range(1, 250))
+
+    def test_the_answer_at_the_end_of_prose_is_visible(self):
+        d = describe_reference("wikipedia_query#1", self.PROSE)
+        assert "ANSWER=Guterres." in d, "the gate cannot judge what it cannot see"
+
+    def test_tables_are_still_reduced_to_schema(self):
+        """The reduction that made references work at all must not regress."""
+        d = describe_reference("lookup_website#1", self.TABLE)
+        assert len(d) < len(self.TABLE) / 10
+        assert "'10 Yr'" in d and "data rows" in d
+
+    def test_prose_truncation_is_disclosed_and_actionable(self):
+        d = describe_reference("search_web#1", "x" * 20000)
+        assert "TRUNCATED" in d and "20000" in d
+        assert "say the retrieved text does not contain it" in d
+
+    def test_short_prose_is_passed_whole_without_a_notice(self):
+        d = describe_reference("search_web#1", "A short factual answer.")
+        assert "A short factual answer." in d and "TRUNCATED" not in d

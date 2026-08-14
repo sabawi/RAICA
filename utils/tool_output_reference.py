@@ -48,6 +48,16 @@ __all__ = ["ReferenceError_", "build_reference_index", "describe_reference",
 # real column spellings; nowhere near enough to tempt transcription.
 _PREVIEW_ROWS = 3
 _MAX_CELLS = 200_000
+# PROSE gets a far larger budget than a table, because the two are being summarised for opposite
+# reasons. For a table the ANSWER IS NOT IN THE ROWS — columns and a row count are enough to judge
+# "do I have this?", which is why 20,730 chars reduce to 579 with nothing lost. For a search or
+# wikipedia result the CONTENT IS THE ANSWER, and a 400-char head made the gate structurally blind:
+# asked "who is the UN Secretary-General" over a 5,859-char result it replied
+# "not explicitly stated in the truncated tool output" — reasoning correctly about a mutilated
+# input. Three production requests were enough to surface it; the verdict alone (needs_more) looked
+# identical to the model simply agreeing with everything, and only the REASON told them apart.
+_PROSE_PREVIEW_CHARS = 6000
+_TOTAL_PREVIEW_CHARS = 24000
 
 
 class ReferenceError_(ValueError):
@@ -175,7 +185,8 @@ def build_reference_index(results) -> Dict[str, str]:
     return index
 
 
-def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS) -> str:
+def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS,
+                       prose_chars: int = _PROSE_PREVIEW_CHARS) -> str:
     """A compact, honest description of one output: what it is, how big, and its real column names.
 
     This replaces dumping the file into the selector prompt. The model needs the column SPELLINGS
@@ -200,8 +211,23 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
         return (f"=== {ref_id} === JSON records, {len(records)} entries\n"
                 f"fields: {', '.join(repr(k) for k in keys)}\n"
                 f"first entry: {json.dumps(records[0])[:300]}")
-    head = text.strip()[:400]
-    return f"=== {ref_id} === text, {len(text)} characters\n{head}" + ("…" if len(text) > 400 else "")
+    body = text.strip()
+    budget = prose_chars or _PROSE_PREVIEW_CHARS
+    if len(body) <= budget:
+        return f"=== {ref_id} === text, {len(text)} characters\n{body}"
+    # HEAD AND TAIL, not head alone. In prose the answer can sit anywhere, and a page often puts
+    # the specific fact last (a summary line, a latest value, a conclusion). Head-only truncation
+    # would move the blind spot rather than remove it — the fixture that caught this had the answer
+    # in the final sentence. Two thirds from the front, one third from the end.
+    head_n = (budget * 2) // 3
+    tail_n = budget - head_n
+    return (f"=== {ref_id} === text, {len(text)} characters\n"
+            f"{body[:head_n]}\n"
+            f"[… {len(body) - budget} characters omitted from the middle …]\n"
+            f"{body[-tail_n:]}\n"
+            f"[TRUNCATED: {budget} of {len(body)} characters shown, from the start and the end — "
+            f"if the answer is not above, say the retrieved text does not contain it rather than "
+            f"assuming it is missing]")
 
 
 def _to_number(raw: Any) -> Optional[float]:
