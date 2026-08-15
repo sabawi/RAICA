@@ -11,6 +11,45 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-046 — The distribution family is chosen by the TOOL-CALLING model before the data's shape is known  [P2 — CONFIRMED on prod, v1.0.0.283]
+**User report:** "I said in this prompt to pick the *appropriate* probability distribution and did
+not mention Normal anywhere." The rendered chart overlaid a **Normal PDF (μ=5.88, σ=0.42)** on
+manifestly exponential data — first bin 74 observed vs ~25 predicted.
+
+**Not a hardcoded default.** `plot_data` contains no distribution fitting of any kind; it plots the
+series it is handed. The Gaussian was computed by the model and passed in, legend text included.
+
+**The mechanism — two models, and the wrong one decides.** This run:
+```
+glm-5.2:cloud          x9  — tool selection + gate verdicts (chose the normal fit, 06:49:08)
+deepseek-v4-pro:cloud  x1  — synthesis (wrote the answer)
+```
+The choice of distribution is a STATISTICAL judgement, but it is made by the tool-calling model at
+GATHER time, before anything has examined the data's shape. The stronger synthesis model runs
+afterwards, and it got it right — its own answer says the first bin holds "far more than the ~25
+events a normal distribution would predict" and that "a normal distribution is a poor fit for the
+tail", while displaying exactly that fit. **The answer contradicting its own chart is structural,
+not a lapse:** by synthesis time the chart is already rendered and immutable.
+
+**Why the previous run looked better:** v1.0.0.281 produced NO chart, so only the synthesis model's
+(correct) Gutenberg-Richter reasoning was visible. Fixing the plumbing exposed the judgement gap
+that was always there.
+
+**Fix direction — policy, not a rule table.** Hardcoding "magnitudes → Gutenberg-Richter" is exactly
+what the LLM-Policy Gate forbids; the next dataset would be lognormal, Poisson or power-law and the
+table would be wrong again. The directive belongs where the CHOICE is made (the tool-selection
+prompt), in substance: *a distribution family must follow from the data's measured shape — compare
+mean against median, look at skew and the tail — and if that shape has not been measured yet,
+measure it BEFORE plotting a fitted curve.* The gather-gate loop already sequences this naturally:
+`needs_more` → compute the shape diagnostic → then plot.
+- **Check for conflicts before shipping** (no-inconsistency clause): this new directive must be
+  reconciled with `_ARTIFACT_MARKER_RELAY` and the NewX `Ask.yaml` DERIVED FIGURES / STOCK & DATA
+  CHARTS blocks, all of which already instruct the same models about charts.
+- **Open question worth measuring first:** whether glm-5.2 can make this judgement at all with the
+  context it has at selection time, or whether the choice must move to a stage that sees the data.
+  Do not assume the directive works — verify through a real run, and on a NON-earthquake dataset so
+  the fix is not tuned to one case.
+
 ### SI-045 — The numpy allow-list contained 97 names and NOT ONE constant  [RESOLVED v1.0.0.283]
 **Found in the second live SI-041 re-test (prod, v1.0.0.282).** The chart failed again, for a
 THIRD, unrelated reason — and this time the answer disclosed it, which is the SI-041(b) relay
