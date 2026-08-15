@@ -230,3 +230,50 @@ whether a calculation had been claimed — a pattern deciding MEANING, which the
 forbids — and it had already failed: production wrote "is calculated from the complete set of 250
 daily observations" and the audit stayed silent. Whether a derived figure is missing is structural,
 and the gate judges it in language. A test pins the regex out of the codebase.
+
+
+## 10. SI-041(b) — the gate also judges requested ARTIFACTS (v1.0.0.277)
+
+§1-§9 framed the gate around DATA and DERIVED FIGURES: is the data here, and has the figure the
+user asked for actually been calculated? A production request exposed a third thing the same test
+applies to.
+
+**The failure.** A USGS statistics request asked for a plot. The answer said *"The plot below shows
+the frequency of events by magnitude"*. There was no `plot_data` call and no `[[chart:…]]` marker
+anywhere in the run. Not an invented marker (SI-038) — prose narrating a visual that does not
+exist.
+
+**The trace.** Availability was never the issue: `plot_data` is registered, exposed to the LLM
+among 35 tools, callable, and whitelisted in NewX `Ask.yaml`. The chain broke at SELECTION, and it
+took two independent failures:
+
+| Link | State | Why it did not stop the answer |
+|---|---|---|
+| Directive | present | `_ARTIFACT_MARKER_RELAY` already forbids inventing a visual. It was **ignored** — same shape as the "computed as" fabrication that motivated §1. |
+| Gate | present, silent | It judged only data and derived figures, so `sufficient` was an **honest** verdict with no chart in hand. |
+
+**The fix.** Extend the gate's judgement to anything the request asks the system to PRODUCE — a
+chart, plot, graph or rendered file is not in hand unless a tool produced it and its marker appears
+in the gathered output. This is the §1 argument applied to artifacts: *a directive can be ignored;
+a gate that withholds `sufficient` cannot.* The loop then does the rest, unchanged — `needs_more`
+re-runs the existing selector, which can pick `plot_data`.
+
+**Damper (this is a control loop).** The gate now DEMANDS an artifact, so it must be able to SEE
+one, or it would re-demand every round and re-render the same chart to `max_gather_rounds`. It can:
+`plot_data` returns short prose, so `describe_reference` renders it in full and the `[[chart:…]]`
+marker reaches the next prompt. Verified empirically and pinned by a named test; `no_progress`
+backstops it.
+
+**No keywords.** Detecting "the answer described a chart" by phrase-matching would fail on "the
+graphic above", on another language, and on the next phrasing — and is exactly what the standing
+directive forbids. The gate states the rule; the LLM applies it. A test scans the gate's executable
+lines and fails if a phrase matcher or meaning-detecting regex appears.
+
+**Consistency with the relay.** They sequence rather than conflict: the gate says *go make it*
+during gathering; the relay says *if it still does not exist, describe the data and say a chart
+was not available* at synthesis.
+
+**Residue (open).** This makes the chart EXIST when one can be made. It does NOT cover the model
+narrating a visual after the gate exhausts its rounds — that still rests on the relay directive
+alone, which is what failed here. The right home is a post-answer LLM-judged fabrication check
+beside the `nondr-citation` shadow audit. Not built.

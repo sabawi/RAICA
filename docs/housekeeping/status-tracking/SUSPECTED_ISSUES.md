@@ -41,8 +41,38 @@ std-dev … plot the bell curve … probabilities for tail events and most likel
   MODEL — is invisible to every check RAICA has**, because nothing verifies that the distribution
   assumed matches the data.
 - **Fixed in v1.0.0.275:** (a). **Fixed in v1.0.0.276:** (c) — the note now states DATA
-  ROWS; the model was reading our own "N lines" label as the observation count. (b) remains open; the model-choice problem in the last
-  bullet is unaddressed and may not be fixable by tooling alone.
+  ROWS; the model was reading our own "N lines" label as the observation count.
+- **(b) addressed in v1.0.0.277 — PARTIAL, and NOT yet validated through the real path.**
+  Trace result: availability was never the problem. `plot_data` is registered, exposed to the LLM
+  (35 tools) and whitelisted in `Ask.yaml`; the chain broke at SELECTION. Two things had to be
+  true for the answer to narrate a chart that did not exist, and both were:
+  1. `_ARTIFACT_MARKER_RELAY` already forbids it ("You CANNOT create a chart, plot, graph or image
+     yourself") and tells the model to describe the data in prose when no marker is present. **The
+     directive was simply ignored** — the same shape as the "computed as" fabrication.
+  2. **The gather gate had no basis to object.** It judged only whether DATA and DERIVED FIGURES
+     were in hand, so `sufficient` was an HONEST verdict with no chart made. Nothing in the loop
+     held out for the artifact.
+  The fix extends the gate's judgement to anything the request asks the system to PRODUCE: such a
+  thing is not in hand unless a tool produced it and its marker appears in the gathered output.
+  A directive can be ignored; a gate that withholds `sufficient` cannot. Stated as POLICY, LLM-
+  judged — no phrase list, per the standing no-keyword-hardcoding directive (pinned by
+  `test_the_artifact_rule_is_POLICY_not_a_keyword_matcher`).
+  **Damper** (this fix creates a control loop — it demands an artifact): `describe_reference`
+  renders `plot_data`'s short output in full, so the `[[chart:…]]` marker is VISIBLE to the next
+  assessment and cycle 2 cannot re-demand it. Verified empirically, pinned by
+  `test_a_produced_chart_marker_is_VISIBLE_to_the_next_assessment`. `no_progress` backstops it.
+  **Consistency (no-inconsistency clause):** gate and relay sequence rather than conflict — the
+  gate says "go make it" during gathering; the relay says "if it still does not exist, say so" at
+  synthesis.
+  **RESIDUE, still open:** this makes the chart EXIST when one can be made. It does NOT stop the
+  model narrating a visual when the gate exhausts its rounds and no chart could be produced — that
+  case rests on the relay directive alone, which is exactly what failed here. A post-answer
+  LLM-judged fabrication check (alongside the `nondr-citation` shadow audit) is the right home for
+  it; not built.
+  **NOT VALIDATED END-TO-END.** Unit tests only (stubbed LLM); the discriminating test fails on
+  pre-fix code. No real chart request has been run through the server since the change.
+- The model-choice problem in the last bullet is unaddressed and may not be fixable by tooling
+  alone.
 - **Do not clear** without: a request of this shape producing a real chart, and a tail estimate
   that either uses an appropriate distribution or states that the normal fit understates it.
 

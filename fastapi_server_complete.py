@@ -7820,7 +7820,17 @@ async def _gather_gate_assess(user_message: str, prior_results, tools_array: lis
         "has been gathered above? A figure the user asked for that must be DERIVED from the data "
         "(an average, extremum, total, correlation, count) is NOT in hand merely because the data "
         "is — it has to be calculated. Data described above by column names and row counts IS in "
-        "hand and does not need fetching again.\n\n"
+        "hand and does not need fetching again.\n"
+        # SI-041(b): the same test applies to anything the request asks the system to PRODUCE.
+        # A directive already forbids inventing a visual, and it was ignored: a production answer
+        # said "The plot below shows the frequency of events by magnitude" with no plot_data call
+        # and no marker anywhere. A directive can be ignored; a gate that withholds `sufficient`
+        # cannot. Stated as policy for the model to apply — no keyword list, no pattern.
+        "The same test applies to anything the request asks you to PRODUCE rather than state — a "
+        "chart, plot, graph or rendered file. Such a thing is NOT in hand unless a tool has "
+        "actually produced it and its marker appears in the output above; the answer cannot make "
+        "one by describing it. If the request asks for one and no tool has produced it, that is "
+        "missing.\n\n"
         "Respond with STRICT JSON only, no prose:\n"
         '{"status": "sufficient" | "needs_more", "missing": "<one short line, or empty>", '
         '"next_tools": ["<tool name>", ...]}'

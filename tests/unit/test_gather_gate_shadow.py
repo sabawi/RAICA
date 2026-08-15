@@ -15,6 +15,7 @@ Deep Research has had the right shape since it was written: `_assess` (research/
 returns sufficient/needs_more and the loop stops on an evaluated condition. This is that shape for
 the path that never had it. Phase 0 logs the verdict and acts on nothing.
 """
+import pathlib
 import asyncio
 import sys
 from pathlib import Path
@@ -156,6 +157,66 @@ class TestWhatTheGateSees:
         finally:
             srv.llm_manager.generate_stream = original
         assert "has to be calculated" in stub.prompt
+
+    def test_a_requested_ARTIFACT_is_judged_like_a_derived_figure(self):
+        """SI-041(b). A production answer said "The plot below shows the frequency of events by
+        magnitude" — with no plot_data call and no [[chart:...]] marker anywhere in the run. Not an
+        invented marker (SI-038); prose narrating a visual that does not exist. A directive already
+        forbade it (_ARTIFACT_MARKER_RELAY: "You CANNOT create a chart... yourself") and was
+        ignored. The gate could not object either: it judged only DATA and DERIVED FIGURES, so
+        "sufficient" was an honest verdict with no chart in hand. This pins the artifact clause —
+        it FAILS on the pre-fix prompt, which said nothing about things the request asks the system
+        to PRODUCE."""
+        srv = _srv()
+        original = srv.llm_manager.generate_stream
+        stub = _stub_model('{"status":"sufficient"}')
+        try:
+            srv.llm_manager.generate_stream = stub
+            run(srv._gather_gate_assess("chart the frequency of events by magnitude",
+                                        [("lookup_website", CSV, 0, False, None)],
+                                        tools("plot_data"), "m"))
+        finally:
+            srv.llm_manager.generate_stream = original
+        assert "PRODUCE rather than state" in stub.prompt
+        assert "its marker appears in the output above" in stub.prompt
+
+    def test_a_produced_chart_marker_is_VISIBLE_to_the_next_assessment(self):
+        """THE DAMPER for the artifact clause. The gate now DEMANDS an artifact, which makes it a
+        control loop: if it could not SEE the chart once plot_data produced one, it would re-demand
+        every round and re-render the same chart until max_gather_rounds. This is the line that
+        makes cycle 2 impossible — plot_data's output is short prose, so describe_reference renders
+        it in full and the marker reaches the prompt."""
+        srv = _srv()
+        chart = ("Chart generated: frequency by magnitude\n"
+                 "[[chart:https://example.invalid/c.png|align=center|caption=M|width=720]]")
+        original = srv.llm_manager.generate_stream
+        stub = _stub_model('{"status":"sufficient"}')
+        try:
+            srv.llm_manager.generate_stream = stub
+            run(srv._gather_gate_assess("chart it",
+                                        [("lookup_website", CSV, 0, False, None),
+                                         ("plot_data", chart, 0, False, None)],
+                                        tools("plot_data"), "m"))
+        finally:
+            srv.llm_manager.generate_stream = original
+        assert "[[chart:" in stub.prompt, "gate cannot see the chart it demanded -> it will loop"
+
+    def test_the_artifact_rule_is_POLICY_not_a_keyword_matcher(self):
+        """User directive, verbatim: "No key words hardcoding!". The tempting fix for SI-041(b) is
+        to regex the ANSWER for "the plot below"/"as shown in the chart". That fails the moment the
+        model writes "the graphic above" or answers in another language, and it is the exact class
+        this project forbids. Detection stays with the LLM; the gate only states the rule."""
+        import re as _re
+        src = pathlib.Path("fastapi_server_complete.py").read_text()
+        seg = src[src.index("def _gather_gate_assess"):]
+        seg = seg[:seg.index("\ndef ", 1)]
+        # Executable lines only. The fix's comment QUOTES the offending production sentence
+        # ("The plot below shows...") as the incident record; a comment cannot match anything.
+        # A real keyword matcher would have to be code, so this stays discriminating.
+        seg = "\n".join(ln for ln in seg.splitlines() if not ln.strip().startswith("#"))
+        for bad in ("plot below", "chart shows", "as shown in the", "figure above"):
+            assert bad not in seg.lower(), f"keyword matcher {bad!r} crept into the gate"
+        assert not _re.search(r"_re\.(search|match|findall)\(", seg), "regex meaning-detection in gate"
 
 
 class TestPhase0IsInert:
