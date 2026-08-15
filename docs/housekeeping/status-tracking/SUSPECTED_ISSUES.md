@@ -11,6 +11,38 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-042 — Prod FAISS-SQLite integrity fluctuates HEALTHY → CORRUPTED → DEGRADED  [P2 — OBSERVED, cause UNKNOWN]
+**Seen while reviewing prod startup logs during the v1.0.0.277 deploy (2026-08-15). NOT caused by
+that deploy** — the preceding v276 run was worse — but not explainable either, so it is logged
+rather than dismissed.
+
+| Run (prod) | Status | `orphaned_in_faiss` |
+|---|---|---|
+| 2026-08-14 18:40 | HEALTHY | 261 |
+| 2026-08-15 01:33 (v1.0.0.276) | **CORRUPTED** | 556 |
+| 2026-08-15 01:49 (v1.0.0.277) | DEGRADED | 277 |
+
+Latest report: `sqlite_total_chunks 8269` / `faiss_total_vectors 8546`, `missing_in_faiss 0`,
+`synchronized True`, `mismatch_percentage 0.03%`, `lookup_integrity` HEALTHY (0/100 corrupt),
+but `embedding_consistency.consistent = False` → issue `EMBEDDING_INCONSISTENCY`, recommendation
+`SCHEDULED_REBUILD_RECOMMENDED`.
+
+**Why it may matter:** retrieval quality is invisible when it degrades — orphaned vectors return
+chunks that no longer exist in SQLite, and an embedding inconsistency means some vectors may have
+been written by a different embedding model/dimension than the one now querying. Both would show
+up as *worse answers*, not as errors. `lookup_integrity` passing on a 100-sample makes acute
+corruption unlikely.
+
+**Why the status swings** is the real question — orphan count moved 261 → 556 → 277 across three
+restarts with no ingestion between them that I know of. That pattern suggests the CHECK is
+sampling/threshold-sensitive, not that the index is actually oscillating.
+
+**Evidence to gather before acting:** (1) does the check run on a fixed sample or a random one —
+read the integrity-check source; (2) is `embedding_consistency` comparing against the CURRENT
+configured embedding model; (3) whether orphan count correlates with restart timing (partial
+flush on shutdown). **Do not run a rebuild as a "fix"** until (1)-(3) are answered — a rebuild
+would erase the evidence and the swing would likely return.
+
 ### SI-041 — Three defects surfaced by a statistics+chart request  [P2 — CONFIRMED by measurement]
 **Request (prod, v1.0.0.274):** USGS M5.5+ catalogue, first half 2026 — "sample size, mean, median,
 std-dev … plot the bell curve … probabilities for tail events and most likely next magnitude".
