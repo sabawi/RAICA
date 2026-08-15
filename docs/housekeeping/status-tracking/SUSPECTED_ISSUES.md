@@ -11,6 +11,36 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-047 — A computed series cannot be charted: plot_data references require a TABLE  [P1 — CONFIRMED on prod, v1.0.0.284]
+**Every `plot_data` call in the 2026-08-15 07:26 run failed with the same error:**
+```
+plot_data: could not use the referenced data — referenced output does not contain a table
+           with a header and rows
+```
+
+**Cause (`utils/tool_output_reference.py:138-146`).** `extract_column` resolves a reference through
+`_parse_table`, which requires a header plus at least two rows. A `compute` result is not a table —
+it is a labelled array:
+```
+25th, 75th, 90th, 95th, 99th percentiles of earthquake magnitudes: [5.6  , 6.   , 6.4  , 6.68 , 7.476]
+```
+So `{"from": "compute#N", "column": ...}` can NEVER resolve, and **anything the model calculates —
+a histogram, a fitted curve, a transformed axis — is unchartable by construction.**
+
+**Why it only became fatal now.** The defect predates the SI-046 directive. Earlier runs charted a
+RAW FETCHED COLUMN (`lookup_website#1`), which is a table and resolves fine — the one successful
+chart (06:49) did exactly that. The directive correctly pushes the model to plot computed things
+(observed histogram + a justified fit), and every such reference hits this wall. It also explains
+the `plot_data#1 failed` in the run before, which was noted as a "rough edge" and not chased.
+
+**Fix direction:** `extract_column` must accept a reference whose output is a numeric SERIES rather
+than a table — parse the array `compute` emits and return those values, keeping the existing table
+path for tabular sources. One function, deterministically testable from the exact output format
+above, with NO LLM call required to verify.
+
+**Do not clear** until a request that charts a computed series produces a real `[[chart:...]]`
+marker end-to-end.
+
 ### SI-046 — The distribution family is chosen by the TOOL-CALLING model before the data's shape is known  [P2 — CONFIRMED on prod, v1.0.0.283]
 **User report:** "I said in this prompt to pick the *appropriate* probability distribution and did
 not mention Normal anywhere." The rendered chart overlaid a **Normal PDF (μ=5.88, σ=0.42)** on
@@ -78,7 +108,25 @@ when `plot_data` was chosen on prod.
 - **Code-gate reconciliation:** every diagnostic the directive asks for was RUN through the real
   `compute` evaluator — mean-median gap, hand-rolled skewness (numpy has no `skew`), modal bin,
   tail decay, extremes vs 95th percentile. All pass, so no gate silently defeats the policy.
-- **STILL UNDECIDED — this does not close the issue.** It tests candidate (1) only. If a re-run
+- **RESULT (re-run on v1.0.0.284, prod 2026-08-15 07:26) — CANDIDATE (1) CONFIRMED, directive works.**
+Same prompt, first behavioural change in four runs. The model measured the shape and then chose an
+exponential family — no Gaussian anywhere:
+```
+np.mean((mag - np.mean(mag))**3) / (np.std(mag, ddof=1)**3)   <- skewness, computed explicitly
+np.log(10) / (np.mean(mag) - np.min(mag))                      <- Gutenberg-Richter b-value
+np.histogram(mag, bins=np.arange(5.5, 7.85, ...))              <- observed histogram
+label: 'observed histogram counts per 0.1-magnitude bin'
+```
+So glm-5.2 CAN make this judgement; it had simply never been told to. Candidate (2) — "the model
+will not do it regardless" — is REFUTED, and the decision does not need to move to V4-Pro.
+**Caveat, stated plainly: n=1.** Selection is stochastic and the >=3x confirmation is deferred to
+the quota reset, as is the non-earthquake generalisation check. Do not treat this as settled.
+
+**NOT closed — blocked on the next defect (SI-047).** No chart was produced: every `plot_data` call
+failed because a COMPUTED series cannot be charted at all. The directive is correct and now exposes
+the next defect in the chain.
+
+**Previously recorded as undecided:** It tests candidate (1) only. If a re-run
   still fits a Gaussian while holding both the shape AND this instruction, the answer is candidate
   (2) and the decision must move to a model that reasons about the data, not a fourth draft of the
   words. Run >=3x; verify on a NON-earthquake dataset before believing it generalises.
