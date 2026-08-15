@@ -611,6 +611,30 @@ COME FROM. Real-world data must be FETCHED from a source, never written by you:
 NEVER pass real-world numbers you wrote yourself into analytical_visualizer — that fabricates data. If the
 figures must be real and no fetching tool covers them, say so rather than inventing a chart.
 
+A FITTED CURVE IS A CLAIM ABOUT THE DATA, NOT DECORATION. Everything above answers WHERE THE NUMBERS
+COME FROM. This answers WHAT SHAPE YOU ARE ENTITLED TO DRAW. When a request asks for a distribution, a
+fit, a trend line, or "the appropriate curve", the family you choose is a statistical assertion, and it
+must be justified BY THE DATA IN FRONT OF YOU — never by which curve is the most familiar.
+
+- MEASURE THE SHAPE BEFORE YOU FIT ONE. Compare the mean against the median; see where the mode actually
+  sits; look at how quickly the counts fall away at the far end, and whether the extreme values are far
+  beyond where the bulk lies. If those numbers have not been computed yet, COMPUTE THEM FIRST and plot
+  afterwards — a fitted curve chosen before the shape is known is a guess wearing the costume of analysis.
+- LET THE MEASUREMENTS RULE OUT FAMILIES. A symmetric family is contradicted by a mode sitting at the
+  edge of the range, by a mean noticeably displaced from the median, or by counts that fall away
+  monotonically from the very first bin. A light-tailed family is contradicted by observed extremes it
+  would assign almost no probability to. When a measurement contradicts the family, that family is wrong
+  for this data no matter how standard it is — choose one the numbers support.
+- SAY WHICH FAMILY AND WHY, in the chart title or the series label, so the claim travels with the picture
+  and can be checked against it.
+- IF NO FAMILY IS DEFENSIBLE, PLOT THE OBSERVED DATA ALONE. An honest histogram is worth more than a
+  fitted curve the data contradicts — a wrong curve is not a neutral illustration, it is a false claim
+  drawn to scale, and it will be read as the answer.
+
+This is a rule about EVIDENCE, not a lookup table: there is no list here of which subject matter gets
+which distribution, because the next dataset will not be on it. The shape you measured decides.
+
+
 MULTIPLE TOOLS (when the user supplied no data and no fetching tool fits):
 - search_web(query="[data needed]") + analytical_visualizer(prompt="[visualization request]")
 

@@ -61,7 +61,29 @@ was taken, and is corrected here rather than shipped.
 picks normal WITH the shape and an explicit instruction, the answer is (2) — relocate the decision
 instead of tuning words further.
 
-**Fix direction — policy, not a rule table.** Hardcoding "magnitudes → Gutenberg-Richter" is exactly
+**DIRECTIVE SHIPPED v1.0.0.284 — the experiment is now the deciding step, NOT the fix.** Added to
+BOTH surfaces the tool-calling model reads: Section J of `pre_tool_model_system_prompt.txt` ("A
+FITTED CURVE IS A CLAIM ABOUT THE DATA, NOT DECORATION" — measure the shape before fitting; let the
+measurements rule out families; say which family and why; plot observed data alone if none is
+defensible) and a compressed clause in the per-round selector prompt, which is the one that was live
+when `plot_data` was chosen on prod.
+- **No lookup table:** no subject is mapped to any distribution. The rules are stated as
+  CONTRADICTIONS between a measurement and a kind of family (mode at the boundary, mean displaced
+  from median, monotone decay, extremes a family gives no mass to) — criteria that hold for
+  lognormal, Poisson or power-law data equally. Pinned by a test that FAILS if any family name
+  (gaussian/gutenberg/lognormal/poisson/weibull/pareto) appears in the prompt.
+- **Conflict audit passed:** `_ARTIFACT_MARKER_RELAY` governs DESCRIBING a chart, this governs
+  CHOOSING one; `Ask.yaml` DERIVED FIGURES reinforces "measure the shape first"; Section J's
+  provenance rules untouched.
+- **Code-gate reconciliation:** every diagnostic the directive asks for was RUN through the real
+  `compute` evaluator — mean-median gap, hand-rolled skewness (numpy has no `skew`), modal bin,
+  tail decay, extremes vs 95th percentile. All pass, so no gate silently defeats the policy.
+- **STILL UNDECIDED — this does not close the issue.** It tests candidate (1) only. If a re-run
+  still fits a Gaussian while holding both the shape AND this instruction, the answer is candidate
+  (2) and the decision must move to a model that reasons about the data, not a fourth draft of the
+  words. Run >=3x; verify on a NON-earthquake dataset before believing it generalises.
+
+**Original fix direction — policy, not a rule table.** Hardcoding "magnitudes → Gutenberg-Richter" is exactly
 what the LLM-Policy Gate forbids; the next dataset would be lognormal, Poisson or power-law and the
 table would be wrong again. The directive belongs where the CHOICE is made (the tool-selection
 prompt), in substance: *a distribution family must follow from the data's measured shape — compare

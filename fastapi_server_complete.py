@@ -8112,7 +8112,11 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
         "figure that must be DERIVED from the data rather than read from it (an extremum, total, "
         "average, correlation, spread, percentile or growth rate) should be produced by the "
         "appropriate calculation tool, and any chart of this data by the charting tool, rather "
-        "than estimated or drawn by hand. Pass the data BY REFERENCE as described above — never "
+        "than estimated or drawn by hand. If that chart carries a FITTED CURVE, the family must "
+        "follow from the shape actually measured above — where the mode sits, how far the mean is "
+        "from the median, how fast the far end falls away — not from whichever curve is most "
+        "familiar; measure the shape first if it is not yet computed, and plot the observed data "
+        "alone if no family is defensible. Pass the data BY REFERENCE as described above — never "
         "retype the rows. Do NOT repeat a call that already appears above. "
         "If the data in hand is sufficient to answer accurately, return NO tool calls."
     )
