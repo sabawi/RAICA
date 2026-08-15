@@ -40,7 +40,8 @@ std-dev … plot the bell curve … probabilities for tail events and most likel
   the tail probabilities it just reported. **This class — correct inputs, correct arithmetic, wrong
   MODEL — is invisible to every check RAICA has**, because nothing verifies that the distribution
   assumed matches the data.
-- **Fixed in v1.0.0.275:** (a) only. (b) and (c) remain open; the model-choice problem in the last
+- **Fixed in v1.0.0.275:** (a). **Fixed in v1.0.0.276:** (c) — the note now states DATA
+  ROWS; the model was reading our own "N lines" label as the observation count. (b) remains open; the model-choice problem in the last
   bullet is unaddressed and may not be fixable by tooling alone.
 - **Do not clear** without: a request of this shape producing a real chart, and a tail estimate
   that either uses an appropriate distribution or states that the normal fit understates it.

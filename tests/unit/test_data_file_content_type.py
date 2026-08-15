@@ -118,7 +118,13 @@ def test_passthrough_labels_type_and_line_count():
         requests.get = orig
     assert out["success"] is True
     assert out["lines"] == 3 and out["truncated"] is False
-    assert "[CSV file: 3 lines retrieved (complete)]" in out["content"]
+    # PREMISE CHANGED — SI-041(c). This asserted the note read "[CSV file: 3 lines retrieved]".
+    # That wording was true and misleading: `lines` includes the header, and production twice
+    # reported our number as the observation count ("250 daily observations" for 249 Treasury rows;
+    # "226 events" for 225 USGS events). The note now leads with DATA ROWS and keeps the line total.
+    # The `lines` FIELD is unchanged — only the human-readable label moved.
+    assert "[CSV file: 2 data rows (plus 1 header line; 3 lines total) retrieved (complete)]" \
+        in out["content"]
     assert "08/10/2026,4.72,5.25" in out["content"], "rows must pass through VERBATIM"
 
 
@@ -226,3 +232,63 @@ def test_probe_failures_are_logged_not_swallowed():
     probe = _grab("_probe_content_type")
     assert "logger.info" in probe, "a probe failure must leave a trace"
     assert "content-type probe" in probe
+
+
+# ------------------------------------------------- SI-041(c): the note is read as the row count
+
+def test_the_note_states_DATA_ROWS_not_line_count():
+    """FOUND TWICE IN PRODUCTION, on two unrelated datasets.
+
+        Treasury 2025 : note said "250 lines" -> answer said "250 daily observations" (truth 249)
+        USGS H1-2026  : note said "226 lines" -> answer said "226 events"             (truth 225)
+
+    The model was not miscounting. It read OUR OWN label and trusted it — `lines` includes the
+    header, and this note is the one figure in the payload that looks authoritative precisely
+    because we wrote it. "N lines" was true and misleading.
+
+    Note the asymmetry that hid it: describe_reference already said "N data rows" correctly, so the
+    gate and the selector saw the right number. Only the synthesis model, reading the raw tool
+    output, saw the inflated one.
+    """
+    s = _shim()
+    import types
+    import requests
+    payload = b"Date,10 Yr\n08/10/2026,4.72\n08/07/2026,4.65\n08/06/2026,4.61\n"   # 1 header + 3 rows
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "text/csv"}
+        raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
+        def close(self): pass
+
+    orig, requests.get = requests.get, lambda *a, **k: _R()
+    try:
+        out = s._extract_data_content("http://x/d.csv", "text/csv")
+    finally:
+        requests.get = orig
+
+    note = out["content"].splitlines()[0]
+    assert "3 data rows" in note, note
+    assert "4 lines total" in note, "the line count is kept, just no longer the headline"
+    assert not note.startswith("[CSV file: 4 lines"), "the misleading form must not return"
+
+
+def test_a_non_table_still_reports_lines():
+    """JSON/XML/plain text have no header row, so the line count is the honest thing to state."""
+    s = _shim()
+    import types
+    import requests
+    payload = b'{"a": 1, "b": 2}'
+
+    class _R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+        raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
+        def close(self): pass
+
+    orig, requests.get = requests.get, lambda *a, **k: _R()
+    try:
+        out = s._extract_data_content("http://x/d.json", "application/json")
+    finally:
+        requests.get = orig
+    assert "lines" in out["content"].splitlines()[0]

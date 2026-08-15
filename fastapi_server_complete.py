@@ -2258,7 +2258,19 @@ class AsyncToolManager:
         if over and len(lines) > 1:
             lines = lines[:-1]                      # drop a row cut mid-way
             text = "\n".join(lines)
-        note = (f"[{label} file: {len(lines)} lines retrieved"
+        # SI-041(c): say DATA ROWS, not lines. `lines` includes the header, and the model reads
+        # this note as the observation count — twice in production it reported exactly our number:
+        # "250 daily observations" for 249 Treasury rows, "226 events" for 225 USGS events. The
+        # label was true and misleading, and it is the one figure in the payload that looks
+        # authoritative because WE wrote it. Stating both removes the ambiguity rather than
+        # trading one wrong number for another.
+        try:
+            from utils.tool_output_reference import _parse_table
+            _hdr, _rows = _parse_table(text)
+            _count = f"{len(_rows)} data rows (plus 1 header line; {len(lines)} lines total)"
+        except Exception:  # noqa: BLE001 — not a table (JSON/XML/plain): line count is all we have
+            _count = f"{len(lines)} lines"
+        note = (f"[{label} file: {_count} retrieved"
                 + (f"; TRUNCATED at {_max_bytes} bytes — this is NOT the whole file"
                    if over else " (complete)") + "]")
         # Must satisfy the SAME contract as _extract_web_content — the caller reads
