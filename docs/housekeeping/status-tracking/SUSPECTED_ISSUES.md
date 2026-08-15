@@ -52,35 +52,57 @@ Required first: confirm a rebuild actually clears the flag, then gate on attempt
 **Clear only when:** a DEGRADED result provably leads to a repair or an explicit operator alert,
 and the "healthy" return for DEGRADED is reconciled with that.
 
-### SI-043 — Orphaned FAISS vectors accumulate continuously; auto-rebuild masks it  [P2 — CONFIRMED by measurement]
-**Prod orphan counts over ~3 days** (`orphaned_in_faiss`, chronological):
-`0 ×7 → 261 → 287 → 556 → 0 (rebuild) → 277`
-
-**Rebuild events retained in the logs — three in three days:**
+### SI-043 — Re-indexing orphans FAISS vectors; the watcher re-ingests unchanged files  [P2 — ROOT CAUSE CONFIRMED, reproduced]
+**Mechanism (reproduced in isolation, `document_interrogator.py:766-795`).** `add_chunks` appends
+vectors unconditionally, then reconciles SQLite by PRIMARY KEY:
+```python
+self.faiss_index.add(embeddings_array)            # ALWAYS appends N new vectors
+...
+except sqlite3.IntegrityError:                    # chunk_id TEXT PRIMARY KEY
+    cursor.execute('UPDATE chunks SET faiss_index = ? ... WHERE chunk_id = ?')
 ```
-08/12 02:12:45 → 02:15:00   (2m15s)
-08/14 04:21:24 → 04:24:17   (2m53s)
-08/15 00:41:15 → 00:43:06   (1m51s)
+`chunk_id` is `_generate_chunk_id(document_path, chunk_index)` — path+index, NOT content — so
+re-indexing a changed file produces the SAME ids. The row is repointed to the new vector and **the
+old vector is never removed**: FAISS `IndexFlat` has no removal. Every chunk row still points at a
+valid vector, which is exactly why `missing_in_faiss` is always 0.
+
+**Reproduction** (same chunk_ids, three ingests): rows stay 10, vectors go 10 → 20 → 30,
+`orphaned_in_faiss = 20`.
+
+**What triggers it on prod — the RAICA repo indexes its own docs.** Directory 1 watches 170 files
+under `~/RAICA/docs/`. Verbatim, at the v1.0.0.277 restart:
 ```
-This is a cycle, not noise: orphans climb from zero, cross the 5% count-mismatch threshold
-(`corruption_threshold`; ≈413 vectors at 8,262 chunks), trip CORRUPTED, get rebuilt to zero, and
-climb again. The auto-rebuild is working exactly as designed and is thereby **masking a leak**.
+01:50:07  ✅ Added 284 chunks to document store
+01:50:07  ✅ Auto-processed: /home/ubuntu/RAICA/docs/housekeeping/status-tracking/SUSPECTED_ISSUES.md
+01:50:07  📊 Directory 1: scanned 170 files
+```
+**This file.** Every deploy that edits SUSPECTED_ISSUES.md re-ingests ~284 chunks and orphans ~284
+vectors. The corruption threshold is 5% (≈413 vectors at 8.2k chunks), so roughly every other
+SI-log deploy trips CORRUPTED and fires the rebuild — which is precisely the observed cadence of
+three rebuilds in three days during heavy session work. **Writing up these issues is the single
+biggest contributor to the leak they describe.**
 
-**The leak:** between 00:41 and 01:49 FAISS vectors grew **+284** while SQLite chunks grew **+7**
-(8262→8269 chunks, ~8262→8546 vectors). Something adds vectors without corresponding chunk rows,
-or deletes chunk rows without removing vectors. Note `missing_in_faiss` is always 0 — the leak is
-strictly one-directional.
+**TWO distinct defects, do not conflate them:**
+1. **Structural (by design, not a bug per se).** Re-indexing genuinely-changed content must orphan
+   its old vectors while the index is a plain `IndexFlat`. The auto-rebuild is the de-facto
+   compactor. A real fix means `IndexIDMap2` + `remove_ids`, i.e. an index-type migration.
+2. **PARITY DEFECT (a real bug, cheap to fix).** The startup scan guards with
+   `if await self._file_needs_reindexing(...)` (hash + mtime, `:1534`) — the watcher does NOT
+   (`:1224` `on_created`, `:1229` `on_modified` call `_process_single_file` directly). So a
+   byte-identical rewrite — `git pull`/`git checkout`, an editor save, `touch` — re-embeds and
+   orphans the whole file for no benefit, and `on_modified` can fire several times per save. Two
+   paths doing one job, one guarded and one not.
 
-**Why it matters beyond tidiness:** `_perform_full_rebuild` calls `self.faiss_index.reset()` and
-re-adds every chunk, so for ~2 minutes every day or two the index is being rebuilt underneath live
-retrieval. Impact on concurrent queries is INFERRED FROM CODE, not measured — do not repeat it as
-fact without a test.
+**Also costs money.** The embedding provider is OpenAI `text-embedding-3-small`; every needless
+re-ingest is a paid API call for content that did not change.
 
-**Evidence to gather:** (1) which write path adds vectors — instrument the FAISS `add` call sites
-and diff against chunk inserts; (2) whether document deletion/re-ingestion removes chunks but not
-vectors (most likely candidate); (3) orphan growth rate vs ingestion volume, to confirm it tracks
-writes rather than time. **Do not raise `corruption_threshold`** — that would only lengthen the
-cycle and hide the leak further.
+**Recommended order:** fix (2) first — add the existing `_file_needs_reindexing` guard to the
+watcher path — since it is a one-line reuse of working code and removes the avoidable share of the
+leak. Then measure how much orphaning remains before deciding whether (1) justifies an index
+migration. **Do not raise `corruption_threshold`** — that hides the leak rather than fixing it.
+
+**Do not clear** until: the watcher path is guarded, and a byte-identical rewrite is shown NOT to
+change `faiss_index.ntotal`.
 
 ### SI-041 — Three defects surfaced by a statistics+chart request  [P2 — CONFIRMED by measurement]
 **Request (prod, v1.0.0.274):** USGS M5.5+ catalogue, first half 2026 — "sample size, mean, median,
