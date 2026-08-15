@@ -11,6 +11,53 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-044 — A tool cannot reference another tool's output from the SAME batch; gate then ends on a self-contradictory verdict  [P1 — CONFIRMED on prod, v1.0.0.281]
+**Found in the live SI-041 re-test (prod, 2026-08-15 02:59).** Everything else in that request
+worked; the chart still did not appear, for two defects that are BOTH in my own code.
+
+**(1) Intra-batch dependency cannot resolve.** The selector chose, in ONE gather-gate round:
+```
+round=1 executing ['compute' ×14, 'plot_data', 'plot_data']
+```
+`plot_data` referenced `compute#9` / `compute#6` — outputs of computes in that same batch.
+`_resolve_call_references` runs ONCE before the batch, and the batch executes in parallel via
+`asyncio.gather`, so those references could not exist yet:
+```
+🔬 second-round-args: tool=plot_data available=['lookup_website#1']
+   → Tool 'plot_data' error: unknown output reference(s) ['compute#9']
+```
+The very next round proves the data was fine, just late:
+`available=['compute#1' … 'compute#14', 'lookup_website#1']`.
+
+**(2) The gate ended the loop while reporting the opposite.** One round later:
+```
+🚪 gather-gate: round=2 verdict=sufficient
+   missing='The plot_data tool failed ... could not reference the compute outputs.
+            A valid plot_data call is needed to produce the [[chart:...'
+   next=['plot_data']
+```
+`status=sufficient` with a NON-EMPTY `missing` and a NON-EMPTY `next_tools` is incoherent, and it
+stopped the loop exactly when one more round would have worked. `_gather_gate_assess` takes the
+model's `status` at face value (`needs_more` only on an exact match, else `sufficient`) and never
+cross-checks it against the other two fields it just parsed.
+
+**Fix directions (not yet built):**
+- (1) Defer, don't fail: when a call references an output produced by a tool scheduled in the SAME
+  batch, hold that call back for the next round instead of erroring. The loop already re-runs, and
+  round 2 demonstrably had the references. (Alternative — order the batch topologically — is more
+  work and loses parallelism.)
+- (2) A coherence guard on the verdict: if the model names `missing` AND `next_tools`, that is
+  `needs_more` regardless of the status string. This is a STRUCTURAL check on fields the model
+  already returns — not keyword matching on meaning.
+
+**Consequence today:** requests that need a chart OF A COMPUTED SERIES (as opposed to a fetched
+column) silently produce no chart. `plot_data` charting a raw fetched column is unaffected.
+
+**Also note — the answer did not disclose the failure.** `_ARTIFACT_MARKER_RELAY` tells the model to
+"note briefly that a chart wasn't available"; it substituted tables and said nothing. Better than
+SI-041(b)'s fabricated "the plot below shows…", but the disclosure half of the directive did not
+fire. Track with SI-041(b) residue.
+
 ### SI-042 — DEGRADED never triggers the auto-rebuild; the recommendation has no consumer  [P2 — CONFIRMED by code + prod logs]
 **Correction to the first version of this entry (2026-08-15).** I originally recorded that the
 orphan-count swing "suggests the CHECK is sampling/threshold-sensitive, not that the index is
