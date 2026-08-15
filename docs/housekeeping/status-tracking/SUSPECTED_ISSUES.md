@@ -38,8 +38,31 @@ than a table — parse the array `compute` emits and return those values, keepin
 path for tabular sources. One function, deterministically testable from the exact output format
 above, with NO LLM call required to verify.
 
-**Do not clear** until a request that charts a computed series produces a real `[[chart:...]]`
-marker end-to-end.
+**FIXED in v1.0.0.284.** `extract_column` now decides by SHAPE before demanding a column: JSON
+records and tables take the existing paths unchanged, and anything else is offered to a new
+`computed_series()`, which parses the labelled scalar/array `compute` emits. A column name passed
+out of habit is ignored rather than rejected, and the `[TRUNCATED: …]` note is excluded so its
+square brackets are not mistaken for data.
+
+**CLEAR-CONDITION MET — verified end-to-end through the real path, no LLM required:**
+```
+🔗 SECOND ROUND: resolved data references for 'plot_data' → {'x': 5, 'series': 2}
+   x                     -> [5.6, 5.9, 6.2, 6.5, 6.8]        (from compute#1)
+   Observed count        -> [74.0, 62.0, 17.0, 32.0, 11.0]   (from compute#2)
+   Gutenberg-Richter fit -> [1.88, 0.98, 0.51, 0.27, 0.14]   (from compute#3)
+   plot_data success: True
+   [[chart:/static/images/media/3ab6194….jpg|align=center|caption="Earthquake magnitude
+    distribution (H1 2026, M>=5.5)"]]
+```
+The rendered image was opened and inspected: both series drawn, axes and source line correct.
+
+**Tests:** `tests/unit/test_computed_series_reference.py` (11). On pre-fix code **7 fail** with the
+production error verbatim (`a reference needs a 'column' naming which values to take`); the 4
+"existing paths unchanged" tests pass both ways by design.
+
+**Still open — the full-request confirmation.** The chain is proven at the tool boundary, but no
+real @Ask request has produced a chart of a computed series since the fix. That needs the Ollama
+quota reset, and it is the same run that confirms SI-046 at n>=3.
 
 ### SI-046 — The distribution family is chosen by the TOOL-CALLING model before the data's shape is known  [P2 — CONFIRMED on prod, v1.0.0.283]
 **User report:** "I said in this prompt to pick the *appropriate* probability distribution and did

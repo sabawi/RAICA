@@ -247,17 +247,74 @@ def _to_number(raw: Any) -> Optional[float]:
         return None
 
 
+_COMPUTE_MARKER = "computed as:"
+
+
+def computed_series(text: str) -> Optional[List[float]]:
+    """Values from a `compute` result, which is NOT a table (SI-047).
+
+    `compute` renders a labelled scalar or array followed by its provenance:
+
+        25th/75th/90th percentiles: [5.6  , 6.   , 6.4  ]
+        computed as: np.percentile(mag, [25, 75, 90])
+        over n=225 data point(s); inputs: mag
+        dtype: float64
+
+    There are no columns here — the output IS the series. `extract_column` resolved every
+    reference through `_parse_table`, which requires a header and at least two rows, so
+    `{"from": "compute#9", ...}` could never resolve and ANYTHING the model calculated was
+    unchartable: on production every plot_data call for a fitted curve failed with
+    "referenced output does not contain a table with a header and rows".
+
+    Returns None when the text is not a compute result, so tabular and JSON sources are
+    untouched.
+    """
+    if not text or _COMPUTE_MARKER not in text:
+        return None
+    head = text.split(_COMPUTE_MARKER, 1)[0]
+    # The truncation note is prose about the values, not one of them.
+    head = "\n".join(l for l in head.splitlines() if not l.strip().startswith("[TRUNCATED"))
+
+    start, end = head.find("["), head.rfind("]")
+    if start != -1 and end > start:
+        # numpy pads its separator ("5.6  , 6.   ") and wraps long arrays across lines.
+        inner = head[start + 1:end].replace("\n", " ")
+        parts = [p.strip() for p in inner.split(",")]
+        values = [_to_number(p) for p in parts if p.strip()]
+        if values and all(v is not None for v in values):
+            return values
+        return None
+
+    # Scalar: the number follows the label, or stands alone when there is no label.
+    first = next((l for l in head.splitlines() if l.strip()), "")
+    candidate = first.rsplit(": ", 1)[-1] if ": " in first else first
+    value = _to_number(candidate.strip())
+    return [value] if value is not None else None
+
+
 def extract_column(text: str, column: str, numeric: bool = True):
     """Values of `column` from a referenced output, in file order.
 
     Raises ReferenceError_ naming the available columns when the requested one is absent — the model
     can then retry with a real name instead of silently charting the wrong series.
     """
+    # SI-047 — shape first. A `compute` result carries no columns, so demanding one before
+    # looking at the text rejected every computed series outright.
+    records = _json_records(text)
+    if records is None and not _looks_tabular(text):
+        series = computed_series(text)
+        if series is not None:
+            if len(series) > _MAX_CELLS:
+                raise ReferenceError_(
+                    f"computed series has {len(series)} values, over the {_MAX_CELLS} limit")
+            if not numeric:
+                return [str(v) for v in series]
+            return series
+
     if not column or not str(column).strip():
         raise ReferenceError_("a reference needs a 'column' naming which values to take")
     column = str(column).strip()
 
-    records = _json_records(text)
     if records is not None:
         keys = sorted({k for r in records[:20] for k in r})
         match = next((k for k in keys if k.lower() == column.lower()), None)
