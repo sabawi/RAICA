@@ -35,6 +35,32 @@ not a lapse:** by synthesis time the chart is already rendered and immutable.
 (correct) Gutenberg-Richter reasoning was visible. Fixing the plumbing exposed the judgement gap
 that was always there.
 
+**MEASURED 2026-08-15 — the sequencing hypothesis is REFUTED.** The natural fix ("compute the
+shape first, feed it back, then let the model pick the family") is what ALREADY HAPPENS. Every one
+of these was computed in gather round 1 and was in `available=[compute#1 … compute#13]` when the
+`plot_data` call chose a Gaussian:
+```
+np.size(mag)=225 · np.mean=5.88 · np.median=5.80   <- mean > median, skew visible
+np.min=5.5 · np.max=7.8                            <- long right tail, visible
+np.percentile(mag,5) · np.percentile(mag,95)
+np.histogram(mag, bins=15)[0] = [74,62,17,32,11,8,5,6,0,2,1,2,2,2,1]   <- monotone decay
+np.mean(mag >= 6.5 / 7.0 / 7.5)                    <- empirical tail probabilities
+```
+**glm-5.2 had the shape in front of it and chose normal anyway.** Any fix built on "give it the
+diagnostics first" would therefore have changed nothing — this was recorded before the measurement
+was taken, and is corrected here rather than shipped.
+
+**Two remaining candidate causes, requiring DIFFERENT fixes — distinguish before building:**
+1. It was never TOLD the family must follow from the shape (no directive links those numbers to the
+   choice) → a policy directive suffices.
+2. glm-5.2 will not make this judgement regardless — it is selected for tool-call throughput, not
+   statistical reasoning → no prompt fixes it; the decision must move to a stage/model that reasons
+   about the data (V4-Pro already gets it right at synthesis, merely too late).
+
+**The experiment:** same request, directive added, run >=3x (selection is stochastic). If it still
+picks normal WITH the shape and an explicit instruction, the answer is (2) — relocate the decision
+instead of tuning words further.
+
 **Fix direction — policy, not a rule table.** Hardcoding "magnitudes → Gutenberg-Richter" is exactly
 what the LLM-Policy Gate forbids; the next dataset would be lognormal, Poisson or power-law and the
 table would be wrong again. The directive belongs where the CHOICE is made (the tool-selection
