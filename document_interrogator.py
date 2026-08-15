@@ -1916,7 +1916,10 @@ class DocumentInterrogator:
             system_healthy = await check_and_repair_faiss_integrity(self.store)
             
             if system_healthy:
-                logger.info("✅ FAISS integrity check passed - system is healthy")
+                # SI-042 — this used to assert "system is healthy" for a DEGRADED result,
+                # because check_and_repair folded DEGRADED into its True return. The verdict
+                # and any warning are logged by the check itself; do not overwrite them here.
+                logger.info("✅ FAISS integrity check completed - index usable")
             else:
                 logger.error("🚨 FAISS integrity check failed - manual intervention may be required")
                 logger.error("🚨 Document search functionality may be compromised")

@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 import sqlite3
 import numpy as np
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,14 @@ class FAISSIntegrityMonitor:
         self.store = document_store
         self.metadata_db = document_store.metadata_db
         self.faiss_index = document_store.faiss_index
-        self.corruption_threshold = 0.05  # 5% mismatch triggers rebuild (applies to both count sync and lookup corruption)
+        # SI-042 — thresholds are configuration, not literals. Fail fast if absent.
+        from utils.config_loader import config_loader
+        cfg = (config_loader.load_config().get('document_interrogator', {}) or {}).get('integrity')
+        if not cfg:
+            raise ValueError("Missing config: document_interrogator.integrity in llm_config.yaml")
+        self.corruption_threshold = cfg['corruption_threshold']
+        self.min_consistency_cosine = cfg['embedding_consistency_min_cosine']
+        self.auto_rebuild_cfg = cfg['auto_rebuild']
         self.max_sample_size = 100  # Sample size for integrity checks
         
     async def comprehensive_integrity_check(self) -> Dict[str, any]:
@@ -247,15 +255,32 @@ class FAISSIntegrityMonitor:
             if not embeddings1 or not embeddings2:
                 return {'consistent': False, 'error': 'Embedding generation failed'}
             
-            # Check if embeddings are identical (they should be for same input)
-            consistent = True
+            # SI-042 — judge SEMANTIC equivalence, not bit equality.
+            # The old test was `np.allclose(rtol=1e-10)`, which is far tighter than float32
+            # carries and much tighter than a remote embedding API guarantees. Measured on real
+            # prod content (text-embedding-3-small): 3 of 5 samples bit-identical, 2 differing by
+            # ~1e-4 with cosine 0.999994+ — ordinary batched-inference jitter between replicas,
+            # semantically identical for retrieval. That flagged EMBEDDING_INCONSISTENCY on every
+            # boot, and because a rebuild re-embeds through the SAME API it could never clear it.
+            # Cosine still catches what actually matters: a changed model, a wrong dimension, or
+            # mismatched text all collapse the similarity far below this floor.
+            worst_cosine, dimension_mismatch = 1.0, False
             for emb1, emb2 in zip(embeddings1, embeddings2):
-                if not np.allclose(emb1, emb2, rtol=1e-10):
-                    consistent = False
+                a = np.asarray(emb1, dtype=np.float64)
+                b = np.asarray(emb2, dtype=np.float64)
+                if a.shape != b.shape:
+                    dimension_mismatch = True
+                    worst_cosine = 0.0
                     break
-            
+                denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+                cos = float(a @ b / denom) if denom else 0.0
+                worst_cosine = min(worst_cosine, cos)
+
             return {
-                'consistent': consistent,
+                'consistent': (not dimension_mismatch) and worst_cosine >= self.min_consistency_cosine,
+                'min_cosine': round(worst_cosine, 8),
+                'min_cosine_required': self.min_consistency_cosine,
+                'dimension_mismatch': dimension_mismatch,
                 'sample_size': len(sample_content),
                 'embedding_dimension': len(embeddings1[0]) if embeddings1 else 0
             }
@@ -263,16 +288,73 @@ class FAISSIntegrityMonitor:
         except Exception as e:
             return {'consistent': False, 'error': str(e)}
     
+    def _record_rebuild_outcome(self, outcome: str):
+        """Stamp the most recent attempt with what it achieved — evidence for the damper."""
+        try:
+            self.metadata_db.execute(
+                "UPDATE integrity_rebuilds SET outcome = ? WHERE id = (SELECT MAX(id) FROM "
+                "integrity_rebuilds)", (outcome,))
+            self.metadata_db.commit()
+        except Exception as e:  # noqa: BLE001 — bookkeeping must never fail a rebuild
+            logger.debug(f"could not record rebuild outcome: {e}")
+
+    def _ensure_rebuild_log(self):
+        """Persistent record of automatic rebuilds — the damper's memory (SI-042)."""
+        self.metadata_db.execute("""
+            CREATE TABLE IF NOT EXISTS integrity_rebuilds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                issues TEXT,
+                outcome TEXT
+            )
+        """)
+        self.metadata_db.commit()
+
+    def _recent_auto_rebuilds(self) -> int:
+        """How many automatic rebuilds started inside the configured window."""
+        self._ensure_rebuild_log()
+        window_hours = self.auto_rebuild_cfg['window_hours']
+        cutoff = (datetime.now() - timedelta(hours=window_hours)).isoformat()
+        row = self.metadata_db.execute(
+            "SELECT COUNT(*) FROM integrity_rebuilds WHERE started_at >= ?", (cutoff,)).fetchone()
+        return int(row[0]) if row else 0
+
     async def automatic_rebuild_if_needed(self, integrity_result: Dict[str, any]) -> bool:
         """
         Automatically rebuild FAISS index if corruption is detected
         Returns True if rebuild was performed
         """
         if not integrity_result.get('rebuild_required', False):
-            logger.info("✅ No rebuild required - integrity check passed")
+            logger.info(f"✅ No rebuild required (status: {integrity_result.get('status')})")
             return False
-        
-        logger.warning("🚨 CORRUPTION DETECTED - Starting automatic rebuild")
+
+        # ── THE DAMPER (SI-042) ────────────────────────────────────────────────────────
+        # A rebuild is a REACTION to a detected condition, and a reaction that cannot fix
+        # its trigger repeats forever: detect → rebuild (~2 min) → detect again → rebuild…
+        # on every boot. THIS IS THE LINE THAT MAKES CYCLE N+1 IMPOSSIBLE — once the window
+        # is full the branch cannot re-fire, whatever the detector says, until a human acts
+        # or the window rolls off.
+        recent = self._recent_auto_rebuilds()
+        limit = self.auto_rebuild_cfg['max_per_window']
+        window = self.auto_rebuild_cfg['window_hours']
+        if recent >= limit:
+            logger.error(
+                f"🛑 AUTOMATIC REBUILD SUPPRESSED — {recent} rebuild(s) already in the last "
+                f"{window}h (limit {limit}). Repeated rebuilds mean the rebuild is NOT fixing "
+                f"the cause: {integrity_result['issues_found']}. Investigate before forcing "
+                f"another; search still works on the current index.")
+            return False
+
+        # Recorded BEFORE the attempt: a rebuild that crashes mid-way must still count
+        # against the damper, or a crashing rebuild would retry on every boot indefinitely.
+        self._ensure_rebuild_log()
+        self.metadata_db.execute(
+            "INSERT INTO integrity_rebuilds (started_at, issues, outcome) VALUES (?, ?, ?)",
+            (datetime.now().isoformat(), str(integrity_result.get('issues_found')), 'started'))
+        self.metadata_db.commit()
+
+        logger.warning(f"🚨 CORRUPTION DETECTED - Starting automatic rebuild "
+                       f"({recent + 1}/{limit} within {window}h)")
         logger.warning(f"Issues found: {integrity_result['issues_found']}")
         
         try:
@@ -283,6 +365,7 @@ class FAISSIntegrityMonitor:
                 
                 # Verify rebuild worked
                 post_rebuild_check = await self.comprehensive_integrity_check()
+                self._record_rebuild_outcome(post_rebuild_check['status'])
                 if post_rebuild_check['status'] == 'HEALTHY':
                     logger.info("✅ Post-rebuild integrity check passed")
                     return True
@@ -449,5 +532,19 @@ async def check_and_repair_faiss_integrity(document_store) -> bool:
     if integrity_result.get('rebuild_required', False):
         rebuild_success = await monitor.automatic_rebuild_if_needed(integrity_result)
         return rebuild_success
-    
-    return integrity_result['status'] in ['HEALTHY', 'DEGRADED']
+
+    # SI-042 — DEGRADED used to be folded silently into "healthy" and its
+    # SCHEDULED_REBUILD_RECOMMENDED read by nobody, so a real finding was detected on every
+    # boot and actioned never. It is surfaced here instead. It deliberately does NOT trigger a
+    # rebuild: the only DEGRADED source is the embedding-consistency check, which compares two
+    # LIVE API calls and never consults the index — a rebuild re-embeds through that same API
+    # and so cannot change the outcome. Reacting to it would be an undamped loop, not a fix.
+    if integrity_result['status'] == 'DEGRADED':
+        logger.warning(
+            f"⚠️ FAISS integrity DEGRADED — {integrity_result['issues_found']}. "
+            f"Search still works; the index is not corrupt. This is NOT auto-repaired: a "
+            f"rebuild cannot address it. Metrics: "
+            f"{integrity_result['metrics'].get('embedding_consistency')}")
+        return True
+
+    return integrity_result['status'] == 'HEALTHY'

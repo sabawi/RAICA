@@ -45,12 +45,45 @@ Three independent things then make DEGRADED a dead branch:
 model/dimension than the one now querying — is detected on every boot and actioned never. It
 degrades ANSWER QUALITY silently; it cannot surface as an error.
 
-**Do NOT simply set `rebuild_required = True` for DEGRADED.** That is a detect-and-compensate loop
-with no damper: if a rebuild does not clear `embedding_consistency.consistent = False` (e.g. the
-check itself compares against the wrong model), every boot would rebuild for ~2 minutes forever.
-Required first: confirm a rebuild actually clears the flag, then gate on attempts.
-**Clear only when:** a DEGRADED result provably leads to a repair or an explicit operator alert,
-and the "healthy" return for DEGRADED is reconciled with that.
+**RESOLVED in v1.0.0.280 — and NOT by making DEGRADED trigger a rebuild.**
+
+The caution above turned out to be the whole story. Measuring first showed that
+`_check_embedding_consistency` **never consults the index at all**: it embeds 5 sample chunks
+TWICE through the LIVE API and compares the two results. A FAISS rebuild re-embeds through that
+same API, so **by construction it cannot change the verdict** — wiring DEGRADED to a rebuild would
+have rebuilt ~2 minutes on every boot, forever.
+
+Worse, the verdict was a near-certain FALSE POSITIVE. The old test was
+`np.allclose(rtol=1e-10)` — far tighter than float32 carries. Measured on real prod content
+(`text-embedding-3-small`):
+
+| sample | max abs diff | cosine |
+|---|---|---|
+| 0, 2, 3 | 0.0 | 1.00000000 |
+| 1 | 1.2e-04 | 0.99999961 |
+| 4 | 3.4e-04 | 0.99999426 |
+
+Ordinary batched-inference jitter between replicas; semantically identical for retrieval.
+
+**Three changes:**
+1. **Consistency judged by COSINE** against a configured floor (`0.999`) instead of element-wise
+   equality. Still catches what matters — a changed model, wrong dimension or mismatched text
+   collapses cosine far below the floor (pinned by a test).
+2. **DEGRADED is surfaced, not swallowed.** `check_and_repair` no longer returns
+   `status in ['HEALTHY','DEGRADED']`; DEGRADED logs an explicit operator WARNING naming the
+   issue and metrics, and the startup line no longer claims "system is healthy".
+3. **A DAMPER on every automatic rebuild** (not just this path): attempts are recorded in a new
+   `integrity_rebuilds` table and capped at `max_per_window` per `window_hours` (config:
+   `document_interrogator.integrity.auto_rebuild`). **The line that makes cycle N+1 impossible**
+   is the `recent >= limit` check in `automatic_rebuild_if_needed`, which returns before the
+   rebuild whatever the detector says. The attempt is recorded BEFORE the rebuild runs, so a
+   rebuild that CRASHES still counts — otherwise the error path would reintroduce the loop.
+   `corruption_threshold` also moved out of code into config.
+
+**Verified on a copy of the REAL production index:** `status: HEALTHY`, `issues: []`,
+`recommendations: ['NO_ACTION_REQUIRED']`, `embedding_consistency: consistent=True,
+min_cosine=1.0`. Tests: 6 new; the damper test executes 5 rebuilds against a limit of 2 on
+pre-fix code and fails with that count.
 
 ### SI-043 — Re-indexing orphans FAISS vectors; the watcher re-ingests unchanged files  [P2 — ROOT CAUSE CONFIRMED, reproduced]
 **Mechanism (reproduced in isolation, `document_interrogator.py:766-795`).** `add_chunks` appends

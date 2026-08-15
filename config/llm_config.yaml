@@ -3,6 +3,21 @@ debug:
   log_timing: true
   mock_providers: false
 document_interrogator:
+  # SI-042 — FAISS index integrity monitoring.
+  integrity:
+    # Count-mismatch / lookup-corruption tolerance before an index is called CORRUPTED.
+    corruption_threshold: 0.05
+    # Embedding consistency is judged by COSINE similarity between two embeddings of the
+    # same text, NOT element-wise equality. Measured against prod content on
+    # text-embedding-3-small: 3 of 5 samples were bit-identical, 2 differed by ~1e-4 with
+    # cosine 0.999994+ — normal batched-inference jitter, semantically identical. The old
+    # element-wise rtol=1e-10 flagged that as EMBEDDING_INCONSISTENCY on every boot.
+    embedding_consistency_min_cosine: 0.999
+    auto_rebuild:
+      # THE DAMPER. An automatic rebuild reacts to a condition; if the rebuild cannot fix
+      # that condition, an undamped reaction repeats every boot forever (~2 min each).
+      max_per_window: 2
+      window_hours: 24
   max_files_per_scan: 400
   scan_interval_minutes: 60
   auto_watch_enabled: false
