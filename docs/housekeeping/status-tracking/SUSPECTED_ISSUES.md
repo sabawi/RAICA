@@ -122,9 +122,29 @@ Pinned by `tests/unit/test_watcher_reindex_guard.py`, which fails on pre-fix cod
 (`vectors 1 -> 2`) and carries its own control: step 3 requires a genuine change to still be
 indexed, because "no vectors added" is also what a dead embedding pipeline produces.
 
-**Still open — the structural cause.** Decide between `IndexIDMap2` + `remove_ids` on update, or
-keeping the rebuild as compaction but scheduling it honestly instead of letting normal operation
-cross a 5% threshold and be labelled `CORRUPTED`.
+**STRUCTURAL CAUSE FIXED in v1.0.0.279 — `IndexIDMap2` + `remove_ids`.** The store now uses an
+id-mapped index; each chunk keeps a stable id (its `chunks.faiss_index`), and `add_chunks` removes
+the superseded vector BEFORE adding its replacement, so re-indexing replaces rather than
+accumulates. Legacy positional indexes migrate on load by `reconstruct`-ing the existing vectors —
+**no re-embedding, so no API spend** — carrying only positions still referenced by a row, which
+compacts the accrued orphans in the same pass.
+
+**Rehearsed against a copy of the REAL production index before deploying:**
+```
+BEFORE  IndexFlatIP   8614 vectors / 8330 rows -> 284 ORPHANED
+AFTER   IndexIDMap2   8330 vectors / 8330 rows ->   0 orphaned   (0.3s, ids all unique)
+        count_sync synchronized=True · lookup_integrity HEALTHY 0/100 · range_validity valid
+        search verified on the migrated index: relevant hits, ntotal unchanged
+```
+**A second defect surfaced during that rehearsal and is fixed too:** the monitor's
+`_check_index_range_validity` asserted `faiss_index < ntotal`, which is meaningless once ids are
+ids — after removals they are deliberately non-contiguous. On the migrated real index
+`max_index=8613` against `ntotal=8330` would have been reported INVALID/CORRUPTED **on every
+boot**. It now checks membership in the live id set. `_perform_full_rebuild` and
+`tools/rebuild_faiss_index.py` likewise preserve ids instead of renumbering by position.
+
+**Remaining:** the migrated index still reports `DEGRADED` for `EMBEDDING_INCONSISTENCY` — a
+separate concern tracked in SI-042, untouched by this fix. Orphaning is resolved.
 
 **Do not clear** until: the watcher path is guarded, and a byte-identical rewrite is shown NOT to
 change `faiss_index.ntotal`.

@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 import document_interrogator as di
+from tests.unit.shared_loop import run
 
 
 def _handler_target_name() -> str:
@@ -83,4 +84,4 @@ def test_unchanged_file_skipped_but_real_change_still_indexed():
             f"step 2 above passed for the wrong reason."
         )
 
-    asyncio.run(main())
+    run(main())

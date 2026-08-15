@@ -585,6 +585,12 @@ class FAISSDocumentStore:
                 self.chunk_counter = self.faiss_index.ntotal
                 logger.info(f"📚 Loaded existing FAISS index with {self.chunk_counter} vectors")
 
+                # SI-043 — a legacy IndexFlat stores vectors POSITIONALLY and cannot remove one,
+                # so every re-index orphaned the superseded vector permanently. Migrate to
+                # IndexIDMap2, whose ids let a stale vector be removed on update.
+                if not hasattr(self.faiss_index, "id_map"):
+                    self._migrate_flat_index_to_ids()
+
                 # 🛡️ CRITICAL: Validate dimension matches configuration
                 if self.faiss_index.d != self.dimension:
                     logger.error(f"🚨 DIMENSION MISMATCH DETECTED!")
@@ -615,7 +621,7 @@ class FAISSDocumentStore:
                 self._check_model_change()
             else:
                 # ✅ Create new index
-                self.faiss_index = faiss.IndexFlatIP(self.dimension)
+                self.faiss_index = faiss.IndexIDMap2(faiss.IndexFlatIP(self.dimension))
                 logger.info(f"🔧 Created new FAISS index (dimension: {self.dimension}, model: {EMBEDDING_MODEL_NAME})")
 
                 # Record this as the initial model used
@@ -749,6 +755,50 @@ class FAISSDocumentStore:
         except Exception as e:
             logger.warning(f"⚠️ Could not check model metadata: {e}")
 
+    def _migrate_flat_index_to_ids(self):
+        """One-time, in-place upgrade of a positional IndexFlat to an id-mapped index (SI-043).
+
+        Costs NO embedding calls: the old index can `reconstruct` each stored vector, so the
+        vectors are carried across as-is. The SQLite `faiss_index` value of each chunk becomes its
+        FAISS id, so every row keeps working and no UPDATE is needed.
+
+        It also COMPACTS. Only positions still referenced by a chunk row are carried over, so the
+        orphans accumulated under the old scheme are dropped here rather than waiting to cross a
+        5% threshold and be reported as corruption.
+        """
+        old_index = self.faiss_index
+        new_index = faiss.IndexIDMap2(faiss.IndexFlatIP(self.dimension))
+        cursor = self.metadata_db.cursor()
+        rows = cursor.execute(
+            "SELECT faiss_index FROM chunks WHERE faiss_index IS NOT NULL ORDER BY faiss_index"
+        ).fetchall()
+
+        vectors, ids, unreadable = [], [], 0
+        for (pos,) in rows:
+            pos = int(pos)
+            if pos < 0 or pos >= old_index.ntotal:
+                unreadable += 1           # row points outside the index; nothing to carry
+                continue
+            try:
+                vectors.append(old_index.reconstruct(pos))
+                ids.append(pos)
+            except Exception:             # noqa: BLE001 — one bad vector must not abort the rest
+                unreadable += 1
+
+        if vectors:
+            new_index.add_with_ids(np.array(vectors).astype('float32'),
+                                   np.array(ids, dtype='int64'))
+
+        dropped = old_index.ntotal - len(ids)
+        self.faiss_index = new_index
+        self.chunk_counter = new_index.ntotal
+        faiss.write_index(new_index, str(self.index_path))
+        logger.info(f"🔧 FAISS migrated to id-mapped index: carried {len(ids)} vectors, "
+                    f"dropped {dropped} orphaned, {unreadable} row(s) had no readable vector")
+        if unreadable:
+            logger.warning(f"⚠️ {unreadable} chunk row(s) have no vector and will not be "
+                           f"searchable until their file is re-indexed")
+
     async def add_chunks(self, chunks: List[DocumentChunk]) -> bool:
         """Add document chunks to FAISS index and SQLite"""
         try:
@@ -761,15 +811,35 @@ class FAISSDocumentStore:
                 logger.error("❌ Failed to generate embeddings")
                 return False
             
-            # Add to FAISS index
             embeddings_array = np.vstack(embeddings)
-            faiss_start_index = self.faiss_index.ntotal
-            self.faiss_index.add(embeddings_array)
-            
-            # Add to SQLite
             cursor = self.metadata_db.cursor()
+
+            # SI-043 — assign each chunk a STABLE id and drop the vector it replaces.
+            # chunk_id is path+index, so re-indexing a file reuses ids: without the removal
+            # below the old vector stayed in the index forever (IndexFlat cannot remove), and
+            # those orphans are what drove the index past the 5% "corruption" threshold every
+            # day or two. Reusing the id also keeps ids bounded instead of growing per re-index.
+            next_id = (cursor.execute(
+                "SELECT COALESCE(MAX(faiss_index), -1) FROM chunks").fetchone()[0]) + 1
+            assigned_ids, superseded = [], []
+            for chunk in chunks:
+                row = cursor.execute("SELECT faiss_index FROM chunks WHERE chunk_id = ?",
+                                     (chunk.chunk_id,)).fetchone()
+                if row and row[0] is not None:
+                    assigned_ids.append(int(row[0]))
+                    superseded.append(int(row[0]))
+                else:
+                    assigned_ids.append(next_id)
+                    next_id += 1
+
+            # Remove BEFORE adding: re-adding an id that is still present would duplicate it.
+            if superseded:
+                self.faiss_index.remove_ids(np.array(superseded, dtype='int64'))
+            self.faiss_index.add_with_ids(embeddings_array,
+                                          np.array(assigned_ids, dtype='int64'))
+
             for i, chunk in enumerate(chunks):
-                faiss_index = faiss_start_index + i
+                faiss_index = assigned_ids[i]
                 try:
                     cursor.execute('''
                         INSERT INTO chunks 

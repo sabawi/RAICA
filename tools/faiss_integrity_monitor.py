@@ -145,10 +145,28 @@ class FAISSIntegrityMonitor:
             FROM chunks WHERE faiss_index IS NOT NULL
         """)
         min_idx, max_idx, unique_count = cursor.fetchone()
-        
+
+        # SI-043 — with IndexIDMap2 a chunk's faiss_index is an ID, not a POSITION, so
+        # "< ntotal" is meaningless: ids are stable and arbitrary, and after removals they are
+        # deliberately non-contiguous. Validity is now membership — is each id actually present?
+        if hasattr(self.faiss_index, "id_map"):
+            import faiss as _faiss
+            live_ids = set(int(i) for i in _faiss.vector_to_array(self.faiss_index.id_map))
+            rows = cursor.execute(
+                "SELECT faiss_index FROM chunks WHERE faiss_index IS NOT NULL").fetchall()
+            invalid_indices = sum(1 for (i,) in rows if int(i) not in live_ids)
+            return {
+                'min_index': min_idx,
+                'max_index': max_idx,
+                'unique_indices': unique_count,
+                'id_mapped': True,
+                'live_ids': len(live_ids),
+                'invalid_indices_count': invalid_indices,
+                'valid': invalid_indices == 0
+            }
+
+        # Legacy positional index (pre-migration): ids ARE positions.
         faiss_max_valid = self.faiss_index.ntotal - 1
-        
-        # Check for indices beyond FAISS range
         cursor.execute("""
             SELECT COUNT(*) FROM chunks 
             WHERE faiss_index IS NOT NULL AND faiss_index >= ?
@@ -159,6 +177,7 @@ class FAISSIntegrityMonitor:
             'min_index': min_idx,
             'max_index': max_idx,
             'unique_indices': unique_count,
+            'id_mapped': False,
             'faiss_max_valid': faiss_max_valid,
             'invalid_indices_count': invalid_indices,
             'valid': invalid_indices == 0 and (max_idx is None or max_idx <= faiss_max_valid)
@@ -318,19 +337,37 @@ class FAISSIntegrityMonitor:
                 if not embeddings or len(embeddings) != len(batch):
                     raise Exception(f"Embedding generation failed for batch {i//batch_size + 1}")
                 
-                # Add to FAISS index
+                # Add to FAISS index. SI-043 — keep each chunk's EXISTING id so the rebuild
+                # does not renumber the whole table; with IndexIDMap2 ids need not be
+                # contiguous, and rewriting them would invalidate every row mid-rebuild.
                 embeddings_array = np.array(embeddings).astype('float32')
-                start_idx = self.faiss_index.ntotal
-                self.faiss_index.add(embeddings_array)
-                
-                # Update SQLite with new FAISS indices
-                for j, (chunk_id, content) in enumerate(batch):
-                    new_faiss_idx = start_idx + j
-                    cursor.execute("""
-                        UPDATE chunks 
-                        SET faiss_index = ? 
-                        WHERE chunk_id = ?
-                    """, (new_faiss_idx, chunk_id))
+                if hasattr(self.faiss_index, "id_map"):
+                    batch_ids = []
+                    for chunk_id, _content in batch:
+                        row = cursor.execute(
+                            "SELECT faiss_index FROM chunks WHERE chunk_id = ?",
+                            (chunk_id,)).fetchone()
+                        batch_ids.append(int(row[0]) if row and row[0] is not None else -1)
+                    if any(i < 0 for i in batch_ids):   # assign ids to any that lack one
+                        next_id = (cursor.execute(
+                            "SELECT COALESCE(MAX(faiss_index), -1) FROM chunks").fetchone()[0]) + 1
+                        for k, i in enumerate(batch_ids):
+                            if i < 0:
+                                batch_ids[k] = next_id
+                                cursor.execute("UPDATE chunks SET faiss_index = ? WHERE chunk_id = ?",
+                                               (next_id, batch[k][0]))
+                                next_id += 1
+                    self.faiss_index.add_with_ids(embeddings_array,
+                                                  np.array(batch_ids, dtype='int64'))
+                else:
+                    start_idx = self.faiss_index.ntotal
+                    self.faiss_index.add(embeddings_array)
+                    for j, (chunk_id, content) in enumerate(batch):
+                        cursor.execute("""
+                            UPDATE chunks 
+                            SET faiss_index = ? 
+                            WHERE chunk_id = ?
+                        """, (start_idx + j, chunk_id))
                 
                 self.metadata_db.commit()
                 processed += len(batch)

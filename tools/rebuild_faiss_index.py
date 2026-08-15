@@ -67,18 +67,35 @@ async def rebuild_faiss_index():
             import numpy as np
             embeddings_array = np.array(embeddings).astype('float32')
             
-            # The FAISS index should auto-assign indices starting from current size
-            start_idx = store.faiss_index.ntotal
-            store.faiss_index.add(embeddings_array)
-            
-            # Update database with new FAISS indices
-            for j, (chunk_id, content, doc_path) in enumerate(batch):
-                new_faiss_idx = start_idx + j
-                cursor.execute("""
-                    UPDATE chunks 
-                    SET faiss_index = ? 
-                    WHERE chunk_id = ?
-                """, (new_faiss_idx, chunk_id))
+            # SI-043 — on an id-mapped index, keep each chunk's EXISTING id rather than
+            # renumbering by position; ids are stable and legitimately non-contiguous.
+            if hasattr(store.faiss_index, "id_map"):
+                batch_ids, next_id = [], None
+                for chunk_id, _content, _doc_path in batch:
+                    row = cursor.execute("SELECT faiss_index FROM chunks WHERE chunk_id = ?",
+                                         (chunk_id,)).fetchone()
+                    if row and row[0] is not None:
+                        batch_ids.append(int(row[0]))
+                    else:
+                        if next_id is None:
+                            next_id = (cursor.execute(
+                                "SELECT COALESCE(MAX(faiss_index), -1) FROM chunks"
+                            ).fetchone()[0]) + 1
+                        batch_ids.append(next_id)
+                        cursor.execute("UPDATE chunks SET faiss_index = ? WHERE chunk_id = ?",
+                                       (next_id, chunk_id))
+                        next_id += 1
+                store.faiss_index.add_with_ids(embeddings_array,
+                                               np.array(batch_ids, dtype='int64'))
+            else:
+                start_idx = store.faiss_index.ntotal
+                store.faiss_index.add(embeddings_array)
+                for j, (chunk_id, content, doc_path) in enumerate(batch):
+                    cursor.execute("""
+                        UPDATE chunks 
+                        SET faiss_index = ? 
+                        WHERE chunk_id = ?
+                    """, (start_idx + j, chunk_id))
             
             store.metadata_db.commit()
             total_processed += len(batch)
