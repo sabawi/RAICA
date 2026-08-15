@@ -40,7 +40,7 @@ from typing import Any, Dict, Iterable
 
 import numpy as np
 
-__all__ = ["RestrictedEvalError", "evaluate", "ALLOWED_NUMPY", "MAX_ELEMENTS_PER_ARRAY",
+__all__ = ["RestrictedEvalError", "evaluate", "ALLOWED_NUMPY", "ALLOWED_NUMPY_CONSTANTS", "MAX_ELEMENTS_PER_ARRAY",
            "MAX_TOTAL_ELEMENTS"]
 
 
@@ -61,7 +61,8 @@ MAX_EXPR_CHARS = 500
 # Deliberately EXCLUDED, with reasons — do not add without re-reading these:
 #   load, loadtxt, genfromtxt, save, savez, fromfile, frombuffer, memmap  -> I/O; np.load executes pickles
 #   vectorize, apply_along_axis, apply_over_axes, fromfunction, piecewise -> take a CALLABLE
-#   zeros, ones, full, empty, eye, identity, arange, linspace, logspace   -> allocate BY SIZE
+#   zeros, ones, full, empty, eye, identity, logspace                     -> allocate BY SIZE
+#     (arange/linspace/histogram/polyfit are ALLOWED — see _SIZE_TAKING, their size ARG is bounded)
 #   repeat, tile, outer, meshgrid, kron                                   -> expand small input into a bomb
 # Statistics over data the caller already supplied need none of them.
 ALLOWED_NUMPY = frozenset({
@@ -84,7 +85,7 @@ ALLOWED_NUMPY = frozenset({
     "sinh", "cosh", "tanh", "degrees", "radians",
     # series shape / ordering (no size arguments)
     "diff", "cumsum", "cumprod", "gradient", "sort", "unique", "flip",
-    "concatenate", "ravel", "flatten", "transpose",
+    "concatenate", "ravel", "transpose",
     # relationships
     "corrcoef", "cov", "dot", "inner", "cross",
     # selection / predicates
@@ -97,7 +98,19 @@ ALLOWED_NUMPY = frozenset({
     # x-axis of a fitted distribution curve is precisely what these are for. The memory concern is
     # real but is about the SIZE ARGUMENT, not the function.
     "linspace", "arange",
+    # `histogram` and `polyfit` are the two a distribution question actually needs, and both were
+    # missing: asked to plot a magnitude distribution the model hand-rolled every bin as
+    # `np.sum((mag >= 5.5) & (mag < 5.75))`, ten times over, because np.histogram was rejected.
+    # Their size arguments (`bins`, `deg`) are bounded by _SIZE_TAKING exactly like linspace's.
+    "histogram", "polyfit",
 })
+
+# CONSTANTS. Values, not callables: they allocate nothing, execute nothing and take no argument, so
+# no bound applies. Their absence was not a safety property — it was an oversight that cost a
+# production request its chart: the normal-PDF density formula needs `np.pi`, `np.pi` is an
+# ast.Attribute, the attribute check tested one set that contained functions only, and the
+# expression was rejected 5 times with "np.pi is not in the allowed function list".
+ALLOWED_NUMPY_CONSTANTS = frozenset({"pi", "e", "inf", "nan", "euler_gamma"})
 
 # Builtins whose numpy equivalent has a DIFFERENT name. Everything else that shares a name with an
 # allowed numpy function maps to itself, so this stays two entries rather than a list to maintain.
@@ -149,7 +162,7 @@ _REJECTION_HINTS = {
 # are given must stay under the element cap — `np.arange(10**12)` is 8 TB, `np.linspace(0, 1, 10**10)`
 # likewise. A literal check catches the realistic case; the post-evaluation size check below catches
 # what a computed argument slips through.
-_SIZE_TAKING = frozenset({"linspace", "arange"})
+_SIZE_TAKING = frozenset({"linspace", "arange", "histogram", "polyfit"})
 
 
 def _static_value(node):
@@ -227,8 +240,8 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
                 _reject("attribute names beginning with '_' are never permitted")
             if not isinstance(node.value, ast.Name) or node.value.id != "np":
                 _reject("only `np.<function>` attribute access is permitted")
-            if node.attr not in ALLOWED_NUMPY:
-                _reject(f"np.{node.attr} is not in the allowed function list")
+            if node.attr not in ALLOWED_NUMPY and node.attr not in ALLOWED_NUMPY_CONSTANTS:
+                _reject(f"np.{node.attr} is not an allowed numpy name")
 
         # Layer 3 — every name is either `np` or caller-supplied data.
         if isinstance(node, ast.Name):
@@ -260,6 +273,12 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
 
         if isinstance(node, ast.Subscript):
             _check_subscript_slice(node.slice)
+
+        # A constant is not callable: `np.pi(x)` is a mistake, and saying so beats numpy's
+        # "'float' object is not callable" surfacing as an opaque tool error.
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ALLOWED_NUMPY_CONSTANTS):
+            _reject(f"np.{node.func.attr} is a constant, not a function — use it as a value")
 
         # Bound the size argument of an allocating call.
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)

@@ -11,6 +11,43 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-045 — The numpy allow-list contained 97 names and NOT ONE constant  [RESOLVED v1.0.0.283]
+**Found in the second live SI-041 re-test (prod, v1.0.0.282).** The chart failed again, for a
+THIRD, unrelated reason — and this time the answer disclosed it, which is the SI-041(b) relay
+directive finally working:
+> "the normal-PDF curve values (which required `np.pi` in the density formula) were rejected by
+> the compute tool's allowed-function list"
+
+Log: `Expression rejected: np.pi is not in the allowed function list` ×5.
+
+**Cause.** `np.pi` parses as an `ast.Attribute`, and the attribute check tested a single set that
+held FUNCTIONS only. An audit of the 97 allowed names found **zero** constants. Blocking a constant
+was never a safety property — it allocates nothing, executes nothing and takes no argument.
+
+**Why the restriction exists at all** (the user asked, and it is worth stating): `compute`
+evaluates expressions AUTHORED BY THE LLM. That is `eval` over untrusted input, so the fence is an
+ALLOW-list, never a deny-list — `np.load` alone executes pickles. The fence is correct. The list
+behind it was simply incomplete.
+
+**Fixed:**
+- `ALLOWED_NUMPY_CONSTANTS = {pi, e, inf, nan, euler_gamma}`, accepted for attribute access and
+  REJECTED when called (`np.pi(3)` → "is a constant, not a function"), which beats numpy's opaque
+  "'float' object is not callable" surfacing inside a tool result.
+- Added `histogram` and `polyfit` — the two a distribution question actually needs. Without
+  `histogram` the model hand-rolled every bin as `np.sum((mag >= 5.5) & (mag < 5.75))`, ten times.
+  Both are in `_SIZE_TAKING`, so `bins`/`deg` are bounded exactly like `linspace`'s `num`.
+- Removed the dead `flatten` entry: `np.flatten` does not exist (it is an ndarray method).
+- Error wording: "not in the allowed function list" → "not an allowed numpy name", since the set
+  is no longer functions only.
+
+**Fence verified unchanged:** `np.load(...)`, `np.zeros(10**9)`, `np.vectorize`, `__import__`,
+`np.histogram(bins=10**9)` and `np.polyfit(deg=10**8)` all still rejected.
+
+**Same class as SI-041(a)** (`linspace`/`arange` blocked, cost a request 47 rejections and its
+chart). Two occurrences make it a pattern: **the allow-list is audited against the WORK, not just
+against the threat.** Before adding a numeric capability, run the expression a real analysis would
+write.
+
 ### SI-044 — A tool cannot reference another tool's output from the SAME batch; gate then ends on a self-contradictory verdict  [P1 — CONFIRMED on prod, v1.0.0.281]
 **Found in the live SI-041 re-test (prod, 2026-08-15 02:59).** Everything else in that request
 worked; the chart still did not appear, for two defects that are BOTH in my own code.

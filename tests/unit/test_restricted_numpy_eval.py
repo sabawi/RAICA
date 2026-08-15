@@ -446,3 +446,57 @@ class TestSizeTakingFunctions:
         assert srv_mod._static_value(_ast.parse("mag", mode="eval").body) is None
         assert srv_mod._static_value(_ast.parse("np.min(mag)", mode="eval").body) is None
         assert srv_mod._static_value(_ast.parse("10**3", mode="eval").body) == 1000
+
+
+class TestConstantsAndDistributionHelpers:
+    """SI-045 — the allow-list held 97 names and NOT ONE mathematical constant.
+
+    Found in production: a request to plot a probability distribution was rejected five times with
+    `np.pi is not in the allowed function list`, because the normal-PDF density needs np.pi, np.pi
+    parses as an ast.Attribute, and the attribute check tested a set containing functions only.
+    The user's reply carried the failure verbatim: "the normal-PDF curve values (which required
+    np.pi in the density formula) were rejected by the compute tool's allowed-function list".
+
+    Blocking a constant was never a safety property. A constant allocates nothing, executes
+    nothing, and takes no argument.
+    """
+
+    def test_the_normal_pdf_expression_from_production_evaluates(self):
+        """The literal expression that failed. Rejected pre-fix on np.pi."""
+        expr = ("(1/(np.std(mag)*np.sqrt(2*np.pi)))"
+                "*np.exp(-0.5*((np.linspace(np.min(mag),np.max(mag),5)-np.mean(mag))/np.std(mag))**2)")
+        out = evaluate(expr, {"mag": [5.5, 6.1, 7.2, 5.8, 6.4]})
+        assert len(out) == 5 and all(v > 0 for v in out)
+
+    def test_each_constant_is_usable(self):
+        for expr, expected in (("np.pi", 3.14159265), ("np.e", 2.71828182)):
+            assert abs(float(evaluate(expr, {"x": [1.0]})) - expected) < 1e-6
+
+    def test_a_constant_cannot_be_CALLED(self):
+        """Permitting the name must not permit `np.pi(3)`. Numpy's own error would surface as an
+        opaque "'float' object is not callable" inside a tool result."""
+        with pytest.raises(RestrictedEvalError, match="constant, not a function"):
+            evaluate("np.pi(3)", {"x": [1.0]})
+
+    def test_histogram_and_polyfit_are_available(self):
+        """Both were missing, so asked for a magnitude distribution the model hand-rolled every bin
+        as `np.sum((mag >= 5.5) & (mag < 5.75))`, ten times over."""
+        d = {"mag": [5.5, 6.1, 7.2, 5.8, 6.4]}
+        assert list(evaluate("np.histogram(mag, bins=3)[0]", d)) == [2, 2, 1]
+        assert len(evaluate("np.polyfit(np.arange(5), mag, 1)", d)) == 2
+
+    def test_their_size_arguments_are_still_bounded(self):
+        """Permitting them must not permit an allocation bomb — `bins` and `deg` take a SIZE."""
+        d = {"mag": [5.5, 6.1, 7.2]}
+        for expr in ("np.histogram(mag, bins=10**9)", "np.polyfit(np.arange(3), mag, 10**8)"):
+            with pytest.raises(RestrictedEvalError, match="exceeds the"):
+                evaluate(expr, d)
+
+    def test_the_fence_is_unchanged(self):
+        """Widening the list must not widen the boundary: no I/O, no size-allocators, no callables.
+        np.load in particular executes pickles."""
+        d = {"x": [1.0]}
+        for expr in ('np.load("/etc/passwd")', "np.zeros(10**9)", "np.vectorize(len)",
+                     "__import__('os').system('id')", "np.array.__class__"):
+            with pytest.raises(RestrictedEvalError):
+                evaluate(expr, d)
