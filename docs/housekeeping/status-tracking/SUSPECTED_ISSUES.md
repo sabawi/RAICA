@@ -976,69 +976,32 @@ std-dev … plot the bell curve … probabilities for tail events and most likel
 - **Watch condition:** if `server_complete.log` ever starts accruing `Unclosed` warnings under load,
   re-open as a real leak. Until then, low.
 
-### SI-003 — Vestigial MySQL pool: dead code + a boot footgun  [P3 — SCOPED, awaiting sign-off]  *(spun off from SI-001)*
-- **Finding:** the MySQL `db_pool` (`init_db_pool`, `execute_query`, `get_db_connection`) is **unused** —
-  `execute_query()` has **0 callers** anywhere; the only references are `health_check` (cosmetic report)
-  and the dead helper itself. All real storage is SQLite + FAISS. (RAICA uses **no** Postgres — the
-  SQLite→Postgres-in-prod stack belongs to the separate **NewX** repo, confirmed live 2026-07-18.)
-- **Two cleanup items:**
-  1. `ServerConfig` (fastapi_server_complete.py:195–198) **hard-requires `DB_PASSWORD` or the server
-     refuses to boot** — for a DB that is never queried. A fresh install fails to start without a
-     meaningless secret. Relax (only require it if the DB is actually used) or remove the pool.
-  2. `/health` reports `database: "unavailable"` (alarming for ops) for something intentionally unused —
-     remove the MySQL pool entirely, or report `"not_configured"`.
-- **Impact:** none functional today (nothing uses it); pure tech-debt + fresh-install footgun.
-
-#### Scoped cleanup plan (2026-07-18 — verified against live prod; not yet implemented)
-
-**Complete reference map** (everything the pool touches, in `fastapi_server_complete.py`):
-- `import aiomysql` / `from aiomysql.pool import Pool` — `:137-138`
-- `db_pool: Optional[Pool] = None` — `:309`
-- `ServerConfig` DB block (`DB_HOST/DB_USER/DB_PASSWORD` + fail-fast raise / `DB_NAME/DB_POOL_SIZE`) — `:191-200`
-- `init_db_pool()` — `:454-472`  ·  `close_db_pool()` — `:474-479`  ·  `get_db_connection()` — `:481-493`
-- `execute_query()` (**0 callers**) — `:2537-2546`
-- lifespan startup/shutdown calls — `:2398` (init) / `:2472` (close)
-- readers of the pool: `/health` DB check — `:11750-11760` · `/metrics` `db_stats` — `:12127-12131`
-- `.env.example` `DB_*` block (incl. phantom `DB_MAX_OVERFLOW` the code never reads) — `:2-7`
-
-**Zero-regression boundary** (verified this session):
-- **0** cross-module imports of the pool symbols (`coding_agent._execute_query_step` is an unrelated method).
-- Only reader of `/health`'s `database` field is `tests/utilities/test_ollama.py:45` — it **prints** the value,
-  no assertion → relabel is safe.
-- ⚠️ **LANDMINE:** the overall-`status` computation whitelists `"unavailable"` (`:11766-11768`). Relabeling
-  `database` → `"not_configured"` **without** adding `"not_configured"` to that whitelist would flip the
-  top-level `/health` `status` to `"unhealthy"` (which the AWS LB / monitoring may act on). The relabel is
-  therefore **two coordinated edits**, not one.
-- Prod `.env` already has `DB_PASSWORD` set → relaxing the boot-raise is **identical** behavior on prod
-  (pool still tries + fails soft with `1698 Access denied for 'root'@'localhost'`), and strictly better for
-  fresh installs (boot instead of crash).
-- Security: keep `os.getenv('DB_PASSWORD')` with **no default** → does **not** reintroduce the hardcoded
-  `Down2earth!` credential removed in v1.0.0.61.
-
-**Phase 1 — RECOMMENDED (tiny diff, zero functional change):**
-1. Relax boot footgun (`:193-198`): drop the `raise RuntimeError`; `DB_PASSWORD` stays optional (`None` ok).
-2. Honest health label (2 coordinated edits): `:11760` `"unavailable"` → `"not_configured"` **and** `:11767`
-   add `"not_configured"` to the whitelist. Overall `status` stays `healthy`.
-3. (Optional) `/metrics` `db_stats` (`:12127`) cosmetic touch — can skip to minimize the diff.
-4. Version bump + `CHANGELOG_v1.0.0.190.md`.
-
-**Phase 2 — OPTIONAL (full dead-code removal, only after Phase 1 verified):** delete imports/`db_pool`/
-`init_db_pool`/`close_db_pool`/`get_db_connection`/`execute_query`/`DB_*` config/lifespan calls; simplify
-`/health` + `/metrics`; drop `aiomysql` + `PyMySQL` from `requirements.txt`; remove the `DB_*` block from
-`.env.example`. ~60-line diff, still **0 functional callers** → best as a separate follow-up commit.
-
-**Verify plan (local first, per DEPLOYMENT PROTOCOL):** restart → `/health` = `status:healthy` +
-`database:not_configured`; fresh-install sim (unset `DB_PASSWORD`) → server **boots**; prod-parity (with
-`DB_PASSWORD` set) → identical soft-fail + same log line; `pytest` + `make smoke` green; then push + deploy
-+ re-verify prod `/health`.
-
-**Status:** SCOPED, **no code changed** (user chose memory/doc update only on 2026-07-18). Ready to implement
-verbatim on sign-off.
-
----
-
-## Resolved
-
+### SI-003 — Vestigial MySQL pool  [RESOLVED v1.0.0.281 — removed]
+- **Was:** `init_db_pool` / `close_db_pool` / `get_db_connection` / `execute_query` (aiomysql) in
+  `fastapi_server_complete.py`, with **0 callers** for `execute_query()`. All RAICA storage is
+  SQLite + FAISS.
+- **Two real costs, both gone:**
+  1. `ServerConfig` raised at IMPORT time unless `DB_PASSWORD` was set — a fresh install refused to
+     boot for a database that does not exist. Verified as a REAL footgun, not a theoretical one:
+     the removal test fails on pre-fix code with the actual
+     `RuntimeError: DB_PASSWORD environment variable is required`.
+  2. `/health` reported `"database": "unavailable"` forever, which reads as an outage. The key is
+     gone entirely — `services` is now `{"cache", "ollama"}`.
+- **Removed:** aiomysql imports · `ServerConfig` DB block + fail-fast · `db_pool` global · the four
+  pool functions · lifespan init/close calls · `/health` DB check · `/metrics` `db_stats` (and its
+  dangling `"database_pool"` usage, which would have been a `NameError` on the first `/metrics`
+  request had only the definition been cut) · `.env.example` DB_* block (incl. the phantom
+  `DB_MAX_OVERFLOW` the code never read) · `aiomysql` from requirements.txt · the aiomysql entry in
+  `tests/utilities/test_tools_available.py`. `tools/migrate_data.py` (unreferenced, targeted an
+  "old Flask server") moved to `archive/experimental/` per the directory convention.
+- **Docs corrected** (they promised a MySQL that no longer exists): ADMINISTRATOR_GUIDE component
+  list, requirements list, MySQL-security section, `DATABASE_URL` env sample and config-table row;
+  DEVELOPER_GUIDE `DATABASE_URL` export.
+- **Out of scope, deliberately left alone:** `agents/website_deployer/*.sh` (deploy generated PHP
+  sites with their own MySQL via the `mysql` CLI) and `agents/coding_agent`'s `_execute_query_step`
+  (unrelated symbol, name collision only).
+- **Verified:** 488 unit tests pass; local `/health` returns `{"cache","ollama"}` with no database
+  key; `/metrics` returns cleanly with no `database_pool`.
 ### SI-029 — Feature flag returned FALSE on its first call in any process  →  **FIXED 2026-08-11 (v1.0.0.256)**  [was P1, production]
 - **Observed on PROD**, same process, no arguments: `call 1: False · call 2: True · call 3: True ·
   call 4: True`.

@@ -43,7 +43,7 @@ The Agentic RAG System is a production-ready, AI-powered document retrieval and 
 - **FastAPI Server**: Core application server (port 5000)
 - **Ollama Service**: Local LLM hosting (ports 11434/11435)
 - **FAISS Vector Store**: High-performance document search
-- **SQLite/MySQL**: Metadata and conversation storage
+- **SQLite**: Metadata and conversation storage (no SQL server required)
 - **Automatic Document Processing**: Real-time directory monitoring
 
 ### Key Components
@@ -75,7 +75,7 @@ The Agentic RAG System is a production-ready, AI-powered document retrieval and 
 **Service Dependencies**:
 - Python 3.13.8 (required for optimal async I/O performance)
 - Ollama service
-- SQLite3 or MySQL
+- SQLite3 (bundled with Python — no separate database server is required)
 - Postfix (for email tools)
 - Docker (optional)
 
@@ -231,9 +231,6 @@ GEMINI_API_KEY=REPLACE_WITH_YOUR_GEMINI_API_KEY
 # Email configuration (see Section 8 for security setup)
 GMAIL_SENDER_EMAIL=your-agent@gmail.com
 GMAIL_APP_PASSWORD=your-16-char-app-password
-
-# Database configuration (optional - defaults to SQLite)
-DATABASE_URL=mysql://user:password@localhost/agentic_rag
 
 # Custom SMTP (optional)
 CUSTOM_SMTP_SERVER=smtp.yourcompany.com
@@ -2007,11 +2004,9 @@ server {
 chmod 600 document_store/metadata.db
 chmod 600 document_store/faiss.index
 
-# MySQL security (if used)
-# Use dedicated database user with minimal privileges
-CREATE USER 'agentic_rag'@'localhost' IDENTIFIED BY 'secure_password';
-GRANT SELECT, INSERT, UPDATE, DELETE ON agentic_rag.* TO 'agentic_rag'@'localhost';
-FLUSH PRIVILEGES;
+# No SQL database to secure: RAICA stores everything in SQLite + FAISS on local
+# disk. The vestigial MySQL pool was removed in v1.0.0.281 (SI-003) — it was never
+# queried, and its DB_PASSWORD check blocked a fresh install from booting.
 ```
 
 #### Document Security
@@ -2700,7 +2695,6 @@ fi
 | `OPENAI_API_KEY` | Yes | - | OpenAI API key for tool calling |
 | `GMAIL_SENDER_EMAIL` | No | - | Gmail account for email tools |
 | `GMAIL_APP_PASSWORD` | No | - | Gmail app-specific password |
-| `DATABASE_URL` | No | SQLite | Database connection string |
 | `PORT` | No | 5000 | Server port |
 | `OLLAMA_NUM_PARALLEL` | No | 1 | Parallel Ollama requests |
 | `OLLAMA_MAX_LOADED_MODELS` | No | 1 | Max loaded Ollama models |

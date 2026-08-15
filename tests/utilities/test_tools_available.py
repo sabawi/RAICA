@@ -16,7 +16,6 @@ def test_tool_dependencies():
         ('gnews', 'Google News'),
         ('yfinance', 'Yahoo Finance'),
         ('aiohttp', 'Async HTTP client'),
-        ('aiomysql', 'Async MySQL client'),
         ('pandas', 'Data processing'),
         ('matplotlib', 'Plotting')
     ]

@@ -90,7 +90,7 @@ from concurrent.futures import ThreadPoolExecutor
 import aiohttp
 import requests
 
-# Load .env file for secrets (DB_PASSWORD, API keys, etc.) before any os.getenv() calls
+# Load .env file for secrets (API keys, credentials) before any os.getenv() calls
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -133,10 +133,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
-
-# Async database
-import aiomysql
-from aiomysql.pool import Pool
 
 # Data processing
 import pandas as pd
@@ -188,18 +184,10 @@ except ImportError as e:
 class ServerConfig:
     """Enhanced server configuration"""
     
-    # Database configuration
-    DB_HOST = os.getenv('DB_HOST', 'localhost')
-    DB_USER = os.getenv('DB_USER', 'root')  
-    DB_PASSWORD = os.getenv('DB_PASSWORD')
-
-    # Fail-fast: DB_PASSWORD is required
-    if DB_PASSWORD is None:
-        print("CRITICAL: DB_PASSWORD environment variable is not set. Server cannot start.", flush=True)
-        raise RuntimeError("DB_PASSWORD environment variable is required. Set it before starting the server.")
-    DB_NAME = os.getenv('DB_NAME', 'mystocks')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '10'))
-    
+    # SI-003 — the MySQL pool was removed in v1.0.0.281. It was never queried
+    # (`execute_query()` had 0 callers); all RAICA storage is SQLite + FAISS. Its
+    # DB_PASSWORD fail-fast made a fresh install refuse to boot without a secret for
+    # a database that did not exist.
     # Ollama configuration
     OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434/api/generate')
     OLLAMA_CHAT_URL = os.getenv('OLLAMA_CHAT_URL', 'http://127.0.0.1:11434/api/chat')
@@ -307,7 +295,6 @@ class OpenAIStreamChunk(BaseModel):
 # GLOBAL VARIABLES
 # ==============================================================================
 
-db_pool: Optional[Pool] = None
 thread_pool = ThreadPoolExecutor(max_workers=ServerConfig.MAX_WORKERS)
 simple_cache = {}
 
@@ -451,47 +438,6 @@ def truncate_base64_for_logging(text: str, max_lines: int = 2) -> str:
 # ==============================================================================
 # DATABASE CONNECTION POOL
 # ==============================================================================
-
-async def init_db_pool():
-    """Initialize database connection pool"""
-    global db_pool
-    try:
-        db_pool = await aiomysql.create_pool(
-            host=ServerConfig.DB_HOST,
-            port=3306,
-            user=ServerConfig.DB_USER,
-            password=ServerConfig.DB_PASSWORD,
-            db=ServerConfig.DB_NAME,
-            minsize=5,
-            maxsize=ServerConfig.DB_POOL_SIZE,
-            autocommit=True,
-            charset='utf8mb4'
-        )
-        logger.info(f"Database pool initialized")
-    except Exception as e:
-        logger.warning(f"Database pool initialization failed: {e}")
-        db_pool = None
-
-async def close_db_pool():
-    """Close database connection pool"""
-    global db_pool
-    if db_pool:
-        db_pool.close()
-        await db_pool.wait_closed()
-
-@asynccontextmanager
-async def get_db_connection():
-    """Async context manager for database connections"""
-    if not db_pool:
-        raise HTTPException(status_code=500, detail="Database not available")
-    
-    async with db_pool.acquire() as connection:
-        try:
-            yield connection
-        except Exception as e:
-            await connection.rollback()
-            logger.error(f"Database operation failed: {e}")
-            raise
 
 # ==============================================================================
 # TOOL MANAGER (Async version of original)
@@ -2582,7 +2528,6 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan events"""
     # Startup
     logger.info("Starting FastAPI server with Ollama integration...")
-    await init_db_pool()
     await init_http_pool()
     
     # Initialize Phase 2B components safely
@@ -2656,7 +2601,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Document scanning shutdown error: {e}")
     
-    await close_db_pool()
     await cleanup_http_pool()
     thread_pool.shutdown(wait=True)
 
@@ -2720,17 +2664,6 @@ async def log_requests(request: Request, call_next):
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================
-
-async def execute_query(query: str, params: Optional[tuple] = None) -> List[Dict]:
-    """Execute database query asynchronously"""
-    if not db_pool:
-        return []
-    
-    async with get_db_connection() as connection:
-        async with connection.cursor(aiomysql.DictCursor) as cursor:
-            await cursor.execute(query, params or ())
-            result = await cursor.fetchall()
-            return result
 
 def _get_ollama_health_url():
     """Derive health check URL from ServerConfig.OLLAMA_URL instead of hardcoding."""
@@ -12650,18 +12583,10 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Enhanced health check with Ollama status"""
-    services = {"database": "unknown", "cache": "memory", "ollama": "unknown"}
-    
-    # Check database
-    if db_pool:
-        try:
-            async with get_db_connection() as conn:
-                services["database"] = "healthy"
-        except Exception:
-            services["database"] = "unhealthy"
-    else:
-        services["database"] = "unavailable"
-    
+    # SI-003 — no "database" key: RAICA has no SQL database. It used to report
+    # "unavailable" for a pool nothing queried, which reads as an outage to ops.
+    services = {"cache": "memory", "ollama": "unknown"}
+
     # Check Ollama
     ollama_healthy = await check_ollama_health()
     services["ollama"] = "healthy" if ollama_healthy else "unhealthy"
@@ -13027,12 +12952,6 @@ async def get_metrics():
         cpu_percent = 0
         memory = None
     
-    db_stats = {
-        "available": db_pool is not None,
-        "size": db_pool.size if db_pool else 0,
-        "free": db_pool.freesize if db_pool else 0
-    }
-    
     ollama_status = await check_ollama_health()
     
     return {
@@ -13041,7 +12960,6 @@ async def get_metrics():
             "cpu_percent": cpu_percent,
             "memory_percent": memory.percent if memory else 0,
         },
-        "database_pool": db_stats,
         "cache": {
             "type": "memory",
             "size": len(simple_cache)

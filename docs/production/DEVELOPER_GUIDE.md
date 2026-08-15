@@ -2788,7 +2788,7 @@ export OPENAI_API_KEY="your-openai-api-key"
 export USE_DIRECT_FUNCTION_CALLS=true
 
 # Database (optional)
-export DATABASE_URL="mysql://user:pass@localhost/db"
+# (No DATABASE_URL: RAICA uses SQLite + FAISS on local disk — SI-003, v1.0.0.281)
 
 # Document processing
 export TESSDATA_PREFIX="/usr/share/tesseract-ocr/4.00/tessdata/"
