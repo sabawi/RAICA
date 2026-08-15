@@ -11,37 +11,76 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-042 — Prod FAISS-SQLite integrity fluctuates HEALTHY → CORRUPTED → DEGRADED  [P2 — OBSERVED, cause UNKNOWN]
-**Seen while reviewing prod startup logs during the v1.0.0.277 deploy (2026-08-15). NOT caused by
-that deploy** — the preceding v276 run was worse — but not explainable either, so it is logged
-rather than dismissed.
+### SI-042 — DEGRADED never triggers the auto-rebuild; the recommendation has no consumer  [P2 — CONFIRMED by code + prod logs]
+**Correction to the first version of this entry (2026-08-15).** I originally recorded that the
+orphan-count swing "suggests the CHECK is sampling/threshold-sensitive, not that the index is
+actually oscillating." **That was wrong, and the prod logs refute it** — the index really does
+oscillate, because orphans really do accumulate and the auto-rebuild really does reset them
+(see SI-043). The hypothesis fit the numbers; I recorded it without testing it.
 
-| Run (prod) | Status | `orphaned_in_faiss` |
-|---|---|---|
-| 2026-08-14 18:40 | HEALTHY | 261 |
-| 2026-08-15 01:33 (v1.0.0.276) | **CORRUPTED** | 556 |
-| 2026-08-15 01:49 (v1.0.0.277) | DEGRADED | 277 |
+**The auto-rebuild EXISTS and WORKS — for CORRUPTED only.** Prod, verbatim:
+```
+08/15 00:41:15  Status: CORRUPTED (COUNT_MISMATCH, orphaned_in_faiss 556)
+08/15 00:41:15  🚨 CORRUPTION DETECTED - Starting automatic rebuild
+08/15 00:43:06  ✅ Automatic rebuild completed successfully      (1m51s)
+```
 
-Latest report: `sqlite_total_chunks 8269` / `faiss_total_vectors 8546`, `missing_in_faiss 0`,
-`synchronized True`, `mismatch_percentage 0.03%`, `lookup_integrity` HEALTHY (0/100 corrupt),
-but `embedding_consistency.consistent = False` → issue `EMBEDDING_INCONSISTENCY`, recommendation
-`SCHEDULED_REBUILD_RECOMMENDED`.
+**The gap is the DEGRADED branch** (`tools/faiss_integrity_monitor.py`):
+```python
+if result['corruption_detected']:
+    result['rebuild_required'] = True                                    # CORRUPTED → repairs
+elif result['status'] == 'DEGRADED':
+    result['recommendations'].append('SCHEDULED_REBUILD_RECOMMENDED')    # ← flag never set
+```
+Three independent things then make DEGRADED a dead branch:
+1. `check_and_repair_faiss_integrity` (:411) gates repair on `rebuild_required`, which DEGRADED
+   never sets — so `automatic_rebuild_if_needed` is not even called (no "No rebuild required"
+   line appears in any prod log, confirming the inner function never runs on this path).
+2. Its final line is `return integrity_result['status'] in ['HEALTHY', 'DEGRADED']` — DEGRADED is
+   explicitly reported as **healthy** to the caller.
+3. **Nothing consumes `SCHEDULED_REBUILD_RECOMMENDED`.** Grepped the codebase: the string is
+   written at :92 and read nowhere. The word "SCHEDULED" implies a scheduler that does not exist.
 
-**Why it may matter:** retrieval quality is invisible when it degrades — orphaned vectors return
-chunks that no longer exist in SQLite, and an embedding inconsistency means some vectors may have
-been written by a different embedding model/dimension than the one now querying. Both would show
-up as *worse answers*, not as errors. `lookup_integrity` passing on a 100-sample makes acute
-corruption unlikely.
+**Consequence:** `EMBEDDING_INCONSISTENCY` — vectors possibly written by a different embedding
+model/dimension than the one now querying — is detected on every boot and actioned never. It
+degrades ANSWER QUALITY silently; it cannot surface as an error.
 
-**Why the status swings** is the real question — orphan count moved 261 → 556 → 277 across three
-restarts with no ingestion between them that I know of. That pattern suggests the CHECK is
-sampling/threshold-sensitive, not that the index is actually oscillating.
+**Do NOT simply set `rebuild_required = True` for DEGRADED.** That is a detect-and-compensate loop
+with no damper: if a rebuild does not clear `embedding_consistency.consistent = False` (e.g. the
+check itself compares against the wrong model), every boot would rebuild for ~2 minutes forever.
+Required first: confirm a rebuild actually clears the flag, then gate on attempts.
+**Clear only when:** a DEGRADED result provably leads to a repair or an explicit operator alert,
+and the "healthy" return for DEGRADED is reconciled with that.
 
-**Evidence to gather before acting:** (1) does the check run on a fixed sample or a random one —
-read the integrity-check source; (2) is `embedding_consistency` comparing against the CURRENT
-configured embedding model; (3) whether orphan count correlates with restart timing (partial
-flush on shutdown). **Do not run a rebuild as a "fix"** until (1)-(3) are answered — a rebuild
-would erase the evidence and the swing would likely return.
+### SI-043 — Orphaned FAISS vectors accumulate continuously; auto-rebuild masks it  [P2 — CONFIRMED by measurement]
+**Prod orphan counts over ~3 days** (`orphaned_in_faiss`, chronological):
+`0 ×7 → 261 → 287 → 556 → 0 (rebuild) → 277`
+
+**Rebuild events retained in the logs — three in three days:**
+```
+08/12 02:12:45 → 02:15:00   (2m15s)
+08/14 04:21:24 → 04:24:17   (2m53s)
+08/15 00:41:15 → 00:43:06   (1m51s)
+```
+This is a cycle, not noise: orphans climb from zero, cross the 5% count-mismatch threshold
+(`corruption_threshold`; ≈413 vectors at 8,262 chunks), trip CORRUPTED, get rebuilt to zero, and
+climb again. The auto-rebuild is working exactly as designed and is thereby **masking a leak**.
+
+**The leak:** between 00:41 and 01:49 FAISS vectors grew **+284** while SQLite chunks grew **+7**
+(8262→8269 chunks, ~8262→8546 vectors). Something adds vectors without corresponding chunk rows,
+or deletes chunk rows without removing vectors. Note `missing_in_faiss` is always 0 — the leak is
+strictly one-directional.
+
+**Why it matters beyond tidiness:** `_perform_full_rebuild` calls `self.faiss_index.reset()` and
+re-adds every chunk, so for ~2 minutes every day or two the index is being rebuilt underneath live
+retrieval. Impact on concurrent queries is INFERRED FROM CODE, not measured — do not repeat it as
+fact without a test.
+
+**Evidence to gather:** (1) which write path adds vectors — instrument the FAISS `add` call sites
+and diff against chunk inserts; (2) whether document deletion/re-ingestion removes chunks but not
+vectors (most likely candidate); (3) orphan growth rate vs ingestion volume, to confirm it tracks
+writes rather than time. **Do not raise `corruption_threshold`** — that would only lengthen the
+cycle and hide the leak further.
 
 ### SI-041 — Three defects surfaced by a statistics+chart request  [P2 — CONFIRMED by measurement]
 **Request (prod, v1.0.0.274):** USGS M5.5+ catalogue, first half 2026 — "sample size, mean, median,
