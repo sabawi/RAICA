@@ -41,7 +41,24 @@ stopped the loop exactly when one more round would have worked. `_gather_gate_as
 model's `status` at face value (`needs_more` only on an exact match, else `sufficient`) and never
 cross-checks it against the other two fields it just parsed.
 
-**Fix directions (not yet built):**
+**FIXED in v1.0.0.282 — NOT yet validated end-to-end (needs a real re-run of the USGS prompt).**
+- (1) `_split_calls_awaiting_batch_output` holds back a call whose reference names a tool scheduled
+  in the SAME batch; the gate loop flushes those deferred calls at the TOP of the next round,
+  BEFORE assessing — assessing first could return `sufficient` and exit while the chart sat unmade.
+  Deferral was chosen over topological ordering because it keeps parallel execution, reuses the
+  existing loop, and per-tool ids stay stable (`asyncio.gather` preserves order, so `compute#9`
+  still means the 9th compute). A reference to a tool NOT in the batch is left to fail loudly as
+  before — deferral must not become a way to swallow a bad reference and run a tool on missing data.
+- (2) Coherence guard in `_gather_gate_assess`: `sufficient` + non-empty `missing` + non-empty
+  `next_tools` is treated as `needs_more`. It reads two fields the model already returns —
+  structural, not keyword matching. BOTH signals are required; escalating on `next_tools` alone
+  would loop to `max_rounds` on every request.
+- Tests: `tests/unit/test_intra_batch_references.py` (7). The coherence test exercises the existing
+  `_gather_gate_assess` and fails on pre-fix code by assertion; the deferral tests cover a new
+  helper, so they fail on missing-attribute rather than behaviour — stated plainly rather than
+  dressed up as behavioural proof.
+
+**Original fix directions (for the record):**
 - (1) Defer, don't fail: when a call references an output produced by a tool scheduled in the SAME
   batch, hold that call back for the next round instead of erroring. The loop already re-runs, and
   round 2 demonstrably had the references. (Alternative — order the batch topologically — is more

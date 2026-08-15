@@ -7779,8 +7779,19 @@ async def _gather_gate_assess(user_message: str, prior_results, tools_array: lis
         return None
     status = "needs_more" if str(data.get("status", "")).lower() == "needs_more" else "sufficient"
     next_tools = [n for n in (data.get("next_tools") or []) if n in names]
+    missing_text = str(data.get("missing") or "").strip()
+    # SI-044 — a verdict that NAMES something missing and a tool to obtain it is not sufficient,
+    # whatever the status string says. Prod returned exactly that and ended the loop one round
+    # before the chart would have succeeded:
+    #   verdict=sufficient missing='The plot_data tool failed ... A valid plot_data call is
+    #   needed to produce the [[chart:...' next=['plot_data']
+    # This reads the two fields the model already returned — structural, not keyword matching.
+    if status == "sufficient" and missing_text and next_tools:
+        logger.info("🚪 gather-gate: verdict said sufficient but named missing=%r next=%s "
+                    "— treating as needs_more", missing_text[:80], next_tools)
+        status = "needs_more"
     return {"round": round_num, "status": status,
-            "missing": str(data.get("missing") or "")[:200], "next_tools": next_tools,
+            "missing": missing_text[:200], "next_tools": next_tools,
             "model": model}
 
 
@@ -7895,6 +7906,68 @@ def _arg_shape(value, depth: int = 0):
     if isinstance(value, str):
         return f"str[{len(value)}]" + (f"={value!r}" if len(value) <= 60 else "")
     return type(value).__name__
+
+
+def _reference_ids_in(value) -> list:
+    """Every output id a call's arguments read, at any nesting depth (SI-044).
+
+    Reuses `_is_reference` so the shape rule lives in ONE place — compute's references sit nested
+    inside `data`, which is exactly why an earlier shallow check never saw them.
+    """
+    from utils.tool_output_reference import _is_reference
+    ids = []
+    if _is_reference(value):
+        raw = value.get("from")
+        for r in (raw if isinstance(raw, list) else [raw]):
+            if r:
+                ids.append(str(r).strip())
+        return ids
+    if isinstance(value, dict):
+        for v in value.values():
+            ids.extend(_reference_ids_in(v))
+    elif isinstance(value, list):
+        for v in value:
+            ids.extend(_reference_ids_in(v))
+    return ids
+
+
+def _split_calls_awaiting_batch_output(calls: list, prior_results):
+    """Hold back a call that reads an output its OWN batch has not produced yet (SI-044).
+
+    THE FAILURE. On prod the selector chose, in one round:
+        round=1 executing ['compute' x14, 'plot_data', 'plot_data']
+    and both plot_data calls read `compute#9` / `compute#6` — outputs of computes in that same
+    batch. References are resolved ONCE before the batch, which then runs in parallel, so those
+    ids could not exist: `available=['lookup_website#1']`, and the chart was never drawn. The very
+    next round had all fourteen, so the data was fine — merely one round early.
+
+    Deferring is preferable to ordering the batch topologically: it keeps the parallel execution,
+    reuses the loop that already exists, and the per-tool 1-based ids stay stable because
+    `asyncio.gather` preserves order — `compute#9` still means the 9th compute of that batch.
+
+    A reference to a tool NOT in this batch is left alone: it is genuinely unknown, and the
+    existing path rewrites the call so the tool reports it rather than running on missing data.
+    """
+    from utils.tool_output_reference import build_reference_index
+    index = build_reference_index(prior_results)
+    batch_tools = {(c.get("function", {}) or {}).get("name") for c in calls}
+    ready, deferred = [], []
+    for call in calls:
+        fn = call.get("function", {}) or {}
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                ready.append(call)
+                continue
+        if not isinstance(args, dict):
+            ready.append(call)
+            continue
+        pending = [r for r in _reference_ids_in(args)
+                   if r not in index and r.split("#")[0] in batch_tools]
+        (deferred if pending else ready).append(call)
+    return ready, deferred
 
 
 def _resolve_call_references(calls: list, prior_results) -> list:
@@ -10736,8 +10809,28 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                 _gg_start = time.monotonic()
                                                 _gg_keys = {_tool_call_key(c) for c in tool_calls}
                                                 _gg_round, _gg_stop = 0, "sufficient"
+                                                _gg_deferred = []
                                                 while True:
                                                     _gg_round += 1
+                                                    # SI-044 — run anything held back last round
+                                                    # BEFORE assessing. Its inputs exist now, and
+                                                    # assessing first could return `sufficient`
+                                                    # and exit while the chart still sits unmade.
+                                                    if _gg_deferred:
+                                                        _flush = _resolve_call_references(
+                                                            _gg_deferred, phase1_results)
+                                                        _gg_deferred = []
+                                                        logger.info(
+                                                            "🚪 gather-gate: running %s deferred call(s): %s",
+                                                            len(_flush),
+                                                            [c['function']['name'] for c in _flush])
+                                                        _fres = await asyncio.gather(
+                                                            *[execute_single_tool(c) for c in _flush],
+                                                            return_exceptions=True)
+                                                        phase1_results = list(phase1_results) + list(_fres)
+                                                        all_results.extend(_fres)
+                                                        for _c in _flush:
+                                                            tools_called.append(_c['function']['name'])
                                                     _v = await _gather_gate_assess(
                                                         user_message=user_message,
                                                         prior_results=phase1_results,
@@ -10774,6 +10867,17 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                         _gg_stop = "no_further_queries"
                                                         break
                                                     _before_refs = set(build_reference_index(phase1_results))
+                                                    # SI-044 — a consumer scheduled alongside its
+                                                    # producer waits one round instead of failing.
+                                                    _more, _gg_deferred = _split_calls_awaiting_batch_output(
+                                                        _more, phase1_results)
+                                                    if _gg_deferred:
+                                                        logger.info(
+                                                            "🚪 gather-gate: deferring %s to next round "
+                                                            "(reads output its own batch has not produced yet)",
+                                                            [c['function']['name'] for c in _gg_deferred])
+                                                    if not _more:
+                                                        continue      # nothing runnable; flush deferred next pass
                                                     _more = _resolve_call_references(_more, phase1_results)
                                                     logger.info("🚪 gather-gate: round=%s executing %s",
                                                                 _gg_round, [c['function']['name'] for c in _more])
