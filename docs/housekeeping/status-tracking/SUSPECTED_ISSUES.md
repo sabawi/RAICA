@@ -96,10 +96,35 @@ biggest contributor to the leak they describe.**
 **Also costs money.** The embedding provider is OpenAI `text-embedding-3-small`; every needless
 re-ingest is a paid API call for content that did not change.
 
-**Recommended order:** fix (2) first — add the existing `_file_needs_reindexing` guard to the
-watcher path — since it is a one-line reuse of working code and removes the avoidable share of the
-leak. Then measure how much orphaning remains before deciding whether (1) justifies an index
-migration. **Do not raise `corruption_threshold`** — that hides the leak rather than fixing it.
+**CORRECTION (2026-08-15) — I recommended fixing (2) first because it "removes the avoidable
+share of the leak". That was wrong, twice over, and measurement refuted it both times:**
+- **The watchdog path never runs.** `📝 File modified` and `📄 New file detected` appear **0**
+  times across every retained prod log, and no observers are ever started. The path that DID
+  re-index (`:1925`, periodic scan) already guards with `_file_needs_reindexing`.
+- **The mtime-only branch never fires either.** Prod counts: `Change detected (hash)` = **14**,
+  `Change detected (mtime)` = **0**. Every observed re-index was a genuine content change.
+
+**So the observed leak is 100% STRUCTURAL — defect (1).** Files I really edited were really
+re-indexed, and their old vectors could not be removed. No guard would have prevented any of it.
+The only real fixes are an index migration (`IndexIDMap2` + `remove_ids`) or treating compaction as
+scheduled maintenance. **Do not raise `corruption_threshold`** — that hides the leak rather than
+fixing it.
+
+**Fixed in v1.0.0.278 — LATENT hardening only, does NOT reduce the observed leak.** Both defects
+are real but currently unreachable; they are closed so that enabling the watcher (there is a
+`start_watching` endpoint at `fastapi_server_complete.py:14204`) does not immediately start
+orphaning vectors on every editor save:
+- watchdog `on_created`/`on_modified` now route through `_process_file_if_changed`, which applies
+  the same `_file_needs_reindexing` guard every scan caller already used;
+- `_file_needs_reindexing` no longer re-indexes on an mtime bump when the content hash is
+  IDENTICAL — it refreshes the stored mtime and skips.
+Pinned by `tests/unit/test_watcher_reindex_guard.py`, which fails on pre-fix code
+(`vectors 1 -> 2`) and carries its own control: step 3 requires a genuine change to still be
+indexed, because "no vectors added" is also what a dead embedding pipeline produces.
+
+**Still open — the structural cause.** Decide between `IndexIDMap2` + `remove_ids` on update, or
+keeping the rebuild as compaction but scheduling it honestly instead of letting normal operation
+cross a 5% threshold and be labelled `CORRUPTED`.
 
 **Do not clear** until: the watcher path is guarded, and a byte-identical rewrite is shown NOT to
 change `faiss_index.ntotal`.

@@ -1221,12 +1221,17 @@ if WATCHDOG_AVAILABLE:
         def on_created(self, event):
             if not event.is_directory:
                 logger.info(f"📄 New file detected: {event.src_path}")
-                asyncio.create_task(self.interrogator._process_single_file(event.src_path))
+                asyncio.create_task(self.interrogator._process_file_if_changed(event.src_path))
         
         def on_modified(self, event):
             if not event.is_directory:
                 logger.info(f"📝 File modified: {event.src_path}")
-                asyncio.create_task(self.interrogator._process_single_file(event.src_path))
+                # SI-043 — route through the CHANGE-CHECKED path, like every other caller.
+                # on_modified fires on byte-identical rewrites (git pull/checkout, editor save,
+                # touch) and often several times per save; _process_single_file re-embeds and
+                # re-adds unconditionally, and because FAISS IndexFlat cannot remove a vector,
+                # each needless re-add orphans the file's previous vectors permanently.
+                asyncio.create_task(self.interrogator._process_file_if_changed(event.src_path))
 
 
 class DocumentInterrogator:
@@ -1580,13 +1585,27 @@ class DocumentInterrogator:
             
             stored_hash, stored_mtime = result
             
-            # Compare hash and modification time
+            # Compare hash and modification time.
             if stored_hash != current_hash:
                 logger.info(f"🔄 Change detected (hash): {Path(file_path).name}")
                 return True
             elif stored_mtime != current_mtime:
-                logger.info(f"🔄 Change detected (mtime): {Path(file_path).name}")
-                return True
+                # SI-043 — CONTENT is the thing worth re-embedding, and the hash says it is
+                # identical. A bare mtime bump (git pull/checkout, an editor save that rewrites
+                # the same bytes, `touch`, a restored backup) used to force a full re-index here.
+                # That is not just wasted embedding spend: add_chunks appends new vectors and
+                # UPDATEs the rows to point at them, and FAISS IndexFlat cannot remove the
+                # superseded ones, so every needless re-index orphans a whole file's vectors
+                # permanently. Refresh the recorded mtime so the check settles, and skip.
+                logger.debug(f"🕒 mtime changed but content identical, skipping re-index: "
+                             f"{Path(file_path).name}")
+                try:
+                    cursor.execute('UPDATE documents SET last_modified = ? WHERE file_path = ?',
+                                   (current_mtime, file_path))
+                    self.store.metadata_db.commit()
+                except Exception as e:  # noqa: BLE001 — a bookkeeping failure must not re-index
+                    logger.debug(f"could not refresh stored mtime for {file_path}: {e}")
+                return False
                 
             logger.debug(f"✅ File up-to-date: {Path(file_path).name}")
             return False
@@ -1976,8 +1995,34 @@ class DocumentInterrogator:
             "currently_watching": list(self.watched_directories)
         }
 
+    async def _process_file_if_changed(self, file_path: str):
+        """Process a file ONLY if its content actually changed (SI-043).
+
+        THE ASYMMETRY THIS REMOVES. Every scan caller already guards its call:
+        the startup config scan (:1534), smart indexing (:1751) and the periodic
+        directory scan (:1925) all test `_file_needs_reindexing` first. The
+        watchdog handlers alone called `_process_single_file` directly, so any
+        filesystem event — including a rewrite whose bytes are identical —
+        re-embedded the whole file and appended a fresh vector per chunk.
+
+        That is not merely wasted work. `add_chunks` appends to FAISS and then
+        UPDATEs the SQLite row (chunk_id is path+index, so re-indexing reuses
+        ids), and IndexFlat cannot remove the superseded vector — it is orphaned
+        for good, until a full rebuild. Embeddings are also a paid API call.
+
+        Two paths doing one job, one guarded and one not; this makes them agree.
+        Fails OPEN: if the check itself errors, `_file_needs_reindexing` returns
+        True and the file is processed, preserving the old behaviour.
+        """
+        if not self.store:
+            return False
+        if not await self._file_needs_reindexing(file_path):
+            logger.debug(f"⏭️ Unchanged, skipping re-index: {file_path}")
+            return True
+        return await self._process_single_file(file_path)
+
     async def _process_single_file(self, file_path: str):
-        """Process a single file (used by directory watcher)"""
+        """Process a single file unconditionally (callers must check for changes first)."""
         if not self.store:
             return
             
