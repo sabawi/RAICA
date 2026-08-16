@@ -140,7 +140,12 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   Tier-1 with 0 throttle events, and only then `--update-baseline --reason`.
 
 
-### SI-054 — The mandatory smoke gate is FLAKY: a cold news fetch exceeds PER_CALL_TIMEOUT  [P2 — CONFIRMED, 2026-08-15]
+### ~~SI-054~~ — Smoke gate failed a deploy on a cold-start timeout  [RESOLVED v1.0.0.293, 2026-08-16]
+- **Fixed:** retry exactly once, on TIMEOUT only. A second timeout is still a failure but reads
+  `TIMED OUT twice at 30s each`, not `RAISED TimeoutError`. A pass needing the retry is disclosed,
+  so a flaky tool never looks clean. The timeout was NOT widened.
+- **Verified:** 4 tests, all 4 fail on pre-fix code; `make smoke` PASSED 6/6.
+- ~~Original entry below~~ [P2, 2026-08-15]
 - **Observed:** `make smoke` failed with `get_news_summaries: RAISED TimeoutError`, blocking the deploy
   per protocol. Re-run immediately after: **PASSED**, `get_news_summaries 4847 chars`.
 - **Not a tool defect (measured):** invoked directly with the smoke's exact args 3x — **2.5s / 0.5s /
@@ -191,7 +196,14 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Current behaviour is pinned** by `test_a_column_less_reference_is_not_silently_executed_as_key_names`
   so a partial change cannot land unnoticed.
 
-### SI-052 — No output-size guard on synthesis (2.9 MB whitespace runaway)  [P2 — TRIGGER REMOVED, CLASS STILL UNGUARDED, 2026-08-15]
+### ~~SI-052~~ — No output-size guard on synthesis  [RESOLVED v1.0.0.293, 2026-08-16]
+- **Fixed:** `openai.py::generate_stream` tracks a consecutive-whitespace run (>400) and total
+  emitted chars (>400,000) and BREAKS on either — the lines that make an unbounded run impossible.
+  Reported in-band and logged loudly. Thresholds derived from the corpus: legitimate answers peak
+  at 72,147 chars / 18-char whitespace run; the runaway was 2,924,215 / 2,862.
+- **Verified:** 6 tests, 3 fail on pre-fix code, including that a legitimate answer with an 18-char
+  whitespace run passes through byte-identical.
+- ~~Original entry below~~ [P2, 2026-08-15]
 - **Downgraded, NOT closed.** The trigger is gone: with SI-051 fixed the model receives a real
   marker and no longer hand-draws ASCII charts. **0 synthesis truncations across 6 E2E runs**,
   all answers 3.0-5.9 KB at 14-17% whitespace (was 2,924,215 chars at 99.8%).

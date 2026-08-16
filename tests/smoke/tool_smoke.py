@@ -81,14 +81,42 @@ async def _invoke(name, args):
     return (res or ""), buf.getvalue()
 
 
+async def _invoke_resilient(name, args):
+    """Invoke once; on TIMEOUT ONLY, invoke a second time.
+
+    SI-054 — this gate exists to answer "does the tool CRASH on invocation". A timeout is
+    not a crash. `get_news_summaries` blew the 30s budget on a COLD call and failed the
+    gate, blocking a deploy; re-run immediately afterwards it answered in 2.5s / 0.5s /
+    0.4s with 4,887 chars. The first, uncached fetch is simply the slow one.
+
+    A spurious CODE-FAIL is not the only cost. A gate known to "just be flaky" is a gate
+    whose REAL failures get waved through, which is precisely how search_web stayed dead
+    for six days. So: retry exactly once, and a second timeout IS a failure — a tool that
+    cannot answer within 2 x {t}s across two attempts is genuinely broken. The retry is
+    reported so a flaky tool never looks clean.
+    """.format(t=PER_CALL_TIMEOUT)
+    try:
+        return (await _invoke(name, args)) + (False,)
+    except asyncio.TimeoutError:
+        pass
+    return (await _invoke(name, args)) + (True,)
+
+
 def main():
     print("=" * 74)
     print("  RAICA TOOL SMOKE — invoking core tools through the real code path")
     print("=" * 74)
     code_fail, warn = [], []
     for name, args in CHECKS:
+        retried = False
         try:
-            res, captured = asyncio.run(_invoke(name, args))
+            res, captured, retried = asyncio.run(_invoke_resilient(name, args))
+        except asyncio.TimeoutError:
+            # Timed out TWICE — that is a real failure, but say TIMEOUT rather than RAISED
+            # so the operator is not sent hunting for a crash that does not exist.
+            code_fail.append(f"{name}: TIMED OUT twice at {PER_CALL_TIMEOUT}s each")
+            print(f"  ✗ CODE  {name:<28} TIMED OUT twice at {PER_CALL_TIMEOUT}s each")
+            continue
         except Exception as e:  # noqa: BLE001 — a raised exception IS a code failure
             code_fail.append(f"{name}: RAISED {type(e).__name__}: {e}")
             print(f"  ✗ CODE  {name:<28} RAISED {type(e).__name__}: {str(e)[:80]}")
@@ -102,7 +130,8 @@ def main():
             warn.append(f"{name}: empty / failure-message result (likely ENV or a bad call)")
             print(f"  ⚠ WARN  {name:<28} empty/failure result (likely ENV) | {res[:90]!r}")
         else:
-            print(f"  ✓ PASS  {name:<28} {len(res)} chars of real content")
+            note = "  (passed only on RETRY after a timeout)" if retried else ""
+            print(f"  ✓ PASS  {name:<28} {len(res)} chars of real content{note}")
     print("-" * 74)
     if code_fail:
         print(f"  SMOKE FAILED — {len(code_fail)} CODE defect(s); a tool crashes on invocation:")

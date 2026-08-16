@@ -22,6 +22,23 @@ class OpenAIProvider(LLMProvider):
     # OpenAI itself), which is why it is a type and not a vendor name.
     PROVIDER_TYPE = "openai"
 
+    # SI-052 — thresholds DERIVED from the observed corpus, not chosen:
+    #     legitimate answers : up to 72,147 chars, longest whitespace run 18
+    #     the runaway        : 2,924,215 chars,   longest whitespace run 2,862
+    # 400 sits 22x above the largest real run and 7x below the runaway; 400,000 chars is
+    # ~5.5x the largest legitimate answer ever measured. Both are deliberately far from the
+    # legitimate side, because a guard that fires on real output is worse than no guard.
+    # Overridable per deployment; the code default is protective on purpose — a safety limit
+    # that vanishes when a config key is missing is not a safety limit.
+    _STREAM_MAX_CHARS = 400_000
+    _STREAM_WS_RUN_LIMIT = 400
+
+    def _stream_guard(self):
+        """(max_chars, ws_run_limit) for the streaming degenerate-output guard."""
+        cfg = self.config or {}
+        return (int(cfg.get('stream_max_chars', self._STREAM_MAX_CHARS)),
+                int(cfg.get('stream_ws_run_limit', self._STREAM_WS_RUN_LIMIT)))
+
     def _wire_params(self, kwargs: Dict[str, Any], where: str) -> Dict[str, Any]:
         """Canonical generation parameters for this call, before wire translation.
 
@@ -168,6 +185,15 @@ class OpenAIProvider(LLMProvider):
                 # one, and a caller that parses JSON just sees "the model failed
                 # to comply".
                 finish_reason = None
+                # SI-052 — OUTPUT-SIZE / DEGENERATE-REPETITION GUARD.
+                # A synthesis run once streamed 2,924,215 characters that were 99.8%
+                # whitespace: with no chart marker available the model hand-drew an ASCII
+                # chart and the padding ran away. NOTHING in RAICA stopped it — the only
+                # brake was the vendor's 32,768-token ceiling, so a higher cap would simply
+                # have produced a larger runaway. These two counters are the lines that make
+                # an unbounded run impossible, and `break` is what ends it.
+                max_chars, ws_run_limit = self._stream_guard()
+                emitted, ws_run = 0, 0
                 async for line in response.content:
                     line_str = line.decode('utf-8').strip()
                     if line_str.startswith('data: '):
@@ -183,6 +209,33 @@ class OpenAIProvider(LLMProvider):
                                 delta = choices[0].get('delta') or {}
                                 content = delta.get('content') or ''
                                 if content:
+                                    emitted += len(content)
+                                    # Whitespace RUN, not whitespace share: a long answer is
+                                    # legitimately mostly prose, but no real reply contains
+                                    # hundreds of consecutive blank characters.
+                                    if content.strip():
+                                        ws_run = len(content) - len(content.rstrip())
+                                    else:
+                                        ws_run += len(content)
+
+                                    if ws_run > ws_run_limit:
+                                        logger.warning(
+                                            "🛑 DEGENERATE OUTPUT: %d consecutive whitespace "
+                                            "characters from model=%s (limit %d). This is the "
+                                            "ASCII-art padding runaway (SI-052); stopping the "
+                                            "stream. %d chars emitted so far.",
+                                            ws_run, model, ws_run_limit, emitted)
+                                        yield ("\n\n_[output stopped: the model began emitting "
+                                               "unbounded blank padding]_")
+                                        break
+                                    if emitted > max_chars:
+                                        logger.warning(
+                                            "🛑 OUTPUT SIZE CAP: %d characters from model=%s "
+                                            "exceeds the %d-char answer cap; stopping the "
+                                            "stream (SI-052).", emitted, model, max_chars)
+                                        yield ("\n\n_[output stopped: answer exceeded the "
+                                               "size limit]_")
+                                        break
                                     yield content
                         except json.JSONDecodeError:
                             continue  # Skip invalid JSON

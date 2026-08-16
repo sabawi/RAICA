@@ -90,11 +90,26 @@ exercise is an **A/B between two scorecards**, not a rebaselining.
 
 **Proves:** GLM-5.2 vs DeepSeek-V4-Flash on identical scenarios, *as served by Ollama*.
 
-**Does NOT prove** they are equivalent on DeepInfra. This session produced direct evidence
-that the same model behaves differently across transports: GLM-5.2 on DeepInfra emits
-`reasoning_content` billed against `max_tokens` (which caused a total tool-lane failure),
-while on Ollama `think: false` suppresses it. A provider change is a transport change, and
-transport changed behaviour before.
+**Does NOT prove** they are equivalent on DeepInfra — though the gap is now much smaller
+than it was, and the specific hazard is CLOSED.
+
+**CORRECTION (2026-08-16):** an earlier draft of this runbook cited GLM-5.2's reasoning
+tokens on DeepInfra as an OPEN risk. That is wrong — it was fixed in v1.0.0.285 and the fix
+is live. Verified by inspecting the actual wire payload for the tool lane:
+
+```
+lane config think: False
+ON THE WIRE     -> {'max_tokens': 8192, 'chat_template_kwargs': {'enable_thinking': False}}
+```
+
+So reasoning is suppressed on DeepInfra exactly as `think: false` does on Ollama — the two
+transports now agree on both the reasoning switch and the output budget, which is the whole
+point of `llm_providers/param_map.py`.
+
+What remains is ordinary prudence, not a known defect: a vendor can still differ in
+tokenizer, sampling defaults or served weights, and no config table can rule that out. That
+is why the closing check below exists — it is cheap insurance, not a fix for something
+outstanding.
 
 **Cheap closing check (well under one cent), after Flash wins on Ollama:**
 
