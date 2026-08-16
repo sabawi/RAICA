@@ -331,8 +331,18 @@ arbitrator:
     # reasoning_effort is unreachable in RAICA today: no provider forwards it.
     max_tokens: 4096
     stream: false
-    api_key: "ollama"
-    base_url: http://127.0.0.1:11434/v1
+    # SI-056 (2026-08-16) — THE MODEL AND THE ENDPOINT DISAGREED.
+    # `model: zai-org/GLM-5.2` is a DeepInfra slug, but this lane still pointed at the
+    # LOCAL OLLAMA proxy, which does not have it. Verified by invoking:
+    #     HTTP 404 {"message":"model 'zai-org/GLM-5.2' not found"}
+    # Measured effect over one night: 178 arbitrator attempts, 1 success, 34 runs that
+    # exhausted all 5 tries. A failing arbitrator regenerates tools up to 5x per request,
+    # and that regeneration loop is what surfaced SI-048/051/052 — v1.0.0.287 made the
+    # system resilient to the loop, this makes the loop stop firing spuriously.
+    # The Ollama-era values are kept below for a one-line revert.
+    #   revert: api_key: "ollama"  +  base_url: http://127.0.0.1:11434/v1  +  model: glm-5.2:cloud
+    api_key: ${DEEPINFRA_API_KEY}
+    base_url: https://api.deepinfra.com/v1/openai
 optimization:
   enabled: true
   rollout_percentage: 100.0
@@ -1017,14 +1027,29 @@ code_generation:
       retry_delay: 2
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
 vision:
-  type: ollama
+  # SI-056 (2026-08-16) — the LAST lane still on Ollama, and both its models were dead:
+  #   image_to_text error: primary 'minimax-m3:cloud' + fallback 'kimi-k2.6:cloud':
+  #   "you (...) have reached your ..." (status code: 429)   -- cloud quota exhausted.
+  # The Ollama->DeepInfra switch moved primary/tool_calling/arbitrator and left vision
+  # behind, so a quota exhaustion on a provider nothing else uses silently killed @Ask
+  # image understanding.
+  #
+  # Both replacements verified BY INVOCATION, not by a catalog listing: each was sent a
+  # real test image and asked to name its colour, and each ANSWERED correctly. A listing
+  # is evidence in neither direction (see the 2026-08-05 CORRECTION below).
+  # Deliberately two DIFFERENT families, preserving the existing fallback-diversity
+  # rationale: one vendor retirement cannot take out both.
+  #   revert: type: ollama + model: minimax-m3:cloud + fallback_model: kimi-k2.6:cloud
+  #           + base_url: http://127.0.0.1:11434 (and drop api_key)
+  type: openai
   config:
-    model: minimax-m3:cloud   # 2026-07-31: swapped in from kimi-k2.7-code:cloud after image input failed on both the then-primary and the then-fallback (gemma4:31b-cloud). minimax-m3 verified by sending a test image (red circle, blue square, the word SEVEN) and confirming the reply named all three, including reading the TEXT — i.e. genuine OCR, not a guess from the prompt. ⚠️ CORRECTION 2026-08-05: this comment previously claimed Ollama "does NOT serve" kimi-k2.7-code:cloud and that gemma4:31b-cloud was "unserved". BOTH ARE FALSE — re-probed by INVOKING them and both answer normally (gemma4:31b-cloud is vision-capable too). That claim came from reading /api/tags, which only lists models PULLED LOCALLY and is evidence in NEITHER direction: a never-pulled cloud model is absent yet works, while RETIRED qwen3-vl:235b-cloud stays LISTED and returns HTTP 410. So the recorded cause of the 2026-07-31 vision break is WRONG and the real cause is UNKNOWN (see SI-005) — the swap itself stands only because minimax-m3/kimi-k2.6 were verified with a real image. Establish availability ONLY by invoking (`config_server_cli.py doctor --probe`), never by a listing. Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
+    model: Qwen/Qwen3-VL-235B-A22B-Instruct   # DeepInfra; verified by invocation 2026-08-16 (named the colour of a test image). Historical note follows: # 2026-07-31: swapped in from kimi-k2.7-code:cloud after image input failed on both the then-primary and the then-fallback (gemma4:31b-cloud). minimax-m3 verified by sending a test image (red circle, blue square, the word SEVEN) and confirming the reply named all three, including reading the TEXT — i.e. genuine OCR, not a guess from the prompt. ⚠️ CORRECTION 2026-08-05: this comment previously claimed Ollama "does NOT serve" kimi-k2.7-code:cloud and that gemma4:31b-cloud was "unserved". BOTH ARE FALSE — re-probed by INVOKING them and both answer normally (gemma4:31b-cloud is vision-capable too). That claim came from reading /api/tags, which only lists models PULLED LOCALLY and is evidence in NEITHER direction: a never-pulled cloud model is absent yet works, while RETIRED qwen3-vl:235b-cloud stays LISTED and returns HTTP 410. So the recorded cause of the 2026-07-31 vision break is WRONG and the real cause is UNKNOWN (see SI-005) — the swap itself stands only because minimax-m3/kimi-k2.6 were verified with a real image. Establish availability ONLY by invoking (`config_server_cli.py doctor --probe`), never by a listing. Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
     timeout: 1800
     temperature: 0.7
     max_tokens: 16384
-    base_url: http://127.0.0.1:11434
-    fallback_model: kimi-k2.6:cloud   # 2026-07-31: was gemma4:31b-cloud (see the CORRECTION above — gemma4:31b-cloud is NOT unserved and IS vision-capable, so it remains a valid fallback candidate). kimi-k2.6 verified vision-capable on the same test image, and is a DIFFERENT family from the minimax primary, so one vendor retirement cannot take out both. (minimax-m2.7 and glm-5.2 were tested and rejected: HTTP 400 "does not support image input" — that IS a real, invocation-based verdict.)
+    base_url: https://api.deepinfra.com/v1/openai
+    api_key: ${DEEPINFRA_API_KEY}
+    fallback_model: meta-llama/Llama-3.2-90B-Vision-Instruct   # DeepInfra; verified by invocation 2026-08-16. DIFFERENT family from the Qwen primary on purpose. Historical note follows: was kimi-k2.6:cloud   # 2026-07-31: was gemma4:31b-cloud (see the CORRECTION above — gemma4:31b-cloud is NOT unserved and IS vision-capable, so it remains a valid fallback candidate). kimi-k2.6 verified vision-capable on the same test image, and is a DIFFERENT family from the minimax primary, so one vendor retirement cannot take out both. (minimax-m2.7 and glm-5.2 were tested and rejected: HTTP 400 "does not support image input" — that IS a real, invocation-based verdict.)
   image_processing:
     max_size_mb: 1.0
     resize_enabled: true

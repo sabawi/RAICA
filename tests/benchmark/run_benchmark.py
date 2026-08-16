@@ -46,6 +46,7 @@ TIER0_TESTS = [
     "tests/integration/test_html_single_workflow_styling.py",# one HTML template + @media screen; PDF intact
     "tests/integration/test_vision_fallback.py",             # primary vision fail -> backup runs
     "tests/integration/test_delivery_failure_reporting.py",  # failed send reported as failed (no false ok)
+    "tests/integration/test_lane_transport_consistency.py",  # SI-056: lane model must match its base_url
     "tests/integration/test_version_sync.py",                # version.py == README/logging_config//health
 ]
 

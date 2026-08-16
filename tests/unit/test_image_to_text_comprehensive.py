@@ -56,7 +56,15 @@ class TestImageToTextTool(unittest.IsolatedAsyncioTestCase):
 
     @patch('user_tools.image_to_text.ImageToTextTool._process_with_ollama')
     async def test_full_execution_workflow(self, mock_process_with_ollama):
-        """Test complete execution workflow with mixed inputs."""
+        """Test complete execution workflow with mixed inputs.
+
+        SI-056: this patches the OLLAMA path, so it only means anything against an
+        ollama-type lane. It previously passed BY ACCIDENT — coupled to whatever
+        config/llm_config.yaml happened to say — and broke the moment the vision lane
+        moved to DeepInfra. A unit test must not depend on production config, so the
+        transport is pinned explicitly below.
+        """
+        self.tool.vision_config['type'] = 'ollama'
         mock_process_with_ollama.return_value = {
             "success": True,
             "description": self.mock_description,

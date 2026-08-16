@@ -11,6 +11,81 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### ~~SI-056~~ — Ollama→DeepInfra migration left two lanes behind  [RESOLVED v1.0.0.288, 2026-08-16]
+- **Fixed:** arbitrator repointed to DeepInfra; vision moved to `Qwen/Qwen3-VL-235B-A22B-Instruct` +
+  `meta-llama/Llama-3.2-90B-Vision-Instruct` (both verified BY INVOCATION on a real test image);
+  new Tier-0 gate `test_lane_transport_consistency.py` makes the class impossible to commit again.
+- **Verified:** arbitrator **3 attempts / 3 validated / 0 regenerations** (was 178/1/34); vision 3/3
+  runs naming red, blue, SEVEN, circle, square; answers 3/3 statistically exact with 0 fabrications
+  and 3/3 chart markers serving HTTP 200 image/jpeg; latency 300s+ → 27-33s. Tier-0 10/10, smoke 6/6,
+  unit 552 passed. Gate falsified by reverting the config.
+- **Also fixed:** three `image_to_text` unit tests were coupled to the production config (patched the
+  Ollama path, passed by accident); they now pin their transport explicitly.
+- ~~Original entry below~~ [P0 — CONFIRMED by invocation, 2026-08-16]
+- **Found by the user asking whether the provider switch accounted for the vision models.** It did not,
+  and the arbitrator is worse.
+
+| lane | type | model | base_url | state |
+|---|---|---|---|---|
+| primary | openai | deepseek-ai/DeepSeek-V4-Pro-0813 | api.deepinfra.com | OK |
+| tool_calling | openai | zai-org/GLM-5.2 | api.deepinfra.com | OK |
+| **arbitrator** | openai | **zai-org/GLM-5.2** | **127.0.0.1:11434/v1** | **404 on every call** |
+| **vision** | **ollama** | minimax-m3:cloud + kimi-k2.6:cloud | 127.0.0.1:11434 | **quota 429, primary AND fallback** |
+
+- **Arbitrator (P0):** a DeepInfra model slug is pointed at the LOCAL OLLAMA proxy. Verified by
+  invoking it: `HTTP 404 {"message":"model 'zai-org/GLM-5.2' not found"}`. Tonight's log:
+  **178 attempts, 1 successful validation, 34 exhausted-all-5 failures.**
+- **This is the CAUSE of the trigger behind SI-048/051/052.** A failing arbitrator regenerates tools up
+  to 5x per request; the regeneration path then discarded every prior result. v1.0.0.287 made the
+  system RESILIENT to that loop — it did not stop the loop. Both halves are needed.
+- **Vision (P1):** the only lane still on Ollama, and both its models now return
+  `status code: 429 ... you have reached your ...`. DeepInfra equivalents verified BY INVOCATION
+  (they described a test image, not merely returned 200):
+  `Qwen/Qwen3-VL-235B-A22B-Instruct` and `meta-llama/Llama-3.2-90B-Vision-Instruct` (different family,
+  preserving the existing fallback-diversity rationale).
+- **Why nothing caught this:** the parity work (v1.0.0.285) audited PARAMETERS across providers and the
+  contract test asserts a provider CONSUMES what callers pass. Nothing asserts that a lane's MODEL is
+  actually SERVED BY that lane's BASE_URL. That is a reachability check, and it belongs in Tier-0.
+- **Caveat on recent verification:** every E2E run in v1.0.0.285-287 executed with a dead arbitrator.
+  The fixes verified there stand on their own evidence, but system behaviour with a WORKING arbitrator
+  is UNMEASURED.
+- **To clear:** repoint arbitrator base_url to DeepInfra; repoint vision to the two verified DeepInfra
+  models; add a Tier-0 lane-reachability gate that INVOKES each configured lane; then re-verify.
+  Repointing a lane is a behaviour change — measure it, do not assume it (PARITY plan §7.1).
+
+
+### SI-055 — Tier-1 benchmark self-throttles its own search egress and reports CODE REGRESSION  [P1 — CONFIRMED, 2026-08-16]
+- **Observed (v1.0.0.287, 00:35-01:15):** `make benchmark-full` returned **SUITE: REGRESSION** with
+  `S1 citation_count 0` (base 13), `S1 specific_url_ratio 0` (base 1), `S2 dr_completed False`,
+  `attachment_count 0`, `pdf_valid False`, `S3 vision_ran False`, `S4 answer_chars/evidence_items/
+  unique_sources 0`. The harness tagged nearly all of these **CODE**, not ENV.
+- **They are NOT code.** Rate-limit events per 30-min bucket on the SAME build:
+
+  | window | 429 / captcha | what ran |
+  |---|---|---|
+  | 23:00-23:30 | **0** | 6 E2E runs — correct stats, tables, 4/4 charts delivered |
+  | 00:00-00:30 | **1,015** | benchmark |
+  | 00:30-01:00 | **976** | benchmark |
+  | 01:00-01:30 | 622 | benchmark tail |
+
+  Total tonight: **2,922 HTTP 429 + 1,249 Google captcha pages**. Tool SELECTION was healthy
+  throughout (`TOOLS EXECUTED: search_web, get_news_summaries, ...`) — the searches simply returned
+  nothing. S3 vision has an explicit, separate cause: Ollama cloud quota, primary AND fallback,
+  `status code: 429 ... you have reached your ...`.
+- **Mechanism:** the suite runs S1 x3, S3 x3, S4 x3 over 8 tickers across several engines. That volume
+  trips the engines' rate limiters, and the resulting empty results are then scored as code
+  regressions. **The benchmark fails itself**, and its ENV-vs-CODE classifier does not catch it.
+- **Why P1:** this is a measurement-integrity defect. It produces false CODE-REGRESSION verdicts that
+  would block a good deploy, and — worse — it trains the reader to discount the suite, which is
+  exactly how a REAL regression gets waved through. It also means **no valid baseline can be captured
+  while it persists.**
+- **Do NOT rebaseline from a throttled run.** Baking these numbers in would make every future
+  comparison meaningless.
+- **To clear:** detect throttling as a first-class ENV signal (count 429/captcha responses per run and
+  mark affected metrics ENV, not CODE), and/or stagger + cache search across repetitions. Then a clean
+  Tier-1 with 0 throttle events, and only then `--update-baseline --reason`.
+
+
 ### SI-054 — The mandatory smoke gate is FLAKY: a cold news fetch exceeds PER_CALL_TIMEOUT  [P2 — CONFIRMED, 2026-08-15]
 - **Observed:** `make smoke` failed with `get_news_summaries: RAISED TimeoutError`, blocking the deploy
   per protocol. Re-run immediately after: **PASSED**, `get_news_summaries 4847 chars`.

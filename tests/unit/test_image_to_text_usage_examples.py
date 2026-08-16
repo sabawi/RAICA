@@ -33,6 +33,11 @@ async def test_file_input_processing(tool):
     tmp_path = tmp_file.name
     tmp_file.close()
 
+    # SI-056: pin the transport this test exercises. These tests patch the OLLAMA path, so
+    # they only make sense against an ollama-type lane. They previously passed BY ACCIDENT —
+    # coupled to whatever config/llm_config.yaml happened to say — and broke the moment the
+    # vision lane moved to DeepInfra. A unit test must not depend on production config.
+    tool.vision_config['type'] = 'ollama'
     with patch.object(tool, '_process_with_ollama') as mock_process:
         mock_process.return_value = {'success': True, 'description': 'A red square'}
         result = await tool.execute(image=tmp_path)
@@ -47,6 +52,11 @@ async def test_base64_input_processing(tool):
     b64_data = base64.b64encode(test_image).decode('utf-8')
     b64_image = f"data:image/jpeg;base64,{b64_data}"
 
+    # SI-056: pin the transport this test exercises. These tests patch the OLLAMA path, so
+    # they only make sense against an ollama-type lane. They previously passed BY ACCIDENT —
+    # coupled to whatever config/llm_config.yaml happened to say — and broke the moment the
+    # vision lane moved to DeepInfra. A unit test must not depend on production config.
+    tool.vision_config['type'] = 'ollama'
     with patch.object(tool, '_process_with_ollama') as mock_process:
         mock_process.return_value = {'success': True, 'description': 'A blue square'}
         result = await tool.execute(image=b64_image)
