@@ -346,8 +346,34 @@ def extract_column(text: str, column: str, numeric: bool = True):
     return values
 
 
-def _is_reference(value: Any) -> bool:
-    return isinstance(value, dict) and "from" in value and "column" in value
+def _is_reference(value: Any, index: Optional[Dict[str, str]] = None) -> bool:
+    """Is this dict a data reference?
+
+    SI-053 — a `compute` output has no columns (SI-047), so `{"from": "compute#1"}` with no
+    `column` is a shape the model can plausibly emit. Requiring BOTH keys meant such a dict
+    was not recognised at all: it passed through untouched, reached the tool raw, and numpy
+    rendered it as `array(['from'])` — the SI-050 signature, where `<U4` is len('from').
+
+    The obvious fix is wrong. Treating a bare `from` as a reference would also capture
+    ordinary arguments that happen to use that word:
+
+        {"from": "2026-01-01", "to": "2026-06-30"}      <- a date range, NOT a reference
+
+    So the test is INDEX-AWARE: a column-less dict is a reference only when its `from` names
+    an id that actually exists in this batch's reference index. `compute#1` does; `2026-01-01`
+    does not. Precise in both directions, and it needs no keyword list.
+
+    Without an index (callers that only ask "does this LOOK like a reference") the strict
+    two-key form is kept, so nothing silently changes shape for them.
+    """
+    if not isinstance(value, dict) or "from" not in value:
+        return False
+    if "column" in value:
+        return True                       # the long-standing contract, unchanged
+    if not index:
+        return False
+    refs = value["from"] if isinstance(value["from"], list) else [value["from"]]
+    return bool(refs) and all(isinstance(r, str) and r in index for r in refs)
 
 
 def resolve_references(value: Any, index: Dict[str, str], numeric: bool = True):
@@ -356,7 +382,7 @@ def resolve_references(value: Any, index: Dict[str, str], numeric: bool = True):
     Same shape as `_dr_inject_research_output`: no field-name special-casing — the model marks which
     argument carries the data, RAICA substitutes it wherever that mark appears.
     """
-    if _is_reference(value):
+    if _is_reference(value, index):
         raw_from = value.get("from")
         # `from` may name SEVERAL outputs, concatenated in the order given. Without this the model
         # can only address one file at a time: asked for two years of Treasury rates it computed

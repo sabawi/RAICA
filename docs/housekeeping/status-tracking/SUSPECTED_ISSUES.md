@@ -179,7 +179,13 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **To clear:** an E2E run where the answer carries a marker whose URL returns an image. Do NOT clear on
   a server-side "chart published" log line — that is what looked like success here.
 
-### SI-053 — A column-less reference `{"from": "compute#1"}` is not recognised and degrades to the SI-050 signature  [P3 — SUSPECTED, trigger unproven, 2026-08-15]
+### ~~SI-053~~ — Column-less reference not recognised  [RESOLVED v1.0.0.294, 2026-08-16]
+- **Fixed with the index-aware rule this entry itself prescribed** — NOT by widening the predicate.
+  A column-less dict is a reference only when its `from` names an id present in the batch index:
+  `{"from": "compute#1"}` resolves; `{"from": "2026-01-01", "to": "2026-06-30"}` is left alone.
+- **Verified:** 14 tests; the resolution test fails on pre-fix code, and the date-range guard passes
+  both ways by design (it is the over-widening check). Resolver suites unaffected: 45 passed.
+- ~~Original entry below~~ [P3, 2026-08-15]
 - **Found by:** the SI-050 generalization matrix (`tests/unit/test_corrected_tools_generalization.py`),
   not by an E2E run — three runs of one prompt could never have surfaced it.
 - **Mechanism (confirmed by test):** `utils/tool_output_reference.py:349` —

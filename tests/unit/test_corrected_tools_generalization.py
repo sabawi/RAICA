@@ -117,22 +117,40 @@ def test_integer_counts_stay_usable():
     assert [int(v) for v in args["series"]] == [74, 62, 17, 32, 11]
 
 
-def test_a_column_less_reference_is_not_silently_executed_as_key_names():
-    """SI-053 — documents a REAL latent trap, asserted as it currently behaves.
+def test_a_column_less_reference_resolves():
+    """SI-053 — a compute output has no columns, so `{"from": "compute#1"}` must resolve.
 
-    `{"from": "compute#1"}` (no column) is not recognised by `_is_reference`, so it passes
-    through raw and numpy turns it into `array(['from'])` — the SI-050 signature again, for a
-    shape the model could plausibly emit against a compute output that genuinely has no columns.
-    Not changed here: making a bare `from` a reference would also capture legitimate arguments
-    like `{"from": "2026-01-01", "to": "2026-06-30"}`. Needs the index-aware disambiguation
-    described in SI-053, not a widened predicate.
+    Requiring BOTH `from` and `column` meant this shape was not recognised at all: it reached
+    the tool raw and numpy rendered it as `array(['from'])` — the SI-050 signature, where
+    `<U4` is len('from'). Recognition is now INDEX-AWARE: a column-less dict is a reference
+    only when its `from` names an id that exists in this batch.
     """
     args = _run("plot_data", {"series": {"from": "compute#1"}},
                 [("compute", _compute_out("counts: [1, 2, 3]", dtype="int64"))])
-    assert args["series"] == {"from": "compute#1"}, (
-        "behaviour changed — if column-less references now resolve, delete this test and "
-        "close SI-053; if they resolve PARTIALLY, that is worse than either state"
-    )
+    _no_raw_reference(args)
+    assert [int(v) for v in args["series"]] == [1, 2, 3], (
+        f"a column-less reference to a compute output did not resolve: {args['series']!r}")
+
+
+def test_a_date_range_using_the_word_from_is_NOT_treated_as_a_reference():
+    """THE reason the predicate is index-aware rather than merely widened.
+
+    `{"from": "2026-01-01", "to": "2026-06-30"}` is an ordinary argument that happens to use
+    the word `from`. Treating a bare `from` as a reference would substitute over it and
+    destroy the call. "2026-01-01" is not an id in the index, so it stays untouched.
+    """
+    args = _run("lookup_website", {"url": "https://x.test/api",
+                                   "params": {"from": "2026-01-01", "to": "2026-06-30"}},
+                [("compute", _compute_out("counts: [1, 2, 3]", dtype="int64"))])
+    assert args["params"] == {"from": "2026-01-01", "to": "2026-06-30"}, (
+        f"a date range was mangled into a data reference: {args['params']!r}")
+
+
+def test_an_unknown_column_less_id_is_left_alone():
+    """An id that names nothing must not become a partially-substituted argument."""
+    args = _run("plot_data", {"series": {"from": "nosuch#9"}},
+                [("compute", _compute_out("counts: [1, 2, 3]", dtype="int64"))])
+    assert args["series"] == {"from": "nosuch#9"}
 
 
 # --------------------------------------------------------------------------- column types
