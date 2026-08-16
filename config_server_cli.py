@@ -1008,7 +1008,7 @@ class ModelAliasManager:
         if not base:
             return None
         api_key = self._expand_secret(block.get('api_key'))
-        request = urllib.request.Request(base.rstrip('/') + '/models')
+        request = urllib.request.Request(self._openai_compat_base(base) + '/models')
         if api_key and not api_key.startswith('${'):
             request.add_header('Authorization', f'Bearer {api_key}')
         try:
@@ -1020,6 +1020,54 @@ class ModelAliasManager:
         if not isinstance(items, list):
             return None
         return [m.get('id') for m in items if isinstance(m, dict) and m.get('id')]
+
+    # Explicit, ADMIN-SANCTIONED cross-provider substitutions, consulted ONLY when no exact
+    # equivalent exists on the target. Keyed by (canonical identity, target provider).
+    #
+    # The converter's default stance is "same model or nothing" — silently swapping a model
+    # changes the system under test. This table is the escape hatch for the genuine case
+    # where a provider simply does not carry a model, and every entry here is a DELIBERATE
+    # substitution that is printed as MAPPED (never as `same`), so it can never be mistaken
+    # for an identity conversion.
+    #
+    # Adding an entry is a decision, not a convenience: state WHY, and keep the family
+    # diversity intent intact where a fallback exists to survive one vendor's retirement.
+    _MODEL_MAP = {
+        # OpenRouter carries no Llama-3.2-90B-Vision (checked 2026-08-16: `llama-3.2-90b`
+        # returns zero hits across 413 models). Gemini 2.5 Flash is vision-capable and is a
+        # DIFFERENT family from the Qwen3-VL primary, which preserves the reason the vision
+        # fallback exists: one vendor retiring a model must not take out both lanes.
+        ('llama3290bvisioninstruct', 'openrouter'): 'google/gemini-2.5-flash',
+        # Ollama serves no Llama-3.2-90B-Vision either; kimi-k2.6 is the vision fallback this
+        # repo previously verified on a real test image, and is a different family from the
+        # minimax/qwen primaries.
+        ('llama3290bvisioninstruct', 'ollama'): 'kimi-k2.6:cloud',
+        # Qwen3-VL-235B is not served by Ollama; minimax-m3 is the vision primary this repo
+        # verified there (2026-07-31) by sending an image and confirming genuine OCR.
+        ('qwen3vl235ba22binstruct', 'ollama'): 'minimax-m3:cloud',
+        # Ollama publishes the DATE-PINNED DeepSeek releases only as a rolling tag, so the
+        # -0813 pin has no exact counterpart. This is the same model family and generation,
+        # differing in pinning, which is precisely the kind of difference that must be
+        # VISIBLE (printed as MAPPED) rather than assumed.
+        ('deepseekv4pro0813', 'ollama'): 'deepseek-v4-pro:cloud',
+    }
+
+    @staticmethod
+    def _openai_compat_base(base):
+        """Normalise a provider base_url to its OpenAI-compatible root.
+
+        Ollama's configured base is the NATIVE root (:11434); its OpenAI-compatible surface
+        lives one level down at /v1. Without this, `{base}/models` and
+        `{base}/chat/completions` both 404 — which made `convert --to ollama` fail outright
+        with "Cannot reach the ollama model catalog", and would have made every Ollama model
+        look UNSERVED to the invocation check. Verified 2026-08-16:
+            :11434/models    -> 404
+            :11434/v1/models -> 200 (40 models)
+        """
+        base = (base or '').rstrip('/')
+        if base and '11434' in base and not base.endswith('/v1'):
+            return base + '/v1'
+        return base
 
     def _provider_transport(self, provider, llm_config):
         """(base_url, api_key) for a provider block, or (None, None)."""
@@ -1047,7 +1095,7 @@ class ModelAliasManager:
         base, api_key = self._provider_transport(provider, llm_config)
         if not base:
             return False
-        url = base.rstrip('/')
+        url = self._openai_compat_base(base)
         if not url.endswith('/chat/completions'):
             url = url + '/chat/completions'
         payload = {'model': model_id, 'max_tokens': 1,
@@ -1090,15 +1138,24 @@ class ModelAliasManager:
             if lane['inert']:
                 rows.append(dict(lane, new=None, status='skip'))
                 continue
-            match = by_key.get(self._canonical_model(lane['model']))
+            key = self._canonical_model(lane['model'])
+            match = by_key.get(key)
+            status = 'same'
             if not match and self._model_answers_on(target, lane['model'], llm_config):
                 # The listing did not have it, but the endpoint SERVES it. Believe the
                 # endpoint. Without this, a lane already correct for the target was
                 # reported "NOT SERVED" and blocked the whole conversion — observed on
                 # meta-llama/Llama-3.2-90B-Vision-Instruct, which answers normally.
                 match = lane['model']
+            if not match:
+                # Last resort: an explicit, documented cross-provider substitution. Marked
+                # 'mapped' — never 'same' — so a deliberate model CHANGE is always visible
+                # in the table and can never be mistaken for an identity conversion.
+                mapped = self._MODEL_MAP.get((key, target))
+                if mapped:
+                    match, status = mapped, 'mapped'
             rows.append(dict(lane, new=match,
-                             status='same' if match else 'unresolved'))
+                             status=status if match else 'unresolved'))
         return rows, True
 
     @staticmethod
@@ -1115,6 +1172,12 @@ class ModelAliasManager:
             if row['status'] == 'same':
                 mark = f"{Colors.OKGREEN}same{Colors.ENDC}"
                 new = row['new']
+            elif row['status'] == 'mapped':
+                # A DELIBERATE model change from _MODEL_MAP. Called out in warning colour
+                # so it can never be skimmed as an identity conversion — the whole point of
+                # the map is that the substitution is visible and owned.
+                mark = f"{Colors.WARNING}MAPPED — model CHANGES{Colors.ENDC}"
+                new = row['new']
             else:
                 mark = f"{Colors.FAIL}NOT SERVED{Colors.ENDC}"
                 new = '-- ADMIN DECISION REQUIRED --'
@@ -1125,7 +1188,7 @@ class ModelAliasManager:
         # the old provider is how a stale slug gets re-adopted later — but it MUST be
         # disclosed here, or the table under-reports what will change and the
         # confirmation is worthless.
-        converting = {r['model'] for r in active if r['status'] == 'same'}
+        converting = {r['model'] for r in active if r['status'] in ('same', 'mapped')}
         inert_hit = [r for r in rows
                      if r['status'] == 'skip' and r['model'] in converting]
         inert_untouched = [r for r in rows
@@ -1416,6 +1479,41 @@ class ModelAliasManager:
             in_definition_block = (bool(segments & self._INERT_SEGMENTS)
                                    or not in_converting_lane(current_path))
 
+            # A line ALREADY carrying the tag must still be re-convertible.
+            #
+            # This used to `continue` here, which made every converted line convert-once-
+            # only: the SECOND switch skipped everything the first had touched. A full
+            # circle exposed it immediately — lanes converted per switch decayed
+            # 9 -> 2 -> 4 -> 0 -> 0, leaving the config permanently half on each provider
+            # (e.g. primary on Ollama while deep_research/convergence/code_generation kept
+            # DeepInfra slugs and inherited the Ollama endpoint — SI-057 all over again).
+            #
+            # Re-converting preserves the ORIGINAL value in `(was ...)`, never the
+            # intermediate one, so `--revert` always returns to where the config started
+            # rather than to whichever provider happened to be in the middle of the loop.
+            tagged = re.match(
+                r'^(\s*[a-z_]*model:\s*)(\S+)\s+' + re.escape(self._CONVERT_TAG) +
+                r' -> (\S+) \(was (.+?)\)(.*)$', line)
+            if tagged:
+                head, current, _prev_target, original, tail = tagged.groups()
+                new = by_old.get(current)
+                if new and new != current:
+                    lines[index] = (f"{head}{new}   {self._CONVERT_TAG} -> {target} "
+                                    f"(was {original}){tail}")
+                    written += 1
+                continue
+            # Transport keys (type / base_url / api_key) carry the same tag and were skipped
+            # by the same bug, which is how a config ended up with the model moved but the
+            # endpoint left behind. Strip the tag, let the normal matchers below operate on
+            # the clean line, and re-attach the ORIGINAL value when rewriting.
+            preserved_original = None
+            transport_tagged = re.match(
+                r'^(\s*(?:type|base_url|api_key):\s*)(\S+)\s+' +
+                re.escape(self._CONVERT_TAG) + r' -> (\S+) \(was (.+?)\)(.*)$', line)
+            if transport_tagged:
+                head, current, _prev, preserved_original, tail = transport_tagged.groups()
+                line = f"{head}{current}{tail}"
+
             if self._CONVERT_TAG in line:
                 continue
 
@@ -1435,7 +1533,8 @@ class ModelAliasManager:
                     and m_type.group(2) in self._KNOWN_PROVIDERS \
                     and m_type.group(2) != target:
                 lines[index] = (f"{m_type.group(1)}{target}   {self._CONVERT_TAG} -> "
-                                f"{target} (was {m_type.group(2)}){m_type.group(3)}")
+                                f"{target} (was {preserved_original or m_type.group(2)})"
+                                f"{m_type.group(3)}")
                 written += 1
                 continue
 
@@ -1446,7 +1545,8 @@ class ModelAliasManager:
                     and not m_url.group(2).endswith('/api/tags'):
                 lines[index] = (f"{m_url.group(1)}{tgt_block['base_url']}   "
                                 f"{self._CONVERT_TAG} -> {target} "
-                                f"(was {m_url.group(2)}){m_url.group(3)}")
+                                f"(was {preserved_original or m_url.group(2)})"
+                                f"{m_url.group(3)}")
                 written += 1
                 converted_urls.append(index)     # SI-017: this block may need an api_key
                 continue
@@ -1456,7 +1556,8 @@ class ModelAliasManager:
                     and m_key.group(2) != tgt_block['api_key']:
                 lines[index] = (f"{m_key.group(1)}{tgt_block['api_key']}   "
                                 f"{self._CONVERT_TAG} -> {target} "
-                                f"(was {m_key.group(2)}){m_key.group(3)}")
+                                f"(was {preserved_original or m_key.group(2)})"
+                                f"{m_key.group(3)}")
                 written += 1
                 continue
 

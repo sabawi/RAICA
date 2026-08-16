@@ -11,6 +11,28 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### ~~SI-058~~ — The provider converter was SINGLE-USE: a converted line could never convert again  [RESOLVED v1.0.0.290, 2026-08-16]
+- **Found by a user-requested full-circle test** (Ollama → DeepInfra → OpenRouter → Ollama). A single
+  forward conversion always looked perfect; only a round trip exposed it.
+- **Mechanism:** `_write_conversion` did `if self._CONVERT_TAG in line: continue`, so every line it had
+  ever tagged was skipped by all later switches. Lanes converted per arm decayed **9 → 2 → 4 → 0 → 0**,
+  leaving the config permanently half on each provider — `primary` on Ollama while `deep_research`,
+  `convergence` and `code_generation` kept DeepInfra slugs and inherited the Ollama endpoint.
+  **The tool built to prevent SI-057 was re-creating it.**
+- **Also fixed:** the Ollama catalog was unreachable (`{base}/models` 404s; the OpenAI-compatible
+  listing is `{base}/v1/models`), so `convert --to ollama` failed outright and every Ollama model
+  would have looked UNSERVED to the invocation check.
+- **Also added:** `_MODEL_MAP` for explicit cross-provider substitutions where no exact equivalent
+  exists, printed as `MAPPED — model CHANGES` so a deliberate change is never mistaken for identity.
+- **Verified:** circle re-run with **0 consistency problems on every arm**; DeepInfra **ALL 11 LANES
+  LIVE** twice. Remaining live-lane failures are external and expected: Ollama `429 weekly usage
+  limit`, OpenRouter `402 Insufficient credits`.
+- **KNOWN LIMITATION (open):** round-trips through a MAPPED lane are LOSSY — A→B→A does not restore
+  A's model (primary lost its `-0813` pin; vision came back as MiniMax-M3/Kimi-K2.6). The original is
+  preserved in each line's `(was ...)` tag, so `convert --revert` recovers it. Config was restored to
+  the intended baseline after the test.
+
+
 ### ~~SI-057~~ — `doctor` gave a clean bill of health to SIX 404-ing lanes  [RESOLVED v1.0.0.289, 2026-08-16]
 - **Found because the user asked why the provider switch had not been done with the configurator.**
   It had not been used at all — the migration was hand-edited, so lanes were converted piecemeal.
