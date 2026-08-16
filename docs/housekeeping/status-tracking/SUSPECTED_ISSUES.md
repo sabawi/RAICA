@@ -11,6 +11,29 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### ~~SI-057~~ — `doctor` gave a clean bill of health to SIX 404-ing lanes  [RESOLVED v1.0.0.289, 2026-08-16]
+- **Found because the user asked why the provider switch had not been done with the configurator.**
+  It had not been used at all — the migration was hand-edited, so lanes were converted piecemeal.
+- **Six ACTIVE lanes were dead:** `deep_research.engine.model` / `.heavy_model`,
+  `convergence.shadow_classifier`, `convergence.intent_classifier`, `code_generation.selected_model`
+  / `.classification_model` — all Ollama `name:cloud` slugs INHERITING the DeepInfra endpoint.
+  Verified: `deepseek-v4-flash:cloud` → HTTP 404. Deep Research, the authoritative intent
+  classifier and code generation were all non-functional.
+- **Why nothing saw it:** `_ENDPOINT_MODEL_PREFIXES` had no `api.deepinfra.com` row, so a DeepInfra
+  endpoint matched no rule, fell past the Ollama-only branch and returned "fine". `doctor` printed
+  **"✓ Every active lane's model matches its endpoint."** A false clean bill of health is worse than
+  no check: it is the reason a paid 40-minute benchmark was run against a broken config.
+- **Fixed:** provider-agnostic invariant (Ollama `name:tag` vs remote `vendor/model`) so a NEW
+  provider is covered on the day it is added; `convert` now INVOKES on a catalog miss instead of
+  trusting a `/models` listing; a single-file live lane suite calls EVERY lane with a real prompt;
+  and that suite plus a consistency check now run MANDATORILY after every `convert` and `--revert`.
+- **Verified:** real conversion → 14 lanes converted, **ALL 11 LANES LIVE** in ~11s. Falsified by
+  injecting a left-behind lane: reports `✗ MODEL/ENDPOINT MISMATCH` + `LANE SUITE FAILED — 1/11` →
+  `FAILURE`, exit 1; exit 0 when healthy. Tier-0 10/10, unit 552 passed.
+- **Standing rule:** provider changes are made with
+  `./config_server_cli.py convert --to <provider> --yes` — never by editing llm_config.yaml.
+
+
 ### ~~SI-056~~ — Ollama→DeepInfra migration left two lanes behind  [RESOLVED v1.0.0.288, 2026-08-16]
 - **Fixed:** arbitrator repointed to DeepInfra; vision moved to `Qwen/Qwen3-VL-235B-A22B-Instruct` +
   `meta-llama/Llama-3.2-90B-Vision-Instruct` (both verified BY INVOCATION on a real test image);

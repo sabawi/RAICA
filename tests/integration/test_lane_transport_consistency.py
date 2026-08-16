@@ -38,23 +38,26 @@ from utils.config_loader import config_loader  # noqa: E402
 
 
 def _lanes():
-    """(lane_name, model, base_url) for every configured lane that names a model."""
-    cfg = config_loader.load_config()
-    out = []
-    for lane, node in (cfg.get("llm") or {}).items():
-        if isinstance(node, dict) and isinstance(node.get("config"), dict):
-            c = node["config"]
-            if c.get("model"):
-                out.append((f"llm.{lane}", c["model"], c.get("base_url") or ""))
-    for lane in ("arbitrator", "vision"):
-        node = cfg.get(lane)
-        if isinstance(node, dict) and isinstance(node.get("config"), dict):
-            c = node["config"]
-            if c.get("model"):
-                out.append((lane, c["model"], c.get("base_url") or ""))
-            if c.get("fallback_model"):
-                out.append((f"{lane}.fallback", c["fallback_model"], c.get("base_url") or ""))
-    return out
+    """(lane_name, model, resolved_base_url) for EVERY active lane.
+
+    SI-057 — this used to walk `llm.*`, `arbitrator` and `vision` by hand and read each
+    block's OWN base_url. That inventory missed every lane which INHERITS the primary
+    endpoint, which is exactly where six broken lanes were hiding:
+      deep_research.engine.model/.heavy_model, convergence.shadow_classifier,
+      convergence.intent_classifier, code_generation.selected_model/.classification_model
+    All six carried Ollama `name:cloud` slugs while resolving to DeepInfra, and all six
+    returned HTTP 404 on every call.
+
+    Now it reuses the configurator's own discovery and endpoint resolution, so this gate,
+    `lanes`, `doctor` and `convert` share ONE inventory and cannot disagree about what a
+    lane is or where it points.
+    """
+    from config_server_cli import ModelAliasManager
+    manager = ModelAliasManager()
+    cfg = manager._load_llm_config()
+    primary = manager._primary_endpoint(cfg)
+    return [(lane["path"], lane["model"], lane["own_endpoint"] or primary or "")
+            for lane in manager._discover_lanes(cfg) if not lane["inert"]]
 
 
 def _is_local_ollama(base_url: str) -> bool:
@@ -85,8 +88,7 @@ def test_every_remote_lane_carries_an_api_key():
     cfg = config_loader.load_config()
     missing = []
     for lane in ("arbitrator", "vision"):
-        node = cfg.get(lane) or {}
-        c = node.get("config") or {}
+        c = (cfg.get(lane) or {}).get("config") or {}
         b = c.get("base_url") or ""
         if b and not _is_local_ollama(b) and not c.get("api_key"):
             missing.append(lane)

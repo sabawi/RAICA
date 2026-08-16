@@ -93,7 +93,7 @@ llm:
     # deepseek-v4-pro:cloud -> deepseek-ai/DeepSeek-V4-Pro-0813 (0813 is the build
     # Ollama rolled out, so this is the identical weights, not an analogue).
     # Revert: type: ollama, model: deepseek-v4-pro:cloud, drop api_key/base_url.
-    type: openai
+    type: deepinfra   # CONVERTED -> deepinfra (was openai)
     config:
       model: deepseek-ai/DeepSeek-V4-Pro-0813
       api_key: ${DEEPINFRA_API_KEY}
@@ -105,7 +105,7 @@ llm:
       stream: true
       think: false  # Disable thinking/reasoning output (saves tokens, faster responses)
   tool_calling:
-    type: openai
+    type: deepinfra   # CONVERTED -> deepinfra (was openai)
     config:
       # LOCAL DEEPINFRA TRIAL — glm-5.2:cloud -> zai-org/GLM-5.2, SAME model.
       # Revert: model: glm-5.2:cloud, api_key: "ollama", base_url: http://127.0.0.1:11434/v1
@@ -301,7 +301,7 @@ security:
     burst_limit: 10
 arbitrator:
   enabled: true
-  type: openai
+  type: deepinfra   # CONVERTED -> deepinfra (was openai)
   config:
     # LOCAL DEEPINFRA TRIAL — same model. Revert: glm-5.2:cloud + api_key "ollama".
     model: zai-org/GLM-5.2
@@ -637,8 +637,8 @@ deep_research:
       evidence_token_budget: 87000
       # Model that EXTRACTS + VERIFIES claims. null = primary (gemma4:31b rubber-stamped).
       verify_model: null
-    model: deepseek-v4-flash:cloud           # LIGHT — default for all small DR calls
-    heavy_model: deepseek-v4-pro:cloud       # HEAVY — large-payload calls (e.g. synthesis)
+    model: deepseek-ai/DeepSeek-V4-Flash   # CONVERTED -> deepinfra (was deepseek-v4-flash:cloud)           # LIGHT — default for all small DR calls
+    heavy_model: deepseek-ai/DeepSeek-V4-Pro   # CONVERTED -> deepinfra (was deepseek-v4-pro:cloud)       # HEAVY — large-payload calls (e.g. synthesis)
     heavy_threshold_chars: 20000             # prompt chars at/above which -> heavy_model (pro). 20000 =
                                              # highest-quality DR baseline: every real synthesis (~30K+) and
                                              # verify (100K+) routes to deepseek-v4-pro (more professional,
@@ -880,7 +880,7 @@ convergence:
   shadow_classifier:
     enabled: false              # master switch — turn on to collect divergence data
     sample_rate: 1.0            # fraction of eligible requests to shadow (0.0–1.0) to bound cost
-    model: deepseek-v4-flash:cloud   # light/cheap model for the classification call (null = primary)
+    model: deepseek-ai/DeepSeek-V4-Flash   # CONVERTED -> deepinfra (was deepseek-v4-flash:cloud)   # light/cheap model for the classification call (null = primary)
     max_prompt_chars: 8000      # skip shadowing requests whose prompt exceeds this (cost guard)
     max_tokens: 800             # output cap for the classifier JSON
     timeout_seconds: 60         # hard timeout for the background shadow call
@@ -897,7 +897,7 @@ convergence:
   # tool picks (e.g. image/chart) await Phase 4 generic dispatch.
   intent_classifier:
     mode: llm                        # legacy | llm  [VALIDATION on dev: prompt hardened vs system-directive bias, 2026-06-06]
-    model: deepseek-v4-flash:cloud   # classifier model (null = primary)
+    model: deepseek-ai/DeepSeek-V4-Flash   # CONVERTED -> deepinfra (was deepseek-v4-flash:cloud)   # classifier model (null = primary)
     max_tokens: 800
     timeout_seconds: 30              # exceeded → legacy fallback
     max_prompt_chars: 12000          # over this → legacy fallback (latency/cost guard)
@@ -906,12 +906,12 @@ code_generation:
   # ============================================================
   # MODEL SELECTION - Change this ONE value to switch models
   # ============================================================
-  selected_model: deepseek-v4-pro:cloud
+  selected_model: deepseek-ai/DeepSeek-V4-Pro   # CONVERTED -> deepinfra (was deepseek-v4-pro:cloud)
 
   # Classification model override (for tasks requiring strict JSON output)
   # Kimi is great at code generation but returns thinking tags instead of pure JSON
   # Use a model that reliably returns JSON for classification/orchestration tasks
-  classification_model: gpt-oss:120b-cloud  # qwen3-next requires reasoning_effort param; qwen3-coder:480b-cloud sometimes 503
+  classification_model: openai/gpt-oss-120b   # CONVERTED -> deepinfra (was gpt-oss:120b-cloud)  # qwen3-next requires reasoning_effort param; qwen3-coder:480b-cloud sometimes 503
 
   # Available model presets (friendly name → provider + model)
   model_presets:
@@ -950,13 +950,13 @@ code_generation:
       model: gpt-oss:20b-cloud
     gpt-oss-120b:
       provider: ollama
-      model: gpt-oss:120b-cloud
+      model: openai/gpt-oss-120b   # CONVERTED -> deepinfra (was gpt-oss:120b-cloud)
     glm-4.7:
       provider: ollama
       model: glm-5.2:cloud            # was glm-4.7:cloud — Ollama retired glm-4.7/glm-5 (2026-07) → glm-5.2
     deepseek-v3:
       provider: ollama
-      model: deepseek-v4-flash:cloud  # was deepseek-v3.1:671b-cloud — retired (2026-07) → deepseek-v4-flash
+      model: deepseek-ai/DeepSeek-V4-Flash   # CONVERTED -> deepinfra (was deepseek-v4-flash:cloud)  # was deepseek-v3.1:671b-cloud — retired (2026-07) → deepseek-v4-flash
     qwen-coder:
       provider: ollama
       model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07) → qwen3.5:397b
@@ -971,7 +971,7 @@ code_generation:
     order:
       # Best models first - automatic fallback chain
       - provider: ollama
-        model: gpt-oss:120b-cloud
+        model: openai/gpt-oss-120b   # CONVERTED -> deepinfra (was gpt-oss:120b-cloud)
       - provider: ollama
         model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07)
       - provider: openai
@@ -983,7 +983,7 @@ code_generation:
       - provider: gemini
         model: gemini-flash-latest      # was gemini-2.0-flash — retired 404 (2026-08)
       - provider: ollama
-        model: deepseek-v4-flash:cloud  # was deepseek-v3.1:671b-cloud — retired (2026-07)
+        model: deepseek-ai/DeepSeek-V4-Flash   # CONVERTED -> deepinfra (was deepseek-v4-flash:cloud)  # was deepseek-v3.1:671b-cloud — retired (2026-07)
       - provider: ollama
         model: qwen3.5:397b-cloud       # was qwen3-coder:480b-cloud — retired (2026-07)
 
@@ -1041,7 +1041,7 @@ vision:
   # rationale: one vendor retirement cannot take out both.
   #   revert: type: ollama + model: minimax-m3:cloud + fallback_model: kimi-k2.6:cloud
   #           + base_url: http://127.0.0.1:11434 (and drop api_key)
-  type: openai
+  type: deepinfra   # CONVERTED -> deepinfra (was openai)
   config:
     model: Qwen/Qwen3-VL-235B-A22B-Instruct   # DeepInfra; verified by invocation 2026-08-16 (named the colour of a test image). Historical note follows: # 2026-07-31: swapped in from kimi-k2.7-code:cloud after image input failed on both the then-primary and the then-fallback (gemma4:31b-cloud). minimax-m3 verified by sending a test image (red circle, blue square, the word SEVEN) and confirming the reply named all three, including reading the TEXT — i.e. genuine OCR, not a guess from the prompt. ⚠️ CORRECTION 2026-08-05: this comment previously claimed Ollama "does NOT serve" kimi-k2.7-code:cloud and that gemma4:31b-cloud was "unserved". BOTH ARE FALSE — re-probed by INVOKING them and both answer normally (gemma4:31b-cloud is vision-capable too). That claim came from reading /api/tags, which only lists models PULLED LOCALLY and is evidence in NEITHER direction: a never-pulled cloud model is absent yet works, while RETIRED qwen3-vl:235b-cloud stays LISTED and returns HTTP 410. So the recorded cause of the 2026-07-31 vision break is WRONG and the real cause is UNKNOWN (see SI-005) — the swap itself stands only because minimax-m3/kimi-k2.6 were verified with a real image. Establish availability ONLY by invoking (`config_server_cli.py doctor --probe`), never by a listing. Both vision models must be CLOUD: the live server has NO GPU, so a local vision model (e.g. qwen2.5vl:3b) thrashes the CPU.
     timeout: 1800

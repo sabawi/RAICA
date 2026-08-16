@@ -708,10 +708,29 @@ class ModelAliasManager:
                     return f"model does not look like a {prefixes[0]}* model for this endpoint"
                 return None
 
+        is_ollama = ('11434' in endpoint) or ('localhost:11434' in endpoint)
+
         # Ollama addresses models as name:tag; a bare cloud-style name here is
         # usually a lane whose endpoint moved but whose model name did not.
-        if '11434' in endpoint and ':' not in model:
+        if is_ollama and ':' not in model:
             return "Ollama endpoint but model has no :tag"
+
+        # SI-057 — THE MIRROR CASE, and the one that shipped broken. This table had no
+        # entry for api.deepinfra.com, so a DeepInfra endpoint matched no host prefix,
+        # fell through the Ollama branch (which only fires for 11434) and returned "fine".
+        # Six ACTIVE lanes therefore passed `doctor` with a clean bill of health while
+        # every call 404'd:
+        #   deep_research.engine.model / .heavy_model, convergence.shadow_classifier,
+        #   convergence.intent_classifier, code_generation.selected_model /
+        #   .classification_model  — all `name:cloud` Ollama slugs INHERITING a DeepInfra
+        # endpoint. Verified: `deepseek-v4-flash:cloud` -> HTTP 404 "does not exist".
+        # Stated as an invariant rather than a per-vendor prefix so a NEW provider is
+        # covered the day it is added, not the day someone remembers to add a row:
+        #   Ollama  -> "name:tag"      (a colon, never a slash)
+        #   remote  -> "vendor/model"  (a slash) or a bare vendor name
+        if endpoint and not is_ollama and ':' in model and '/' not in model:
+            return ("Ollama-style name:tag model on a REMOTE endpoint — this endpoint "
+                    "cannot serve it (a lane whose endpoint moved but whose model did not)")
         return None
 
     # Endpoint host -> the env var whose credentials that host accepts. Consulted
@@ -1002,6 +1021,54 @@ class ModelAliasManager:
             return None
         return [m.get('id') for m in items if isinstance(m, dict) and m.get('id')]
 
+    def _provider_transport(self, provider, llm_config):
+        """(base_url, api_key) for a provider block, or (None, None)."""
+        providers = ((llm_config.get('llm') or {}).get('providers')
+                     or llm_config.get('providers') or {})
+        block = providers.get(provider) or {}
+        base = block.get('base_url') or PROVIDER_DEFAULTS.get(provider, {}).get('base_url')
+        return base, self._expand_secret(block.get('api_key'))
+
+    def _model_answers_on(self, provider, model_id, llm_config):
+        """Does `provider` actually SERVE `model_id`? Established by INVOKING it.
+
+        A `/models` listing is evidence in NEITHER direction — this project has been bitten
+        both ways and recorded it in config/llm_config.yaml (2026-08-05 CORRECTION):
+          * a cloud model never pulled locally is ABSENT from a listing yet answers fine;
+          * a RETIRED model stays LISTED and returns HTTP 410.
+        So a catalog miss is a QUESTION, not a verdict. This asks the endpoint itself with a
+        1-token generation. Used only on the catalog-miss path, so the cost is one request
+        per otherwise-unresolvable lane.
+        """
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        base, api_key = self._provider_transport(provider, llm_config)
+        if not base:
+            return False
+        url = base.rstrip('/')
+        if not url.endswith('/chat/completions'):
+            url = url + '/chat/completions'
+        payload = {'model': model_id, 'max_tokens': 1,
+                   'messages': [{'role': 'user', 'content': 'hi'}]}
+        request = urllib.request.Request(
+            url, data=_json.dumps(payload).encode(),
+            headers={'Content-Type': 'application/json'})
+        if api_key and not api_key.startswith('${'):
+            request.add_header('Authorization', f'Bearer {api_key}')
+        try:
+            with urllib.request.urlopen(request, timeout=60):
+                return True
+        except urllib.error.HTTPError as exc:
+            # 404/410 = genuinely not served here. Anything else (402 balance, 429 rate
+            # limit, 400 param quibble) means the slug EXISTS and the call was rejected for
+            # an unrelated reason — treating those as "unserved" is how false negatives got
+            # written into the config before.
+            return exc.code not in (404, 410)
+        except Exception:                                     # noqa: BLE001
+            return False
+
     def _plan_conversion(self, llm_config, target):
         """Resolve every active lane to the SAME model on `target`.
 
@@ -1024,6 +1091,12 @@ class ModelAliasManager:
                 rows.append(dict(lane, new=None, status='skip'))
                 continue
             match = by_key.get(self._canonical_model(lane['model']))
+            if not match and self._model_answers_on(target, lane['model'], llm_config):
+                # The listing did not have it, but the endpoint SERVES it. Believe the
+                # endpoint. Without this, a lane already correct for the target was
+                # reported "NOT SERVED" and blocked the whole conversion — observed on
+                # meta-llama/Llama-3.2-90B-Vision-Instruct, which answers normally.
+                match = lane['model']
             rows.append(dict(lane, new=match,
                              status='same' if match else 'unresolved'))
         return rows, True
@@ -1147,10 +1220,95 @@ class ModelAliasManager:
         written = self._write_conversion(active, target)
         print(f"\n{Colors.OKGREEN}Converted {written} lane(s) to {target}."
               f"{Colors.ENDC}")
-        print(f"Revert with: {Colors.BOLD}./config_server_cli.py convert --revert"
+        return self._post_switch_verification(target)
+
+    # ── MANDATORY post-switch verification ───────────────────────────────────────────────
+    # A conversion is not finished when the YAML is written. It is finished when every lane
+    # has been PROVEN to run on the new provider. Skipping this cost a night of debugging
+    # and a paid 40-minute benchmark against a config where six lanes 404'd on every call,
+    # while `doctor` reported a clean bill of health (SI-056/SI-057).
+    #
+    # Two gates, in order, both mandatory and neither skippable by a flag:
+    #   1. CONSISTENCY — no lane may still resolve to the OLD provider's endpoint, and no
+    #      lane's model may contradict the endpoint it now resolves to.
+    #   2. LIVE LANES  — every lane is CALLED with a real prompt and must return a real,
+    #      valid answer (arithmetic solved / tool_call emitted / JSON parsed / image read).
+    #      Reachability is not enough; a 200 with empty content is a failure here.
+    def _post_switch_verification(self, target):
+        import subprocess
+
+        print(f"\n{Colors.HEADER}{Colors.BOLD}POST-SWITCH VERIFICATION (mandatory)"
               f"{Colors.ENDC}")
-        print("Restart the server for this to take effect.")
-        return 0
+        print("=" * 100)
+
+        # ---- gate 1: nothing left behind on the old provider -----------------------------
+        print(f"\n{Colors.BOLD}1/2  Consistency — is any lane still on the old provider?"
+              f"{Colors.ENDC}")
+        llm_config = self._load_llm_config()
+        lanes = [l for l in self._discover_lanes(llm_config) if not l['inert']]
+        primary_endpoint = self._primary_endpoint(llm_config)
+        target_base, _ = self._provider_transport(target, llm_config)
+        target_host = (target_base or '').split('//')[-1].split('/')[0]
+
+        stragglers, mismatched = [], []
+        for lane in lanes:
+            endpoint = lane['own_endpoint'] or primary_endpoint or ''
+            host = endpoint.split('//')[-1].split('/')[0]
+            if target_host and host and host != target_host:
+                stragglers.append((lane['path'], lane['model'], endpoint))
+            reason = self._lane_mismatch(lane['model'], endpoint)
+            if reason:
+                mismatched.append((lane['path'], lane['model'], endpoint, reason))
+
+        for path, model, endpoint in stragglers:
+            print(f"  {Colors.FAIL}✗ STILL ON OLD PROVIDER{Colors.ENDC} {path}")
+            print(f"      {model}  ->  {endpoint}")
+        for path, model, endpoint, why in mismatched:
+            print(f"  {Colors.FAIL}✗ MODEL/ENDPOINT MISMATCH{Colors.ENDC} {path}")
+            print(f"      {model}  ->  {endpoint}\n      {why}")
+        if not stragglers and not mismatched:
+            print(f"  {Colors.OKGREEN}✓ all {len(lanes)} active lane(s) resolve to "
+                  f"{target}{Colors.ENDC}")
+
+        # ---- gate 2: every lane actually answers ----------------------------------------
+        print(f"\n{Colors.BOLD}2/2  Live lanes — calling every lane with a real prompt"
+              f"{Colors.ENDC}")
+        suite = Path(__file__).parent / 'tests' / 'integration' / 'test_all_lanes_live.py'
+        if not suite.exists():
+            print(f"  {Colors.FAIL}✗ lane suite missing at {suite} — cannot verify"
+                  f"{Colors.ENDC}")
+            return 1
+        # Capture and re-print rather than inheriting stdout: when `convert` is piped or
+        # logged, an inherited child's output can be lost or reordered, and a mandatory
+        # gate whose evidence is invisible is a gate nobody can trust.
+        proc = subprocess.run([sys.executable, str(suite)],
+                              cwd=str(Path(__file__).parent),
+                              capture_output=True, text=True)
+        sys.stdout.write(proc.stdout or '')
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        sys.stdout.flush()
+        lanes_ok = (proc.returncode == 0)
+
+        ok = lanes_ok and not stragglers and not mismatched
+        print("=" * 100)
+        if ok:
+            print(f"{Colors.OKGREEN}{Colors.BOLD}SUCCESS — conversion happened and ALL "
+                  f"{len(lanes)} lanes now run on {target}.{Colors.ENDC}")
+            print("Restart the server for this to take effect.")
+        else:
+            print(f"{Colors.FAIL}{Colors.BOLD}FAILURE — the config was written but "
+                  f"verification did not pass.{Colors.ENDC}")
+            if stragglers:
+                print(f"  {len(stragglers)} lane(s) still point at the OLD provider "
+                      f"(listed above).")
+            if mismatched:
+                print(f"  {len(mismatched)} lane(s) have a model their endpoint cannot serve.")
+            if not lanes_ok:
+                print("  one or more lanes did not return a valid result (see the suite above).")
+            print(f"\n  Revert with: {Colors.BOLD}./config_server_cli.py convert --revert"
+                  f"{Colors.ENDC}")
+        return 0 if ok else 1
 
     _CONVERT_TAG = '# CONVERTED'
     @staticmethod
@@ -1367,8 +1525,21 @@ class ModelAliasManager:
                 lines[index] = f"{m.group(1)}{m.group(3)}{m.group(4)}"
         path.write_text('\n'.join(lines))
         print(f"\n{Colors.OKGREEN}Reverted {len(planned)} lane(s).{Colors.ENDC}")
-        print("Restart the server for this to take effect.")
-        return 0
+        # A REVERT IS A SWITCH. Reverting into a broken state is exactly as damaging as
+        # converting into one, so it earns the identical mandatory verification. The label
+        # is derived from where the lanes now point, since a revert has no explicit target.
+        return self._post_switch_verification(self._current_provider_label())
+
+    def _current_provider_label(self):
+        """Human label for whichever provider the lanes currently resolve to."""
+        llm_config = self._load_llm_config()
+        endpoint = self._primary_endpoint(llm_config) or ''
+        for name, defaults in PROVIDER_DEFAULTS.items():
+            base = defaults.get('base_url') or ''
+            host = base.split('//')[-1].split('/')[0]
+            if host and host in endpoint:
+                return name
+        return 'ollama' if '11434' in endpoint else (endpoint or 'the current provider')
 
     def _probe_model(self, base, model, api_key='', timeout=60):
         """Invoke `model` at `base` with a 1-token generation.
@@ -1675,8 +1846,9 @@ Examples:
     convert_parser.add_argument('--yes', action='store_true',
                                 help='Skip the confirmation prompt')
     convert_parser.add_argument('--no-verify', dest='no_verify', action='store_true',
-                                help='Skip INVOKING each target model (not recommended — '
-                                     'a catalog listing is not evidence it serves)')
+                                help='Skip the PRE-WRITE model probe ONLY (not recommended — '
+                                     'a catalog listing is not evidence it serves). Does NOT '
+                                     'skip the mandatory POST-SWITCH lane verification.')
 
     doctor_parser.add_argument('--aliases', action='store_true',
                                help='Also INVOKE every saved alias\'s model at its endpoint '
