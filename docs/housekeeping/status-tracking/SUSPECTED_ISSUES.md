@@ -99,7 +99,16 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   Repointing a lane is a behaviour change — measure it, do not assume it (PARITY plan §7.1).
 
 
-### SI-055 — Tier-1 benchmark self-throttles its own search egress and reports CODE REGRESSION  [P1 — CONFIRMED, 2026-08-16]
+### ~~SI-055~~ — Tier-1 self-throttled its search egress and reported false CODE REGRESSIONs  [RESOLVED v1.0.0.291, 2026-08-16]
+- **Fixed:** `tests/benchmark/lib/throttle.py` counts 429/captcha responses in the run's own log
+  slice; a degraded run reports the new **INCONCLUSIVE** verdict (exit 2) instead of PASS or
+  REGRESSION, keeps the raw per-metric observations (flagged `unreliable`), shows the evidence, and
+  is REFUSED as a baseline. Threshold 150 derived from the measured distribution (normal 2-17,
+  heavy-but-usable 55-99, the failed run 2,806).
+- **Verified without paid runs:** 6 tests, 3 fail on pre-fix code; the detector flags the real
+  2,806-event archived log and clears every healthy one. A healthy run with the same collapsed
+  metric still reports REGRESSION — the guard is not a blanket excuse.
+- ~~Original entry below~~ [P1 — CONFIRMED, 2026-08-16]
 - **Observed (v1.0.0.287, 00:35-01:15):** `make benchmark-full` returned **SUITE: REGRESSION** with
   `S1 citation_count 0` (base 13), `S1 specific_url_ratio 0` (base 1), `S2 dr_completed False`,
   `attachment_count 0`, `pdf_valid False`, `S3 vision_ran False`, `S4 answer_chars/evidence_items/

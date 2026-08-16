@@ -18,7 +18,13 @@ import os
 import statistics
 
 IMPROVEMENT, PASS, REGRESSION, WARN, INFO = "IMPROVEMENT", "PASS", "REGRESSION", "WARN", "INFO"
-_C = {IMPROVEMENT: "\033[36m", PASS: "\033[32m", REGRESSION: "\033[31m", WARN: "\033[33m", INFO: "\033[2m"}
+# SI-055 — a THIRD suite verdict. A run whose retrieval was rate-limited into the ground cannot
+# tell a code regression from the environment, so it must report neither. PASS would hide a real
+# regression; REGRESSION would block a good deploy and teach people to ignore the suite. The
+# honest answer is that the measurement did not happen.
+INCONCLUSIVE = "INCONCLUSIVE"
+_C = {IMPROVEMENT: "\033[36m", PASS: "\033[32m", REGRESSION: "\033[31m", WARN: "\033[33m",
+      INFO: "\033[2m", INCONCLUSIVE: "\033[35m"}
 _RESET = "\033[0m"
 
 
@@ -91,18 +97,31 @@ def save_baseline(path, metrics, reason, measured_at):
     return data
 
 
-def score_run(metrics, baseline):
-    """Compare a run's metrics to baseline. Returns a scorecard dict."""
+def score_run(metrics, baseline, environment=None):
+    """Compare a run's metrics to baseline. Returns a scorecard dict.
+
+    `environment` (optional): {"degraded": bool, "message": str, "throttle_events": int} from
+    lib/throttle. SI-055 — when the run's retrieval was throttled into the ground, EVERY
+    verdict here is unreliable, so the suite reports INCONCLUSIVE instead of inventing one.
+    The per-metric rows are still rendered (they are evidence) but carry `unreliable: True`.
+    """
     rows = []
     for m in metrics:
         b = baseline.get(key(m["scenario"], m["name"]))
         bval = b["value"] if b else None
         v = verdict_for(m["value"], bval, cls=m["cls"], direction=m["direction"], tolerance=m["tolerance"])
         rows.append({**m, "baseline": bval, "verdict": v})
+    degraded = bool((environment or {}).get("degraded"))
     suite = PASS
     if any(r["verdict"] == REGRESSION for r in rows):
         suite = REGRESSION
-    return {"rows": rows, "suite": suite}
+    if degraded:
+        # Do NOT rewrite the individual verdicts — they are the raw observation. Only the
+        # SUITE conclusion changes, because it is the conclusion that was never earned.
+        suite = INCONCLUSIVE
+        for r in rows:
+            r["unreliable"] = True
+    return {"rows": rows, "suite": suite, "environment": environment or {}}
 
 
 def render(scorecard):
@@ -122,8 +141,15 @@ def render(scorecard):
             bs = "—" if base is None else (f"{base:.3g}" if isinstance(base, float) else str(base))
             lines.append(f"    [{col}{v:<11}{_RESET}] {c:<4} {r['name']:<32} {vs:>10}  (base {bs}, {r['direction']})")
     s = scorecard["suite"]
+    env = scorecard.get("environment") or {}
     lines.append(f"\n  {'='*70}")
     lines.append(f"  SUITE: {_C.get(s,'')}{s}{_RESET}")
+    if env.get("message"):
+        lines.append(f"  ENVIRONMENT: {env['message']}")
+    if s == INCONCLUSIVE:
+        lines.append("  The verdicts above are RAW OBSERVATIONS, not conclusions: under this much")
+        lines.append("  throttling an empty result is indistinguishable from a real regression.")
+        lines.append("  This run MUST NOT be used as a baseline. Re-run when retrieval is healthy.")
     imps = [r for r in rows if r["verdict"] == IMPROVEMENT]
     warns = [r for r in rows if r["verdict"] == WARN]
     if imps:

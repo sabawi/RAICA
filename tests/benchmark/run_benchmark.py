@@ -100,6 +100,7 @@ def run_tier1(live, repeats, update_baseline, reason):
     from datetime import datetime, timezone
     from lib import scoring as S
     from lib import raica_client as RC
+    from lib import throttle as TH
     from scenarios import s1_news_citation, s2_dr_email_delivery, s3_vision, s4_multi_ticker_dr
 
     base = RC.LIVE_BASE if live else RC.LOCAL_BASE
@@ -107,6 +108,14 @@ def run_tier1(live, repeats, update_baseline, reason):
     SCENARIOS = [s1_news_citation, s3_vision, s2_dr_email_delivery, s4_multi_ticker_dr]  # S2 (DR) last — it's the slow one
     baseline_path = os.path.join(BENCH_DIR, "baseline.json")
     baseline = S.load_baseline(baseline_path)
+
+    # SI-055 — measure the ENVIRONMENT the run happened in, not just the run. The suite's own
+    # traffic (S1 x3, S3 x3, S4 x3 over 8 tickers across several engines) can trip the search
+    # engines' rate limiters; the scenarios then return empty and every metric looks like a CODE
+    # regression. Marking the log position BEFORE the scenarios lets us count exactly what this
+    # run provoked, rather than inheriting someone else's earlier throttling.
+    server_log = os.path.join(REPO_ROOT, "logs", "server_complete.log")
+    log_start = TH.log_position(server_log)
 
     all_metrics = []
     for mod in SCENARIOS:
@@ -117,15 +126,32 @@ def run_tier1(live, repeats, update_baseline, reason):
         except Exception as e:  # noqa: BLE001 — a scenario crash shouldn't lose the others
             print(f"    {RED}scenario {mod.SCENARIO} errored: {e}{RESET}")
 
+    throttle_events = TH.count_since(server_log, log_start)
+    degraded, env_message = TH.assess(throttle_events)
+    environment = {"degraded": degraded, "message": env_message,
+                   "throttle_events": throttle_events}
+
+    if update_baseline and degraded:
+        # A throttled run must NEVER become the baseline: every future comparison would be
+        # measured against numbers produced while retrieval was broken. Refuse, loudly.
+        print(f"\n  {RED}REFUSING --update-baseline: {env_message}{RESET}")
+        print(f"  {RED}Baking these numbers in would make every future comparison "
+              f"meaningless.{RESET}")
+        update_baseline = False
+
     if update_baseline:
         S.save_baseline(baseline_path, all_metrics, reason, datetime.now(timezone.utc).isoformat())
         print(f"\n  {GREEN}baseline.json updated{RESET} ({len(all_metrics)} metrics) — reason: {reason}")
         baseline = S.load_baseline(baseline_path)
 
-    sc = S.score_run(all_metrics, baseline)
+    sc = S.score_run(all_metrics, baseline, environment=environment)
     json.dump(sc, open(os.path.join(BENCH_DIR, "scorecard.json"), "w"), indent=2, default=str)
     print(S.render(sc))
     print()
+    # Exit 2 = INCONCLUSIVE: distinct from pass(0) and regression(1) so a caller/CI can tell
+    # "we did not measure" from "we measured and it is fine".
+    if sc["suite"] == S.INCONCLUSIVE:
+        return 2
     return 0 if sc["suite"] != S.REGRESSION else 1
 
 
