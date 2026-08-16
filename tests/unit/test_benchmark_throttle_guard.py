@@ -105,3 +105,74 @@ def test_threshold_sits_above_heavy_but_usable_runs():
     """Over-triggering would call healthy runs inconclusive — its own way of killing trust."""
     assert TH.assess(99)[0] is False, "a heavy-but-usable run would be called inconclusive"
     assert TH.assess(2806)[0] is True, "the run that measured nothing would be trusted"
+
+
+
+def _runner_code():
+    """run_benchmark.py with comments stripped.
+
+    These checks are about CODE, not prose: the fix's own explanatory comment quotes the very
+    pattern being banned, and matching raw text flagged the documentation instead of a defect.
+    """
+    src = open(os.path.join(ROOT, "tests", "benchmark", "run_benchmark.py")).read()
+    out = []
+    for line in src.splitlines():
+        stripped = line.split("#", 1)[0] if not line.lstrip().startswith("#") else ""
+        out.append(stripped)
+    return "\n".join(out)
+
+
+# ─────────────────────────────────────────── repeat cap (the name-list drift) and attribution
+def test_slow_scenarios_declare_their_own_repeat_cap():
+    """S4 ran 3x for every Tier-1 run because a name list in the RUNNER said
+    "S4_multi_ticker_dr" while the module is named "S4_multi_ticker_8". ~45 min instead of
+    ~15, and triple the outbound search volume. The scenario owning its cap removes the class."""
+    from scenarios import s2_dr_email_delivery, s4_multi_ticker_dr
+    assert getattr(s4_multi_ticker_dr, "MAX_REPEATS", None) == 1
+    assert getattr(s2_dr_email_delivery, "MAX_REPEATS", None) == 1
+
+
+def test_runner_does_not_gate_repeats_on_a_hardcoded_scenario_name_list():
+    """Guard against reintroducing the exact pattern that drifted.
+
+    A list of scenario NAMES in the runner cannot be kept in sync with SCENARIO constants in
+    the scenario files — nothing fails when they diverge, the scenario just silently runs the
+    wrong number of times.
+    """
+    src = _runner_code()
+    assert 'mod.SCENARIO in (' not in src, (
+        "repeats are gated on a hardcoded scenario-name list again — use MAX_REPEATS on the "
+        "scenario module instead"
+    )
+    assert 'getattr(mod, "MAX_REPEATS"' in src, "the runner no longer honours MAX_REPEATS"
+
+
+def test_every_scenario_name_referenced_by_the_runner_exists():
+    """Any name the runner mentions must be a real SCENARIO, or it is dead config."""
+    import re as _re
+    import glob
+    src = _runner_code()
+    real = set()
+    for f in glob.glob(os.path.join(ROOT, "tests", "benchmark", "scenarios", "s*.py")):
+        m = _re.search(r'^SCENARIO\s*=\s*"([^"]+)"', open(f).read(), _re.M)
+        if m:
+            real.add(m.group(1))
+    mentioned = set(_re.findall(r'"(S\d+_[A-Za-z0-9_]+)"', src))
+    unknown = mentioned - real
+    assert not unknown, f"runner references scenario name(s) that do not exist: {sorted(unknown)}"
+
+
+def test_render_shows_per_scenario_throttle_attribution():
+    """Attribution must come from instrumentation, not from reading timestamp clusters.
+
+    Guessing boundaries out of the log after the fact gave contradictory answers — a coarse
+    split said one scenario caused 92% of events while a finer one found 2 and 6 inside its
+    actual requests.
+    """
+    env = {"degraded": True, "message": "494 rate-limit responses", "throttle_events": 494,
+           "per_scenario": {"S1_news_citation": {"repeats": 3, "throttle_events": 38},
+                            "S4_multi_ticker_8": {"repeats": 1, "throttle_events": 300}}}
+    text = S.render(S.score_run(COLLAPSED, BASELINE, environment=env))
+    assert "THROTTLE BY SCENARIO" in text
+    assert "S4_multi_ticker_8" in text and "300" in text
+    assert "S1_news_citation" in text and "38" in text

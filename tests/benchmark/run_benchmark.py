@@ -118,18 +118,34 @@ def run_tier1(live, repeats, update_baseline, reason):
     log_start = TH.log_position(server_log)
 
     all_metrics = []
+    per_scenario_throttle = {}
     for mod in SCENARIOS:
-        reps = 1 if mod.SCENARIO in ("S2_dr_delivery", "S4_multi_ticker_dr") else repeats   # DR ~5 min: single run
+        # A scenario caps its OWN repetition (MAX_REPEATS). This used to be a name list here —
+        # `if mod.SCENARIO in ("S2_dr_delivery", "S4_multi_ticker_dr")` — and S4 is actually
+        # named "S4_multi_ticker_8", so the guard matched nothing and the slowest scenario ran
+        # 3x on every run. A list of names in one file cannot be kept in sync with constants in
+        # another by hope; letting the scenario own its cap removes the class.
+        reps = min(repeats, getattr(mod, "MAX_REPEATS", repeats))
         print(f"  ▶ {mod.SCENARIO}  (x{reps}) ...", flush=True)
+        # Per-scenario throttle attribution. Reading it from the log AFTERWARDS meant guessing
+        # scenario boundaries from traffic patterns, and that guess was wrong: a coarse split
+        # attributed 92% of events to S4 while a finer one found 2 and 6 inside its actual
+        # requests. Marking the position here makes attribution exact instead of inferred.
+        scen_start = TH.log_position(server_log)
         try:
             all_metrics.extend(S.median_runs(mod.run(base, reps)))
         except Exception as e:  # noqa: BLE001 — a scenario crash shouldn't lose the others
             print(f"    {RED}scenario {mod.SCENARIO} errored: {e}{RESET}")
+        scen_events = TH.count_since(server_log, scen_start)
+        per_scenario_throttle[mod.SCENARIO] = {"repeats": reps, "throttle_events": scen_events}
+        print(f"      {DIM}{scen_events} rate-limit response(s) during {mod.SCENARIO}{RESET}",
+              flush=True)
 
     throttle_events = TH.count_since(server_log, log_start)
     degraded, env_message = TH.assess(throttle_events)
     environment = {"degraded": degraded, "message": env_message,
-                   "throttle_events": throttle_events}
+                   "throttle_events": throttle_events,
+                   "per_scenario": per_scenario_throttle}
 
     if update_baseline and degraded:
         # A throttled run must NEVER become the baseline: every future comparison would be

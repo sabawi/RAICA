@@ -9,6 +9,14 @@ from lib import raica_client as RC
 from lib import spectrum as SP
 
 SCENARIO = "S4_multi_ticker_8"
+
+# MAX_REPEATS — this scenario caps its own repetition instead of the runner matching it by
+# NAME. The runner used to do `if mod.SCENARIO in ("S2_dr_delivery", "S4_multi_ticker_dr")`,
+# and this module is named "S4_multi_ticker_8" — so the guard matched nothing and the
+# slowest scenario silently ran 3x instead of 1x on every Tier-1 run (~45 min instead of
+# ~15, and triple the outbound search volume). A name list in another file cannot be kept
+# in sync by hope; the scenario owning its own cap makes that class of drift impossible.
+MAX_REPEATS = 1
 TICKERS = ["KO", "JPM", "BRK-B", "CROX", "RIVN", "PLUG", "FUBO", "RBRK"]
 
 PROMPT = ("Using the research tool, pull the latest available company and financial data for "

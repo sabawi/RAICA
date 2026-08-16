@@ -146,6 +146,17 @@ def render(scorecard):
     lines.append(f"  SUITE: {_C.get(s,'')}{s}{_RESET}")
     if env.get("message"):
         lines.append(f"  ENVIRONMENT: {env['message']}")
+    # Per-scenario attribution, so the NEXT volume decision is made from data instead of from
+    # reading timestamp clusters out of a log after the fact.
+    per_scen = env.get("per_scenario") or {}
+    if per_scen:
+        worst = max(per_scen.values(), key=lambda v: v["throttle_events"])["throttle_events"]
+        lines.append("  THROTTLE BY SCENARIO (events / repeats):")
+        for name, info in sorted(per_scen.items(),
+                                 key=lambda kv: -kv[1]["throttle_events"]):
+            n, r = info["throttle_events"], info["repeats"]
+            bar = "#" * min(40, (n * 40 // worst) if worst else 0)
+            lines.append(f"    {name:<24} {n:5}  (x{r})  {bar}")
     if s == INCONCLUSIVE:
         lines.append("  The verdicts above are RAW OBSERVATIONS, not conclusions: under this much")
         lines.append("  throttling an empty result is indistinguishable from a real regression.")
