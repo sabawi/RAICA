@@ -89,9 +89,15 @@ llm:
       - qwen
       - gemini
   primary:
-    type: ollama
+    # LOCAL DEEPINFRA TRIAL (2026-08-15). Transport change ONLY — same model.
+    # deepseek-v4-pro:cloud -> deepseek-ai/DeepSeek-V4-Pro-0813 (0813 is the build
+    # Ollama rolled out, so this is the identical weights, not an analogue).
+    # Revert: type: ollama, model: deepseek-v4-pro:cloud, drop api_key/base_url.
+    type: openai
     config:
-      model: deepseek-v4-pro:cloud #kimi-k2.6:cloud #minimax-m2.7:cloud
+      model: deepseek-ai/DeepSeek-V4-Pro-0813
+      api_key: ${DEEPINFRA_API_KEY}
+      base_url: https://api.deepinfra.com/v1/openai
       timeout: 1200
       temperature: 0.7
       max_tokens: 32768
@@ -101,14 +107,34 @@ llm:
   tool_calling:
     type: openai
     config:
-      model: glm-5.2:cloud   # was qwen3-coder-next:cloud — swapped for more reliable tool selection (qwen threw intermittent 500s on Ollama cloud, breaking news-bot evidence gathering). LOCAL trial first.
+      # LOCAL DEEPINFRA TRIAL — glm-5.2:cloud -> zai-org/GLM-5.2, SAME model.
+      # Revert: model: glm-5.2:cloud, api_key: "ollama", base_url: http://127.0.0.1:11434/v1
+      model: zai-org/GLM-5.2
       timeout: 120
+      # INERT on an OpenAI-compatible transport — no client-side context knob exists;
+      # the vendor's model context governs. param_map reports this once at first use
+      # rather than dropping it silently. Kept as documentation of intent.
       context_window_size: 32768
       temperature: 0.1
-      max_tokens: 2048
+      # Output cap for tool selection. Was overridden by a hardcoded max_tokens=4096 at
+      # two call sites (fastapi_server_complete.py), so this value was inert and the real
+      # cap was invisible from config. Both literals removed 2026-08-15.
+      #
+      # Derivation, not a guess: with reasoning suppressed (think:false below) GLM-5.2
+      # emits only the tool_calls JSON — measured at 28-40 completion tokens for one
+      # call. 8192 leaves ~200x headroom for a large multi-tool batch AND absorbs a
+      # reasoning tail if a future model ignores the switch. The error is asymmetric:
+      # too low = the lane returns ZERO tool calls and the answer is built with no data
+      # (observed 2026-08-15); too high = FREE, since billing is on completion_tokens.
+      max_tokens: 8192
+      # GLM-5.2 on DeepInfra emits reasoning_content that is billed against max_tokens.
+      # On Ollama this lane always ran with think defaulting to False; the provider swap
+      # silently turned reasoning ON because only ollama.py read this key. param_map now
+      # maps it to chat_template_kwargs.enable_thinking on this transport.
+      think: false
       stream: false
-      api_key: "ollama"
-      base_url: http://127.0.0.1:11434/v1
+      api_key: ${DEEPINFRA_API_KEY}
+      base_url: https://api.deepinfra.com/v1/openai
   providers:
     ollama:
       base_url: http://127.0.0.1:11434
@@ -223,6 +249,13 @@ tool_calling:
   gather_gate:
     enabled: false
     shadow: true
+    # Output cap for the gate's own verdict call. 600 was HARDCODED and proved too small:
+    # GLM-5.2 served by DeepInfra spends its first few hundred tokens on preamble, so on a
+    # 12,697-char prompt it hit the cap BEFORE emitting any JSON — the verdict came back empty,
+    # parsed as nothing, and the loop stopped with reason=unavailable one round before it would
+    # have demanded the chart. The same model on Ollama fits inside 600; the TRANSPORT changed
+    # the behaviour, which is exactly what a provider swap is not supposed to do.
+    assess_max_tokens: 2000
     max_gather_rounds: 3        # hard ceiling once enforcement lands
     wall_clock_seconds: 90      # mirrors deep_research's wall_clock
     model: null                 # null = the tool-calling model (already loaded)
@@ -270,7 +303,8 @@ arbitrator:
   enabled: true
   type: openai
   config:
-    model: glm-5.2:cloud   # was qwen3-coder-next:cloud — same swap as tool_calling; no path should depend on the flaky qwen cloud model.
+    # LOCAL DEEPINFRA TRIAL — same model. Revert: glm-5.2:cloud + api_key "ollama".
+    model: zai-org/GLM-5.2
     timeout: 60
     context_window_size: 4096   # NOTE: inert for type:openai — only ollama.py reads
                                 # this (as num_ctx). Kept for documentation, and in
@@ -1204,7 +1238,7 @@ email:
 # The shared upload secret is a .env secret (CHART_UPLOAD_SECRET), NOT here.
 # =============================================================================
 charts:
-  enabled: false                 # master switch (also requires newx_upload_url + CHART_UPLOAD_SECRET)
+  enabled: true                  # master switch (also requires newx_upload_url + CHART_UPLOAD_SECRET)
   newx_upload_url: "https://localhost:9876/internal/chart-upload"  # NewX chart-upload endpoint (loopback, same host)
   verify_tls: false             # loopback same-host: NewX cert is self-signed/CN-mismatched; shared secret is the auth
   display_days: 126             # trading sessions shown on the main chart (~6 months)

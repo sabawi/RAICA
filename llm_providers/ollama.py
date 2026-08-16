@@ -10,11 +10,53 @@ import json
 import logging
 from typing import AsyncIterator, List, Dict, Any, Optional
 from .base import LLMProvider
+from . import param_map
 
 logger = logging.getLogger(__name__)
 
 class OllamaProvider(LLMProvider):
     """Ollama provider for local model inference"""
+
+    PROVIDER_TYPE = "ollama"
+
+    def _wire_params(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Canonical generation parameters, resolved with explicit precedence.
+
+        `max_tokens` is honoured here. It previously was NOT: this class read only
+        `num_predict`, so every caller passing `max_tokens` (the tool lane passes
+        `max_tokens=4096`) had its budget silently discarded and fell back to the 16384
+        default. That the fallback happened to be LARGER is luck, not safety — the same
+        drop in the other direction is what made the DeepInfra switch change behaviour.
+        Precedence: an explicit Ollama-dialect `num_predict` wins, then the canonical
+        `max_tokens`, then the lane's configured default.
+        """
+        return {
+            'max_tokens': kwargs.get('num_predict',
+                                     kwargs.get('max_tokens', self.get_num_predict())),
+            'context_window_size': kwargs.get('context_window_size',
+                                              self.get_context_window_size()),
+            'think': kwargs.get('think', self.config.get('think', False)),
+        }
+
+    @staticmethod
+    def _warn_if_truncated(done_reason, model, where, cap):
+        """Ollama's equivalent of the OpenAI finish_reason=length guard.
+
+        `openai.py` gained truncation detection in v1.0.0.237; this path never did, so an
+        Ollama response cut off at num_predict was indistinguishable from a model that
+        produced nothing. That asymmetry is actively misleading: it makes the transport
+        with detection look BUGGIER than the one without, because only one of them can
+        report the failure it is having.
+        """
+        if done_reason == 'length':
+            logger.warning(
+                f"✂️ TRUNCATED by num_predict: model={model} in {where} hit the "
+                f"{cap}-token output cap (done_reason=length). The response is "
+                f"INCOMPLETE — if the caller expects JSON it will not parse. "
+                f"Raise max_tokens for this lane."
+            )
+            return True
+        return False
     
     def __init__(self, config: Dict[str, Any]):
         """Initialize Ollama provider
@@ -190,13 +232,15 @@ Remember: Always include a valid function name that matches available tools exac
             "messages": messages,
             "tools": formatted_tools,
             "stream": False,
-            "think": kwargs.get('think', self.config.get('think', False)),
             "options": {
                 "temperature": kwargs.get('temperature', 0.1),  # Lower for tool calling
-                "num_ctx": kwargs.get('context_window_size', self.get_context_window_size()),
-                "num_predict": kwargs.get('num_predict', self.get_num_predict())
             }
         }
+        # think / num_ctx / num_predict are placed by the shared translation table, so
+        # this transport and the OpenAI one read the SAME canonical parameters.
+        param_map.apply_to_payload(self.PROVIDER_TYPE, payload,
+                                   self._wire_params(kwargs),
+                                   where='ollama.generate_tools')
         
         think_enabled = payload.get('think', False)
         think_status = "🧠 THINK ON" if think_enabled else "⚡ THINK OFF"
@@ -226,11 +270,16 @@ Remember: Always include a valid function name that matches available tools exac
                 logger.info(f"🔍 OLLAMA MESSAGE: {message}")
                 logger.info(f"🔍 OLLAMA TOOL CALLS: {tool_calls}")
 
+                truncated = self._warn_if_truncated(
+                    response_data.get('done_reason'), model, 'generate_tools',
+                    payload['options'].get('num_predict'))
+
                 return {
                     'tool_calls': tool_calls,
                     'content': content,
                     'usage': response_data.get('usage', {}),
-                    'model': model
+                    'model': model,
+                    'truncated': truncated
                 }
                 
         except asyncio.TimeoutError:

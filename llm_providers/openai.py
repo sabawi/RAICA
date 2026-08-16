@@ -10,11 +10,32 @@ import json
 import logging
 from typing import AsyncIterator, List, Dict, Any, Optional
 from .base import LLMProvider
+from . import param_map
 
 logger = logging.getLogger(__name__)
 
 class OpenAIProvider(LLMProvider):
     """OpenAI provider for GPT-4+ models"""
+
+    # Provider TYPE as spelled in llm_config.yaml `type:` — the key into param_map's
+    # translation table. Covers every OpenAI-compatible endpoint (DeepInfra, OpenRouter,
+    # OpenAI itself), which is why it is a type and not a vendor name.
+    PROVIDER_TYPE = "openai"
+
+    def _wire_params(self, kwargs: Dict[str, Any], where: str) -> Dict[str, Any]:
+        """Canonical generation parameters for this call, before wire translation.
+
+        `think` defaults to False to MATCH ollama.py, which has always defaulted it to
+        False. That default is the whole point: when the tool lane moved to DeepInfra it
+        inherited "reasoning on" purely because no code on this transport read `think`,
+        and GLM-5.2's reasoning tokens then consumed the output cap before any tool call
+        was emitted. Same config, same default, same behaviour — on either transport.
+        """
+        return {
+            'max_tokens': kwargs.get('max_tokens', self.get_max_tokens()),
+            'think': kwargs.get('think', self.config.get('think', False)),
+            'context_window_size': self.config.get('context_window_size'),
+        }
     
     def __init__(self, config: Dict[str, Any]):
         """Initialize OpenAI provider
@@ -118,8 +139,12 @@ class OpenAIProvider(LLMProvider):
             "messages": messages,
             "stream": True,
             "temperature": kwargs.get('temperature', self.get_temperature()),
-            "max_tokens": kwargs.get('max_tokens', self.get_max_tokens())
         }
+        # Output cap + reasoning switch via the shared translation table, so a transport
+        # swap cannot silently change either. See llm_providers/param_map.py.
+        param_map.apply_to_payload(self.PROVIDER_TYPE, payload,
+                                   self._wire_params(kwargs, 'generate_stream'),
+                                   where='openai.generate_stream')
 
         logger.info(
             f"🤖 OpenAI streaming request: model={model}, prompt_len={len(prompt)}, "
@@ -239,8 +264,14 @@ class OpenAIProvider(LLMProvider):
             "tools": formatted_tools,
             "tool_choice": "auto",
             "temperature": kwargs.get('temperature', 0.1),
-            "max_tokens": kwargs.get('max_tokens', 2048)
         }
+        # THE TOOL LANE IS WHERE THIS BIT. GLM-5.2 on DeepInfra spends output tokens on
+        # reasoning_content before emitting tool_calls; with reasoning left on and a 4096
+        # cap it hit finish_reason=length twice in one request and returned ZERO tool
+        # calls, so the answer was synthesised with no data and no chart.
+        param_map.apply_to_payload(self.PROVIDER_TYPE, payload,
+                                   self._wire_params(kwargs, 'generate_tools'),
+                                   where='openai.generate_tools')
         
         logger.info(f"🔧 OpenAI tool request: model={model}, tools={len(tools)}")
         # logger.info(f"🔍 OPENAI PAYLOAD SIMULATION: {json.dumps(payload, indent=2)[:500]}...")

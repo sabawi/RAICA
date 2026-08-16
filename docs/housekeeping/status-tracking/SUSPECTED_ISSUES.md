@@ -11,6 +11,170 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-054 — The mandatory smoke gate is FLAKY: a cold news fetch exceeds PER_CALL_TIMEOUT  [P2 — CONFIRMED, 2026-08-15]
+- **Observed:** `make smoke` failed with `get_news_summaries: RAISED TimeoutError`, blocking the deploy
+  per protocol. Re-run immediately after: **PASSED**, `get_news_summaries 4847 chars`.
+- **Not a tool defect (measured):** invoked directly with the smoke's exact args 3x — **2.5s / 0.5s /
+  0.4s**, 4847 chars each. The tool is healthy; the first (uncached) call is the slow one, and
+  `tests/smoke/tool_smoke.py:65` sets `PER_CALL_TIMEOUT = 30`.
+- **Why it matters in BOTH directions:** a spurious CODE-FAIL blocks a good deploy, and — far worse —
+  a gate known to "just be flaky" is a gate whose real failures get waved through. That is precisely
+  how search_web stayed dead for 6 days.
+- **To clear:** either warm the feed cache before timing, or give this one tool a longer budget with
+  the reason stated inline; then 3 consecutive clean `make smoke` runs from cold.
+
+
+### ~~SI-051~~ — A published chart never reached the user  [RESOLVED v1.0.0.287, 2026-08-15]
+- **Same root cause as SI-048:** regeneration discarded plot_data's result, so the marker never
+  entered the synthesis context. Proof it was PLUMBING not policy: every `[[chart:` occurrence
+  in the synthesis prompt came from the INSTRUCTION text — no real marker was ever present.
+- **Verified 6 E2E runs, 2 datasets:** charts published == markers delivered, **4/4, zero loss**.
+  All four delivered URLs serve real images (HTTP 200, 51-67 KB, image/jpeg). The 2 runs
+  without a marker published **0** charts — tool SELECTION variance, not delivery.
+- ~~Original entry below~~ [P1 — CONFIRMED e2e, v1.0.0.285]
+- **Observed (3/3 E2E runs, 2026-08-15, NewX live):** `plot_data` published a real chart in every run —
+  `📊 plot_data: 1 series x 225 points → /static/images/media/9e6e348….jpg` — and all three URLs serve
+  **HTTP 200, image/jpeg, 42–66 KB**. The RAICA→NewX bridge is fully working.
+- **But the answer contained ZERO `[[chart:…]]` markers in all 3 runs.** The user sees no chart.
+- **Mechanism (suspected):** the synthesis model, seeing the compute failures of SI-050 in the same
+  context, wrote a refusal ("I cannot complete this request", 2/3) instead of reproducing the marker it
+  had been handed. The marker survives to the tool result; it dies at synthesis.
+- **Why this is P1:** every layer below works and the deliverable still does not arrive. This is the
+  last link of the chart chain (ALLOWED → SELECTED → INVOKED → PRODUCED → **SURVIVES SYNTHESIS** →
+  RENDERS) and it is the one now failing.
+- **To clear:** an E2E run where the answer carries a marker whose URL returns an image. Do NOT clear on
+  a server-side "chart published" log line — that is what looked like success here.
+
+### SI-053 — A column-less reference `{"from": "compute#1"}` is not recognised and degrades to the SI-050 signature  [P3 — SUSPECTED, trigger unproven, 2026-08-15]
+- **Found by:** the SI-050 generalization matrix (`tests/unit/test_corrected_tools_generalization.py`),
+  not by an E2E run — three runs of one prompt could never have surfaced it.
+- **Mechanism (confirmed by test):** `utils/tool_output_reference.py:349` —
+  `_is_reference` requires **both** `from` and `column`. A compute output genuinely has no columns
+  (SI-047), so `{"from": "compute#1"}` is a plausible shape; it is not recognised, passes through raw,
+  and numpy renders it as `array(['from'])` — the same failure class as SI-050.
+- **Why it is P3, not P1:** the contract per SI-047 is that the model supplies a `column` out of habit
+  and it is IGNORED for computed series, and **I have no evidence the model omits it.** The production
+  `plot_data` failures I checked were a different cause entirely (the model INLINED
+  `x: list[24]['float']` instead of referencing). Recorded as suspected, not asserted.
+- **Do NOT fix by widening the predicate.** Treating a bare `from` as a reference would also capture
+  legitimate arguments such as `{"from": "2026-01-01", "to": "2026-06-30"}`. The safe rule is
+  index-aware: it is a reference if `from` names an id present in the reference index.
+- **Current behaviour is pinned** by `test_a_column_less_reference_is_not_silently_executed_as_key_names`
+  so a partial change cannot land unnoticed.
+
+### SI-052 — No output-size guard on synthesis (2.9 MB whitespace runaway)  [P2 — TRIGGER REMOVED, CLASS STILL UNGUARDED, 2026-08-15]
+- **Downgraded, NOT closed.** The trigger is gone: with SI-051 fixed the model receives a real
+  marker and no longer hand-draws ASCII charts. **0 synthesis truncations across 6 E2E runs**,
+  all answers 3.0-5.9 KB at 14-17% whitespace (was 2,924,215 chars at 99.8%).
+- **Why it stays open:** nothing in RAICA stopped the runaway — only the vendor's 32,768-token
+  ceiling did. A different trigger would produce the same result. Needs an explicit
+  output-size / degenerate-repetition guard; name the line that makes cycle 2 impossible.
+- ~~Original entry below~~ [P1 — CONFIRMED e2e, v1.0.0.286]
+- **Observed (1 of 3 E2E runs, 2026-08-15):** a single answer streamed **2,924,215 characters** —
+  **99.8% whitespace** (2,917,822 space/newline chars around 6,393 chars of real content), including
+  **2,152 runs of 200+ consecutive spaces**, longest **2,862**. The tail is `*` and `|`: the model was
+  drawing an ASCII scatter/axis by padding with spaces.
+- **Trigger:** no `[[chart:…]]` marker was available (**SI-051**), so the model improvised a text chart
+  and the padding degenerated. The two issues are causally linked — fixing SI-051 likely removes the
+  trigger, but the absence of any output-size guard is a defect in its own right.
+- **Impact if it reaches production:** a ~3 MB reply per request — bandwidth, NewX render cost, and
+  DB/post storage — for 6 KB of information. On a phone this is a hang.
+- **What actually stopped it:** nothing in RAICA. The run ends with
+  `✂️ TRUNCATED by max_tokens: model=deepseek-ai/DeepSeek-V4-Pro-0813 in generate_stream hit the
+  32768-token output cap (finish_reason=length)` — the vendor ceiling was the only brake. Had the cap
+  been higher, the answer would have been larger still. (The detector that surfaced this is the
+  v1.0.0.237 truncation guard, which is now earning its keep a second time.)
+- **To clear:** an output-size/degenerate-repetition guard on the synthesis stream — name the line that
+  makes an unbounded padding run impossible — plus 3 E2E runs with no answer above a sane ceiling. Do
+  NOT clear merely because SI-051 is fixed: the trigger would be gone, the class would not.
+
+### ~~SI-050~~ — Reference dicts reached `compute` unresolved on the arbitrator retry path  [RESOLVED v1.0.0.286, 2026-08-15]
+- **Observed:** **58 `UFuncTypeError`** across 3 E2E runs (control: the preceding 3 runs on the same
+  build had **0** — `logs/archive/server_complete_20260815_201107.log`).
+  `ufunc 'greater_equal' … (StrDType, _PyFloatDType)`, `ufunc 'subtract' … (dtype('<U4'), dtype('<U6'))`.
+- **First hypothesis — REFUTED by measurement.** I suspected the silent text fallback at
+  `utils/tool_output_reference.py:344-346` (a column whose cells fail to parse is returned as text).
+  Reproduced through the real path instead: `lookup_website` → `build_reference_index` →
+  `extract_column('mag')` returned **225 floats at a 100% parse rate**. The fallback never fired.
+- **Actual root cause (CONFIRMED, exact reproduction):** `<U4` and `<U6` are precisely `len('from')`
+  and `len('column')`. `_execute_corrected_tools` (`fastapi_server_complete.py:5237`) — the
+  arbitrator's regeneration path — called `tool_manager.safe_function_call()` **directly, without
+  `_resolve_call_references()`**, which every other path uses. The raw
+  `{"from": "lookup_website#1", "column": "mag"}` reached the tool, and numpy converted the dict to an
+  array of its KEYS. Verified: `np.asarray(list({'from':…,'column':…}))` → `['from' 'column'] <U6`,
+  and `arr >= 5.5` reproduces the production error **byte-for-byte**, as does the `<U4`/`<U6` subtract.
+- **Fix:** resolve references before executing regenerated calls, reusing the existing resolver, and
+  pass `prior_results=list(zip(tools_called, tools_results_list))` from the caller. Accept `arguments`
+  as either a dict (resolved) or a JSON string (unresolved).
+- **Verified:** `tests/unit/test_corrected_tools_resolve_references.py` — 3 tests, **2 fail on pre-fix
+  code** (verified by reverting the hunks). E2E 3 runs: **UFuncTypeError 58 → 0**, refusals **2/3 → 0/3**,
+  n=225 in 3/3, tables in 3/3, real statistics reported (5.87 / 5.80 / 0.42 / 7.80).
+- **Note:** SI-048 (2nd-decimal drift) is NOT explained by this and remains open.
+
+### SI-049 — Workstation froze during a local E2E run; the memory consumer was never identified  [P2 — SUSPECTED, 2026-08-15]
+- **What happened:** during a local E2E test the machine exhausted 15 GB RAM, livelocked in swap and had
+  to be hard power-cycled. Freeze onset **18:40:32** (Discord logged a 6,209 ms stall); journald reported
+  *"Under memory pressure, flushing caches"* at 18:43:59 and 18:46:57, then silence; reboot 18:50:30.
+- **What is ESTABLISHED:** memory exhaustion, not disk (56% full) and not a fork storm (PID churn steady
+  at 700–850/min through 18:40, no spike). Transition was a **cliff**, not a decay.
+- **What is NOT established — the consumer.** The hard power-off destroyed the evidence that would name
+  it: the kernel OOM ring buffer is in RAM, `sysstat`'s `sa15` was never flushed, and the session
+  transcript is truncated at 18:39:21. Three candidates were **refuted**: the suspect `grep` (reproduced
+  against the identical surviving log — 3.4 MB RSS, instant), the gather-gate loop (bounded at
+  `fastapi_server_complete.py:10869/10872/10910`) and `utils/restricted_numpy_eval.py` (200k-element cap).
+- **Why it took the machine down (VERIFIED):** Bash commands run in a scope with `MemoryMax=infinity`;
+  `systemd-oomd`'s only live policy is 50% pressure on `user@.service` while the root slice ships
+  `ManagedOOMSwap=auto`, so **swap exhaustion never triggers a kill**; no `earlyoom`, no zram;
+  `vm.overcommit_memory=0` + `vm.swappiness=60` + an 8 GB swapfile turn exhaustion into minutes of thrash.
+- **Mitigation in use:** run local E2E inside `systemd-run --user --scope -p MemoryMax=8G -p
+  MemorySwapMax=0` (verified: a runaway dies at the cap, system availability unchanged). Recommended:
+  `sudo apt install earlyoom` (needs operator).
+- **To clear:** reproduce under the cap with per-process sampling and name the consumer, or establish it
+  was not RAICA. 3 capped E2E runs on v1.0.0.285 peaked at **1,525 MB** — did not reproduce.
+
+### ~~SI-048~~ — Synthesis misreported numbers the tool computed correctly  [RESOLVED v1.0.0.287, 2026-08-15]
+- **ROOT CAUSE (shared with SI-051/052): arbitrator regeneration REPLACED the results list.**
+  `fastapi_server_complete.py` did `tools_results_list = regenerated_tools_results` and
+  `tools_called = [...]`, discarding phase-1 fetches, all gather-gate compute outputs and
+  plot_data's marker. Synthesis then received ONE entry (the raw CSV) and eyeballed the stats.
+  Evidence: `PARSED RESULTS: Generated 1 tool entries` while the gate had run 10 computes.
+- **Fix:** `_merge_regenerated_results()` keeps every non-regenerated entry and derives names
+  FROM the entries, so the two lists are parallel by construction (`arbitrator_validate_tasks`
+  pairs them with `zip()`, which truncates silently); plus a loud skew warning at that zip.
+- **Verified 3/3 Treasury runs:** every reported statistic matches ground truth —
+  4.293/3.97/4.79 and 4.777/4.41/5.08. The previously fabricated **4.62** and **4.27** appear
+  in NONE of the three answers. Live log: `REGENERATION MERGE: kept 161 prior result(s)`.
+- **Residual (minor):** one USGS answer rendered std as "≈ 0.43" where compute returned 0.42.
+  Mean and median were exact. Tracked here, not re-opened as P1.
+- ~~Original entry below~~ [P1 — CONFIRMED, mechanism proven, 2026-08-15]
+- **Upgraded from P2/SUSPECTED ("2nd-decimal drift, probably rounding"). It is not rounding, and it is
+  not a compute bug — `compute` is correct and the ANSWER changes the values.**
+- **Proof (Treasury 2025 daily yields, v1.0.0.286, a DIFFERENT dataset from the one that first showed
+  the drift — so this generalises):**
+
+  | | `compute` returned | answer reported | ground truth |
+  |---|---|---|---|
+  | 10 Yr mean | **4.29321** | 4.27 | 4.2932 |
+  | 10 Yr max | **4.79** | **4.62** | 4.79 |
+  | 10 Yr min | 3.97 | 3.97 | 3.97 |
+  | 30 Yr mean | **4.77731** | 4.76 | 4.7773 |
+  | 30 Yr max / min | 5.08 / 4.41 | 5.08 / 4.41 | 5.08 / 4.41 |
+
+- **The data was complete:** `🔗 SECOND ROUND: resolved data references for 'compute' → {'data':
+  {'y10': 249}}` — all 249 rows, and `compute` logged `computed as: np.max(y10)` returning 4.79.
+- **4.79 → 4.62 is not a rounding error.** No Treasury column has max 4.62 (5 Yr = 4.61, 7 Yr = 4.71),
+  so the reported triple (4.27 / 3.97 / 4.62) is internally inconsistent with ANY real column — it is
+  partly transcribed, partly invented.
+- **Pattern across both datasets:** minima transcribe exactly, means are systematically LOW, one
+  maximum badly wrong. Exact extremes are precisely what stops a reader noticing the rest.
+- **Impact:** RAICA reports authoritative-looking statistics that differ from what its own verified
+  tool computed. This defeats the entire point of computing rather than eyeballing, and it is invisible
+  without an independent recomputation.
+- **Note:** the USGS instance (5.87 vs 5.8828) is the same defect, not a separate one.
+- **To clear:** an answer whose every cited statistic matches the `computed as:` value in the log,
+  on ≥3 runs across ≥2 datasets. Prompt-level fixes must be measured, not assumed — see the
+  `{{PRIMARY_LLM_RESPONSE}}` precedent in the parity plan §6 D3.
+
 ### SI-047 — A computed series cannot be charted: plot_data references require a TABLE  [P1 — CONFIRMED on prod, v1.0.0.284]
 **Every `plot_data` call in the 2026-08-15 07:26 run failed with the same error:**
 ```

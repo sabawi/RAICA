@@ -75,6 +75,23 @@ figures from DeepInfra `usage`; batch distribution from `logs/archive/*.log`.
 - `qwen.py` carries the **identical SI-014 defect**. Qwen is not in use today.
 - `reasoning_effort` is unreachable from RAICA — no provider forwards it.
 
+> **UPDATE 2026-08-15 (v1.0.0.285) — the `think`/`num_predict` rows were not benign.**
+> This table recorded them as provider-specific gaps and the 4.5 contract declared them
+> acceptable. Both readings were wrong, and the cost was a live outage: with `think`
+> unread on the OpenAI path, GLM-5.2 reasoned freely, its reasoning tokens were billed
+> against `max_tokens`, and the tool lane returned **zero tool calls** — twice per
+> request — so an answer was synthesised with no data, no table and no chart.
+>
+> `think` is **not** Ollama-only: DeepInfra accepts
+> `chat_template_kwargs.enable_thinking` on GLM-5.2 **and** DeepSeek-V4-Pro (measured).
+> `num_predict` and `max_tokens` are **one intent in two dialects**, not two parameters.
+>
+> Resolved by `llm_providers/param_map.py`: a canonical vocabulary
+> (`max_output_tokens`, `context_window_size`, `reasoning_enabled`) with a per-provider
+> wire table, where an inexpressible parameter is **reported once, never dropped**.
+> **Rule going forward: a KNOWN_GAP must assert the provider CANNOT express the
+> parameter — verified against the vendor — never merely that RAICA does not.**
+
 ### 2.2 Hardcoded overrides that outrank config
 
 Providers read `kwargs.get('x', self.get_x())`, so a literal kwarg **wins over

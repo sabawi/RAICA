@@ -159,6 +159,18 @@ class ComputeTool(BaseUserTool):
             logger.error(f"compute: unexpected failure: {type(e).__name__}: {e}")
             return {"success": False, "error": f"Computation failed: {type(e).__name__}: {e}{_FAIL_CLOSED}"}
 
+        # Several numpy functions return a TUPLE of arrays, and those arrays need not be the
+        # same length — np.histogram gives (counts, edges) with edges one longer. np.asarray on
+        # that raises "setting an array element with a sequence ... inhomogeneous shape", which
+        # surfaced as an opaque tool crash the first time the model wrote a bare
+        # np.histogram(mag, bins=15). Say which piece to take rather than guessing: choosing one
+        # for the caller would silently chart the wrong series.
+        if isinstance(raw, tuple):
+            parts = ", ".join(f"[{i}] length {np.asarray(p).size}" for i, p in enumerate(raw))
+            return {"success": False,
+                    "error": (f"`{expr}` returned {len(raw)} separate arrays ({parts}), not one "
+                              f"series. Index the one you need — e.g. `{expr}[0]` — and call again "
+                              f"for the other if you need both.{_FAIL_CLOSED}")}
         return {"success": True, "result": self._format(raw, expr, data, label)}
 
     @staticmethod

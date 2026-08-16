@@ -4804,8 +4804,12 @@ async def intelligent_retry_with_circuit_breakers(
                 break
             
             # 🚀 RE-EXECUTE CORRECTED TOOLS
+            # SI-050 — hand the retry path the SAME prior outputs the reference ids point at.
+            # Without them `lookup_website#1` cannot resolve and the raw reference dict is what
+            # the tool executes on.
             corrected_results = await _execute_corrected_tools(
-                tool_manager, regenerated_tools, current_retry_candidates
+                tool_manager, regenerated_tools, current_retry_candidates,
+                prior_results=list(zip(tools_called or [], tools_results_list or []))
             )
             
             logger.info(f"🔧 ITERATION {iteration}: Executed {len(corrected_results)} corrected tools")
@@ -5234,17 +5238,39 @@ The purpose is to drop the new code in place of the failed code."""
         logger.error(f"❌ LLM regeneration call failed: {e}")
         raise
 
-async def _execute_corrected_tools(tool_manager, regenerated_tools, retry_candidates):
-    """Re-execute the corrected tool calls"""
-    
+async def _execute_corrected_tools(tool_manager, regenerated_tools, retry_candidates,
+                                   prior_results=None):
+    """Re-execute the corrected tool calls.
+
+    SI-050 — RESOLVE DATA REFERENCES FIRST. The regenerated calls come from the same model, in the
+    same shape, as the second-round calls: `{"data": {"mag": {"from": "lookup_website#1",
+    "column": "mag"}}}`. Every other execution path runs them through
+    `_resolve_call_references()`; this one did not, so the RAW reference dict reached the tool.
+    numpy then turned `{"from": …, "column": …}` into an array of its KEYS —
+    `array(['from','column'], dtype='<U6')` — and every operation died with
+
+        UFuncTypeError: ufunc 'greater_equal' … (StrDType, _PyFloatDType)
+        UFuncTypeError: ufunc 'subtract' … (dtype('<U4'), dtype('<U6'))
+
+    `<U4` and `<U6` are literally len('from') and len('column'), which is what identified this.
+    58 such failures in 3 E2E runs; the user got "no figures were actually calculated" for a
+    dataset that fetches in under a second.
+    """
     import json
     corrected_results = []
-    
+
+    # Same resolver as every other path — reused, not reimplemented, so a reference form only has
+    # to be understood in one place.
+    regenerated_tools = _resolve_call_references(regenerated_tools, prior_results or [])
+
     for tool_call in regenerated_tools:
         try:
             function_name = tool_call["function"]["name"]
-            function_args = json.loads(tool_call["function"]["arguments"])
-            
+            # _resolve_call_references returns arguments as a dict; an unresolved call may still
+            # carry the original JSON string, so accept both rather than assuming one.
+            _raw_args = tool_call["function"]["arguments"]
+            function_args = json.loads(_raw_args) if isinstance(_raw_args, str) else _raw_args
+
             logger.info(f"🔧 RE-EXECUTING CORRECTED TOOL: {function_name}")
             
             # 🚨 LOG EXACT TOOL CALL AND ARGUMENTS
@@ -5399,6 +5425,18 @@ async def arbitrator_validate_tasks(tools_called: List[str], tools_results_list:
         logger.info(f"🧠 Starting arbitrator validation for {len(tools_called)} tools")
         
         # Convert tool results to arbitrator format
+        #
+        # SI-048 / SI-051 — zip() TRUNCATES to the shorter list, silently. These two lists are
+        # maintained by appends at eight different sites, so a skew is entirely possible, and when
+        # it happens the surplus results are dropped with no error, no warning and no missing-data
+        # symptom other than a thinner answer. Say so instead.
+        if len(tools_called) != len(tools_results_list):
+            logger.warning(
+                "🚨 ARBITRATOR PAIRING SKEW: tools_called=%d but tools_results_list=%d — zip() will "
+                "DROP %d entry(ies). Results gathered after the shorter list stopped growing are "
+                "being discarded before synthesis.",
+                len(tools_called), len(tools_results_list),
+                abs(len(tools_called) - len(tools_results_list)))
         arbitrator_tasks = []
         for i, (tool_name, result) in enumerate(zip(tools_called, tools_results_list)):
             # Extract just the result content, removing "Tool: name\nResult: " formatting
@@ -7704,6 +7742,7 @@ def _gather_gate_config() -> dict:
             'max_gather_rounds': int(cfg.get('max_gather_rounds', 3) or 0),
             'wall_clock_seconds': float(cfg.get('wall_clock_seconds', 90) or 0),
             'model': cfg.get('model') or None,
+            'assess_max_tokens': int(cfg.get('assess_max_tokens', 2000)),
         }
     except Exception as e:  # noqa: BLE001
         logger.warning(f"🚪 gather-gate config unreadable ({e}) → disabled")
@@ -7771,11 +7810,22 @@ async def _gather_gate_assess(user_message: str, prior_results, tools_array: lis
     try:
         chunks = []
         async for ch in llm_manager.generate_stream(prompt, model=model, temperature=0,
-                                                    max_tokens=600, stream=False):
+                                                    max_tokens=_gather_gate_config()['assess_max_tokens'],
+                                                    stream=False):
             chunks.append(ch)
         data = extract_json_object("".join(chunks)) or {}
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"🚪 gather-gate round={round_num}: assessment failed ({e})")
+        # Say WHICH failure this is. An empty body means the model never reached the JSON —
+        # almost always the output cap, not a malformed verdict — and reporting both the same way
+        # ("assessment failed") cost a full production run to diagnose.
+        blob = "".join(chunks) if isinstance(locals().get("chunks"), list) else ""
+        if not blob.strip():
+            logger.warning(f"🚪 gather-gate round={round_num}: EMPTY verdict — no output before the "
+                           f"{_gather_gate_config()['assess_max_tokens']}-token cap. Raise "
+                           f"tool_calling.gather_gate.assess_max_tokens.")
+        else:
+            logger.warning(f"🚪 gather-gate round={round_num}: assessment failed ({e}); "
+                           f"first 120 chars: {blob[:120]!r}")
         return None
     status = "needs_more" if str(data.get("status", "")).lower() == "needs_more" else "sufficient"
     next_tools = [n for n in (data.get("next_tools") or []) if n in names]
@@ -7968,6 +8018,41 @@ def _split_calls_awaiting_batch_output(calls: list, prior_results):
                    if r not in index and r.split("#")[0] in batch_tools]
         (deferred if pending else ready).append(call)
     return ready, deferred
+
+
+def _entry_tool_name(entry: str) -> str:
+    """Tool name out of a `Tool: <name>\\nResult: …` entry, or '' if it is not one."""
+    if isinstance(entry, str) and entry.startswith("Tool: ") and "\n" in entry:
+        return entry[6:entry.index("\n")].strip()
+    return ""
+
+
+def _merge_regenerated_results(tools_results_list: list, regenerated_results: list,
+                               regenerated_names) -> tuple:
+    """Fold the arbitrator's regenerated results into the accumulated ones. Returns (results, names).
+
+    SI-048 / SI-051 — this used to be two assignments that REPLACED both lists with only the
+    regenerated subset, discarding every result gathered before it: phase-1 fetches, all of the
+    gather-gate's compute outputs, and plot_data's chart marker.
+
+    Measured on a Treasury run: the gate computed `np.mean(y10)=4.29321` and `np.max(y10)=4.79`
+    correctly and published a real chart, then regeneration returned `['lookup_website']` and both
+    lists collapsed to that single entry. Synthesis saw only the raw CSV, so it eyeballed the
+    statistics (reporting 4.27 and 4.62) and, having no marker, hand-drew an ASCII chart that ran
+    to 2.9 MB of whitespace. Three user-visible defects from one discarded list.
+
+    Keep every entry whose tool was NOT regenerated, then append the regenerated ones. Names are
+    derived FROM the entries so the two lists are parallel BY CONSTRUCTION —
+    `arbitrator_validate_tasks` pairs them with `zip()`, which truncates to the shorter list
+    silently, so any skew here loses results with no error at all.
+    """
+    regen = set(regenerated_names or [])
+    kept = [e for e in (tools_results_list or []) if _entry_tool_name(e) not in regen]
+    merged = kept + list(regenerated_results or [])
+    names = [_entry_tool_name(e) for e in merged]
+    logger.info("🔧 REGENERATION MERGE: kept %d prior result(s), added %d regenerated → %d total "
+                "(tools: %s)", len(kept), len(regenerated_results or []), len(merged), names)
+    return merged, names
 
 
 def _resolve_call_references(calls: list, prior_results) -> list:
@@ -10281,13 +10366,16 @@ The above image analysis was automatically performed on newly uploaded images. T
                         system_prompt = load_tool_model_system_prompt()
                         
                         logger.info("--- CALLING TOOL-CALLING MODEL ---")
+                        # max_tokens deliberately NOT passed: a literal here outranks
+                        # llm_config.yaml (PARITY plan §2.2), which is how this lane ran
+                        # at a hardcoded 4096 while the config said otherwise. The
+                        # provider now reads the tool_calling lane's configured cap.
                         response_data = await llm_manager.generate_tools(
                             prompt=user_message,
                             tools=tools_array,
                             model=tools_model,
                             system_prompt=system_prompt,
-                            temperature=0,
-                            max_tokens=4096
+                            temperature=0
                         )
                         logger.info("--- TOOL-CALLING MODEL FINISHED ---")
                         logger.info("🔧 DEBUG: LLM Manager tool calling response received")
@@ -11318,13 +11406,17 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                 "Use ONLY the tools provided."
                                             )
                                             logger.info("🔁 NO-TOOLS RE-PROMPT: asking the tool model to reconsider evidence gathering")
+                                            # Same as the first call: the cap comes from
+                                            # config. This re-prompt exists to RESCUE a
+                                            # lane that produced no tool calls — running
+                                            # it at the identical cap that just truncated
+                                            # made it fail for the identical reason.
                                             reprompt_resp = await llm_manager.generate_tools(
                                                 prompt=reprompt,
                                                 tools=tools_array,
                                                 model=tools_model,
                                                 system_prompt=system_prompt,
-                                                temperature=0,
-                                                max_tokens=4096
+                                                temperature=0
                                             )
                                             for tc in (reprompt_resp or {}).get('tool_calls', []) or []:
                                                 fn = tc.get('function', {})
@@ -11513,9 +11605,29 @@ Generate the corrected tool calls:"""
                                             regenerated_tools_results.append(f"Tool: {func_name}\nResult: {error_result}\n\n")
                                             logger.error(f"❌ REGENERATED TOOL {i+1} FAILED: {func_name} - {tool_error}")
                                     
-                                    # Update tools_results_list with regenerated results
-                                    tools_results_list = regenerated_tools_results
-                                    tools_called = [tool_call['function']['name'] for tool_call in regeneration_response['tool_calls']]
+                                    # SI-048 / SI-051 — MERGE, never REPLACE.
+                                    #
+                                    # These two lines used to overwrite BOTH lists with only the
+                                    # regenerated subset, discarding every result gathered before:
+                                    # phase-1 fetches, all of the gather-gate's compute outputs, and
+                                    # plot_data's chart marker. Measured on a Treasury run: the gate
+                                    # computed np.mean(y10)=4.29321 and np.max(y10)=4.79 correctly and
+                                    # published a real chart, then regeneration returned
+                                    # ['lookup_website'] and BOTH lists collapsed to that one entry.
+                                    # Synthesis therefore saw only the raw CSV — so it eyeballed the
+                                    # statistics (reporting 4.27 / 4.62) and, having no marker, drew an
+                                    # ASCII chart that ran to 2.9 MB of whitespace. Three separate
+                                    # user-visible defects, one discarded list.
+                                    #
+                                    # Keep every entry whose tool was NOT regenerated, then append the
+                                    # regenerated ones. Names are derived FROM the entries so the two
+                                    # lists are parallel by construction — `arbitrator_validate_tasks`
+                                    # pairs them with zip(), which silently truncates to the shorter
+                                    # one, so a length skew here loses results with no error at all.
+                                    _regen_names = [tc['function']['name']
+                                                    for tc in regeneration_response['tool_calls']]
+                                    tools_results_list, tools_called = _merge_regenerated_results(
+                                        tools_results_list, regenerated_tools_results, _regen_names)
                                     
                                 else:
                                     logger.warning(f"❌ REGENERATION ATTEMPT #{attempt}: No tool calls generated")

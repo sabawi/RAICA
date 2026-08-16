@@ -46,17 +46,23 @@ REQUIRED = ["system_prompt", "temperature", "max_tokens", "timeout"]
 
 # Declared, justified gaps. Deleting an entry is how a gap gets closed.
 KNOWN_GAPS = {
-    ("context_window_size", "openai"):
-        "OpenAI-compatible APIs have no client-side context knob; the vendor's "
-        "model context governs. Annotated as inert in llm_config.yaml.",
+    # CLOSED 2026-08-15 — ("think", "openai") and ("context_window_size", "openai") used
+    # to live here. Both were WRONG, and their presence is why this contract stayed green
+    # through a real outage: `think` is NOT Ollama-only (DeepInfra accepts
+    # chat_template_kwargs.enable_thinking on GLM-5.2 and DeepSeek-V4-Pro, measured), and
+    # declaring a gap does not make it harmless — an unread `think` left reasoning ON,
+    # which consumed the tool lane's output cap and returned zero tool calls.
+    # LESSON: a KNOWN_GAP must say the provider CANNOT express the parameter, never
+    # merely that this codebase does not. Verify against the vendor before adding one.
     ("context_window_size", "gemini"): "same as openai — no client-side knob",
     ("context_window_size", "qwen"): "same as openai — no client-side knob",
-    ("num_predict", "openai"): "Ollama-specific name; openai uses max_tokens",
+    ("num_predict", "openai"):
+        "Ollama dialect. openai.py consumes the SAME intent as `max_tokens`; "
+        "llm_providers/param_map.py folds both onto canonical max_output_tokens.",
     ("num_predict", "gemini"): "Ollama-specific name",
     ("num_predict", "qwen"): "Ollama-specific name",
-    ("think", "openai"): "Ollama-only thinking-mode flag",
-    ("think", "gemini"): "Ollama-only thinking-mode flag",
-    ("think", "qwen"): "Ollama-only thinking-mode flag",
+    ("think", "gemini"): "google-generativeai exposes no thinking switch",
+    ("think", "qwen"): "DashScope exposes no thinking switch",
     ("stream", "gemini"): "google-generativeai SDK selects streaming by method",
     ("stream", "qwen"): "DashScope uses parameters.incremental_output instead",
     ("retry_attempts", "ollama"): "no retry loop implemented for this provider",
@@ -150,8 +156,12 @@ def test_every_provider_module_is_covered():
     Without this, adding provider N+1 silently escapes every check above —
     which is precisely how openai.py escaped the v1.0.2.101 ollama fix.
     """
+    # `param_map` is infrastructure, not a provider: it holds the canonical-parameter
+    # translation table the providers TRANSLATE THROUGH. It implements no LLM API, so
+    # the per-parameter assertions below are meaningless against it. Its own contract
+    # lives in tests/unit/test_provider_param_translation.py.
     on_disk = {p.stem for p in PROVIDER_DIR.glob("*.py")
-               if p.stem not in {"__init__", "base", "factory", "manager"}}
+               if p.stem not in {"__init__", "base", "factory", "manager", "param_map"}}
     missing = on_disk - set(PROVIDERS)
     assert not missing, (
         f"provider module(s) {sorted(missing)} exist but are not covered by the "
