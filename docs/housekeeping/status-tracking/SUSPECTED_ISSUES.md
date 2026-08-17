@@ -29,6 +29,27 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-070 — `compute` and `plot_data` were never documented in the tool-calling prompt  [RESOLVED v1.0.0.305, 2026-08-17]
+- **THE actual cause of the USGS failure.** v303 and v304 fixed `compute` argument handling —
+  correct work, passing tests — and changed nothing, because `compute` was never being selected.
+- **Measured in `pre_tool_model_system_prompt.txt` (807 lines):** `sandboxed_executor` 29 mentions,
+  `search_web` 38, `analytical_visualizer` 19, `lookup_website` 7 … **`compute` 1** (the English
+  verb, never the tool) and **`plot_data` 0**. Line 621 commanded "COMPUTE THEM FIRST and plot
+  afterwards" WITHOUT naming a tool. The model used the tool the prompt taught it.
+- **My mistake:** I added both tools to the codebase and never described them in the external file
+  that IS the tool-calling architecture — the file exists precisely so tools can be added and
+  explained without hardcoding keywords in code.
+- **Fix:** sections M (`compute`) and N (`plot_data`) in the file's own lettered-scenario idiom —
+  what/when/why/when-NOT/how/returns, a worked example, and the WRONG patterns; `plot_data` added
+  to section J's chart-routing list; line 621 now names `compute(...)`. Includes the explicit
+  "sandboxed_executor CANNOT see fetched data" rule. Mentions: compute 1→14, plot_data 0→6.
+- **Verified through the REAL /v1 entry point** (not a hand-built call): selection became
+  `['get_the_secret_tool','lookup_website'] → ['compute','compute'] → ['plot_data']`, 0 rejections,
+  0 sandboxed_executor for arithmetic; figures 5.88 / 5.80 / 0.42 / n=225 all matching truth, where
+  the prior run FABRICATED 5.87 / 5.70 / 0.39.
+- **RELIABILITY NOT ESTABLISHED:** one run. Tool selection is stochastic and this repo requires ≥3
+  runs before such a change is called verified. Committed, deliberately NOT deployed.
+
 ### SI-069 — the series passed as a TOP-LEVEL argument, so `data` was absent  [RESOLVED v1.0.0.304, 2026-08-17]
 - **Found because the user re-ran the USGS query after v1.0.0.303 shipped and it STILL failed** —
   30 compute calls, all rejected, answer again reporting no statistics.
