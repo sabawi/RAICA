@@ -155,3 +155,74 @@ def test_a_valid_expression_is_never_misread_as_a_script():
     for good in ("np.percentile(x, 90)", "np.min(y30 - y10)", "np.std(mag, ddof=1)",
                  "np.histogram(mag, bins=15)[0]", "np.mean(np.diff(gdp))"):
         assert _looks_like_multiple_statements(good) is False, good
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# SI-069 — the shapes that survived the SI-067 fix and still cost 30 rejected calls
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Measured on production 2026-08-17, AFTER v1.0.0.303 shipped:
+#     {'expr': 'np.percentile(mags, 90)',
+#      'mags': '{"from": "lookup_website#1", "column": "mag"}'}
+#               ^ the series at TOP LEVEL, named after itself — `data` absent entirely
+# reported to the user as "the data object was not properly formed".
+
+def test_a_series_passed_as_a_top_level_argument_is_adopted_as_data():
+    """FAILS PRE-FIX: `data` was absent, so the call died on "non-empty object"."""
+    out = _run(expr="np.mean(mags)", mags=MAGS)
+    assert out["success"] is True, out.get("error")
+    assert "6.15" in out["result"]
+
+
+def test_several_stray_series_are_all_adopted():
+    out = _run(expr="np.corrcoef(a, b)[0][1]", a=[1.0, 2.0, 3.0, 4.0], b=[2.0, 4.0, 6.0, 8.0])
+    assert out["success"] is True, out.get("error")
+    assert "1" in out["result"]
+
+
+def test_an_explicit_data_always_wins_over_strays():
+    """The adoption only FILLS A GAP — it must never override what the model stated."""
+    out = _run(expr="np.mean(mag)", data={"mag": [10.0, 20.0]}, mag=[1.0, 1.0])
+    assert out["success"] is True, out.get("error")
+    assert "15" in out["result"], out["result"][:80]
+
+
+def test_non_series_top_level_arguments_are_not_adopted():
+    """A stray that is not a numeric series is left alone — no meaning is inferred."""
+    out = _run(expr="np.mean(mags)", mags=MAGS, note="a passing remark", limit=5)
+    assert out["success"] is True, out.get("error")
+    assert "note" not in out["result"], "a prose argument was treated as data"
+
+
+def test_len_is_rewritten_to_np_size():
+    """FAILS PRE-FIX: rejected with "only `np.<function>(...)` calls are permitted".
+
+    The evaluator already NAMES this equivalence in _BUILTIN_TO_NUMPY; it just reported it as
+    an error instead of applying it, costing a round-trip every time the model wrote the
+    natural spelling.
+    """
+    out = _run(expr="len(mag)", data={"mag": MAGS})
+    assert out["success"] is True, out.get("error")
+    assert "np.size(mag)" in out["result"], "the rewritten expression is not disclosed"
+    assert "8" in out["result"]
+
+
+def test_the_real_production_expression_now_computes():
+    """The exact expression from the live log, with len() and a stray series."""
+    out = _run(expr="np.sum(mags >= 7.0) / len(mags)", mags=MAGS)
+    assert out["success"] is True, out.get("error")
+    assert "np.size(mags)" in out["result"]
+
+
+def test_rewriting_is_syntactic_and_cannot_touch_unrelated_names():
+    from user_tools.compute_tool import _rewrite_builtin_calls as R
+    assert R("np.mean(length)") == "np.mean(length)", "a name CONTAINING 'len' was rewritten"
+    assert R("np.mean(mag)") == "np.mean(mag)"
+    assert R("len(x)") == "np.size(x)"
+    assert R(["len(a)", "np.mean(b)"]) == ["np.size(a)", "np.mean(b)"]
+
+
+def test_an_unparseable_expression_is_left_for_the_evaluator_to_report():
+    """The rewriter must never mask a syntax error with its own failure."""
+    from user_tools.compute_tool import _rewrite_builtin_calls as R
+    assert R("np.mean(") == "np.mean("

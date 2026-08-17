@@ -75,6 +75,55 @@ _FAIL_CLOSED = (
 )
 
 
+# The parameters `compute` actually declares. Anything else arriving at the top level is a
+# misplaced argument, not a setting (SI-069).
+_DECLARED_PARAMS = ("expr", "data", "label")
+
+
+def _rewrite_builtin_calls(expr):
+    """Rewrite `len(x)` -> `np.size(x)` and `sorted(x)` -> `np.sort(x)` (SI-069).
+
+    The evaluator permits only `np.<function>(...)` calls and already names these equivalences
+    in its own `_BUILTIN_TO_NUMPY` table — it just reports them as an error instead of applying
+    them. The model writes the natural spelling repeatedly and pays a round-trip each time.
+
+    Purely syntactic, done on the AST so it cannot corrupt a string literal or a name that
+    merely CONTAINS "len". The fence still validates the rewritten expression, so nothing is
+    relaxed: an expression that was unsafe before is still rejected after.
+
+    Accepts a str or a list of str (the SI-067 batch form) and returns the same shape.
+    """
+    import ast
+
+    _MAP = {"len": "size", "sorted": "sort"}
+
+    class _Rewriter(ast.NodeTransformer):
+        def visit_Call(self, node):
+            self.generic_visit(node)
+            if isinstance(node.func, ast.Name) and node.func.id in _MAP:
+                node.func = ast.Attribute(value=ast.Name(id="np", ctx=ast.Load()),
+                                          attr=_MAP[node.func.id], ctx=ast.Load())
+            return node
+
+    def _one(e):
+        if not isinstance(e, str) or not e.strip():
+            return e
+        try:
+            tree = ast.parse(e, mode="eval")
+        except SyntaxError:
+            return e                      # let the evaluator report it
+        if not any(isinstance(n, ast.Name) and n.id in _MAP for n in ast.walk(tree)):
+            return e                      # nothing to do — leave the text byte-identical
+        try:
+            return ast.unparse(_Rewriter().visit(tree))
+        except Exception:                 # noqa: BLE001 — never let a rewrite break a call
+            return e
+
+    if isinstance(expr, (list, tuple)):
+        return [_one(e) for e in expr]
+    return _one(expr)
+
+
 def _looks_like_multiple_statements(expr: str) -> bool:
     """True when `expr` is a SCRIPT rather than a single expression (SI-067).
 
@@ -183,6 +232,41 @@ class ComputeTool(BaseUserTool):
                     data = _decoded
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
+
+        # SI-069: the series passed as TOP-LEVEL arguments instead of inside `data`.
+        #
+        # Measured on production 2026-08-17, after SI-067 shipped — 30 calls, all rejected:
+        #     {'expr': 'np.percentile(mags, 90)',
+        #      'mags': '{"from": "lookup_website#1", "column": "mag"}'}
+        #                ^ the series, named after itself, at the top level
+        # `data` is then absent entirely, so the call dies on "`data` must be a non-empty
+        # object mapping names to arrays" — reported to the user as "the data object was not
+        # properly formed".
+        #
+        # A natural mistake: the model treats the series NAME as the parameter name, and the
+        # name it chose is the one its own `expr` refers to. The information is all there and
+        # unambiguous; only its position is wrong.
+        #
+        # Structural, not interpretive: `expr`/`data`/`label` are the declared parameters, so
+        # ANY other top-level argument carrying a numeric series is one the model meant to put
+        # in `data`. Values that are not series are left alone, and an explicit `data` always
+        # wins — this only fills a gap, never overrides.
+        if not data:
+            _strays = {k: v for k, v in kwargs.items()
+                       if k not in _DECLARED_PARAMS and not k.startswith("_")
+                       and isinstance(v, (list, tuple)) and len(v) > 0}
+            if _strays:
+                logger.info("compute: %d series passed as top-level argument(s) %s — treating "
+                            "them as `data` (SI-069)", len(_strays), sorted(_strays))
+                data = {k: list(v) for k, v in _strays.items()}
+
+        # SI-069 (2): `len(x)` rewritten to `np.size(x)`. The evaluator's fence permits only
+        # `np.<function>(...)` calls and already tells the model to write `np.size` — but the
+        # model keeps writing `len`, which is the natural spelling, and every occurrence costs
+        # a whole round-trip. The equivalence is already declared in the evaluator's own
+        # _BUILTIN_TO_NUMPY table, so applying it here is mechanical, not interpretive. The
+        # fence still validates whatever comes out; nothing is relaxed.
+        expr = _rewrite_builtin_calls(expr)
 
         # SI-067 (2): a BARE reference where a mapping belongs. The model sent
         #     data = {"from": "lookup_website#1", "column": "mag"}

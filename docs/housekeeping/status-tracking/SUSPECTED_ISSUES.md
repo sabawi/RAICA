@@ -29,6 +29,31 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-069 — the series passed as a TOP-LEVEL argument, so `data` was absent  [RESOLVED v1.0.0.304, 2026-08-17]
+- **Found because the user re-ran the USGS query after v1.0.0.303 shipped and it STILL failed** —
+  30 compute calls, all rejected, answer again reporting no statistics.
+- **My v303 verification was invalid:** I hand-built a call and invoked `_resolve_call_references`
+  directly, so it bypassed the shape the model actually emits. It passed while production stayed
+  broken — the exact "my test skipped the failing layer" trap.
+- **The real shape, from the live log:**
+      {'expr': 'np.percentile(mags, 90)',
+       'mags': '{"from": "lookup_website#1", "column": "mag"}'}
+  The series sits at the TOP LEVEL, named after itself; `data` is absent entirely → "`data` must
+  be a non-empty object mapping names to arrays", surfaced to the user as "the data object was not
+  properly formed". A natural mistake: the model treats the series NAME as the parameter name, and
+  the name it picks is the one its own `expr` uses. The information is complete and unambiguous —
+  only its position is wrong.
+- **Second shape:** `len(mags)` — the evaluator permits only `np.<function>(...)` and already NAMES
+  the equivalence in its own `_BUILTIN_TO_NUMPY` table, but reported it as an error, costing a
+  round-trip every time the model wrote the natural spelling.
+- **Fix:** when `data` is absent, top-level arguments that are NOT declared parameters and DO carry
+  a numeric series are adopted as `data` (structural — an explicit `data` always wins, non-series
+  strays are ignored); and `len`/`sorted` are rewritten to `np.size`/`np.sort` on the AST, so the
+  fence still validates the result and nothing is relaxed.
+- **Proven on the exact production call:** `np.sum(mags >= 7.0) / len(mags)` with `mags` as a
+  top-level JSON-string reference → **0.0355556 = 8/225**, matching the 8 M7.0+ events the user's
+  own answer listed. 20 tests, 7 of the 8 new ones failing pre-fix.
+
 ### SI-067 — `compute` rejected 28/28 correct calls: `data` arrived as a JSON string  [RESOLVED v1.0.0.303, 2026-08-17]
 - **Symptom (user-reported):** a USGS earthquake request returned an answer stating "the compute
   tool calls ... all failed" and reporting NO mean/median/std-dev at all. 28 attempts, all rejected.
