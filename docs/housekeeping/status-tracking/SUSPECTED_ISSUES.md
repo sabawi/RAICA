@@ -29,6 +29,36 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-064 — a Deep Research request on LIVE went silent mid-flight and never completed  [P1 — OPEN, 2026-08-17]
+- **Observed on live (`2f5a2e6`, v1.0.0.284), not local.** Sent the S2 benchmark prompt
+  ("Deep research the history of jazz music in America … Save the result as a PDF file and an
+  HTML file") to `localhost:5000/v1` ON the live host. Client waited **1800s and received 0
+  bytes**. The server log's LAST line was at **14:56:05** ("Web search completed") and it wrote
+  **nothing for the next ~30 minutes** — no `Deep research complete`, no `Stage 2 timings`, no
+  error, no traceback.
+- **Not a client-disconnect artifact:** the log went silent at 14:56:05 while the client stayed
+  connected until 15:17. Twenty-one minutes of in-flight silence BEFORE the client gave up.
+- **The server did not crash:** `/health` answered normally throughout, the process stayed up
+  (48h uptime) and is now idle at 0.2% CPU. One request went nowhere; the server is fine.
+- **Intermittent, not universal:** an earlier DR on the same live host completed normally —
+  `Deep research complete: 4 rounds, 42 evidence items, 271 unique URLs, 91.7s` /
+  `pipeline complete in 289.8s`. The user separately ran a DR on live the same day and judged
+  the output good.
+- **NOT caused by any change of ours.** Live is v1.0.0.284 and was not modified; it was only
+  sent a request.
+- **SUSPECTED (explicitly not confirmed):** an upstream call hung and RAICA's timeouts are long
+  enough to mask it — the code logs `PRIMARY LLM: Starting with 45 minute timeout`, so a stalled
+  provider or search call would look exactly like this: total silence, no error, healthy process.
+  29 throttle events were recorded in the slice, and live's datacenter IP is already documented
+  as more bot-blocked than a residential one (see the search_web egress action item).
+- **Discriminator NOT yet tested:** this prompt requests PDF+HTML delivery; the successful runs
+  did not. That is a hypothesis, not a finding.
+- **Evidence needed to clear:** re-run the identical prompt on live 3x and record the completion
+  rate; add a heartbeat/watchdog log inside gather so a stalled upstream call is visible instead
+  of silent; capture which call is outstanding when it stalls (thread dump / py-spy).
+- **Why P1:** a user-facing request that hangs for 30+ minutes with no error is worse than a
+  failure — the caller has no signal at all. Frequency is unknown.
+
 ### SI-063 — S2 `dr_latency_s` exceeds tolerance, localized to GATHER, and throttle does NOT explain it  [P2 — OPEN, 2026-08-17]
 - **Observed (v1.0.0.299 Tier-1):** `S2_dr_delivery.dr_latency_s` **354.5s** vs baseline
   **140.7s** (tolerance 120, so the bar is 260.7). Sole non-PASS row in the run; every CODE
