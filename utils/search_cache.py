@@ -44,7 +44,30 @@ _ENV_DIR = "RAICA_SEARCH_CACHE_DIR"
 _ENV_TTL = "RAICA_SEARCH_CACHE_TTL"
 _DEFAULT_TTL = 24 * 3600          # a measurement session, not a persistent store
 
-_stats = {"hits": 0, "misses": 0, "writes": 0}
+_stats = {"hits": 0, "misses": 0, "writes": 0, "rejected_thin": 0}
+
+# MINIMUM distinct sources a result must carry to be worth caching.
+#
+# A cache that stores a DEGRADED result is worse than no cache: it freezes one throttled
+# moment and serves it to every subsequent run. Observed exactly that — a benchmark arm
+# reported `citation_count 0` and `specific_url_ratio 0` because the cache had captured a
+# single-source result and kept handing it back.
+#
+# The floor is DERIVED from the poisoned cache, not chosen. Source counts separated
+# perfectly, with no overlap:
+#     degraded (throttled) : 1 source,   440-1,590 chars   (only the wikipedia fallback
+#                                                           survived; the rest were 429ed)
+#     healthy              : 2-7 sources, 7,901-32,536 chars
+# search_web queries several engines, so one surviving source is the signature of
+# throttling rather than of a genuinely narrow query.
+#
+# A legitimately niche query that returns one source simply is not cached. That is the SAFE
+# failure mode: it costs an extra live search, it can never poison a later run.
+_MIN_SOURCES = int(os.getenv("RAICA_SEARCH_CACHE_MIN_SOURCES", "2"))
+
+
+def _source_count(result) -> int:
+    return str(result or "").count("CITATION URL:")
 
 
 def enabled() -> bool:
@@ -90,8 +113,15 @@ def get(query, max_results):
 
 
 def put(query, max_results, result):
-    """Store a result. A failure here is silent by design — caching is an optimisation."""
+    """Store a result. A failure here is silent by design — caching is an optimisation.
+
+    REFUSES to store a thin result (see _MIN_SOURCES): freezing a throttled moment and
+    replaying it is the one way a cache can make the system WORSE than having none.
+    """
     if not enabled() or not result:
+        return
+    if _source_count(result) < _MIN_SOURCES:
+        _stats["rejected_thin"] += 1
         return
     p = _path(_key(query, max_results))
     if not p:
@@ -111,4 +141,4 @@ def stats():
 
 
 def reset_stats():
-    _stats.update({"hits": 0, "misses": 0, "writes": 0})
+    _stats.update({"hits": 0, "misses": 0, "writes": 0, "rejected_thin": 0})

@@ -38,6 +38,17 @@ import pytest
 from utils import search_cache as SC
 
 
+def _real(body="body"):
+    """A REALISTIC search result: search_web output always carries citation markers.
+
+    The first version of these tests used bare strings like "RESULT-BODY", which carry zero
+    sources — so once the thin-result floor landed they failed. The fixtures were wrong, not
+    the floor: a real result never looks like that.
+    """
+    return ("🔗 CITATION URL: https://a.test/1\n"
+            "🔗 CITATION URL: https://b.test/2\n" + body)
+
+
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     monkeypatch.delenv("RAICA_SEARCH_CACHE_DIR", raising=False)
@@ -50,7 +61,7 @@ def _clean(monkeypatch):
 def test_disabled_by_default_so_production_never_serves_stale_results():
     """THE safety property. Off unless explicitly switched on."""
     assert SC.enabled() is False
-    SC.put("q", 3, "fresh")
+    SC.put("q", 3, _real("fresh"))
     assert SC.get("q", 3) is None, "the cache stored/served a result while disabled"
 
 
@@ -62,24 +73,24 @@ def test_enabled_only_by_the_explicit_env_var(tmp_path, monkeypatch):
 def test_a_repeated_query_is_served_from_cache(tmp_path, monkeypatch):
     """The 67%: the same query across runs must not hit the network twice."""
     monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
-    SC.put("earthquake catalog 2026", 3, "RESULT-BODY")
-    assert SC.get("earthquake catalog 2026", 3) == "RESULT-BODY"
+    SC.put("earthquake catalog 2026", 3, _real("quake"))
+    assert SC.get("earthquake catalog 2026", 3) == _real("quake")
     assert SC.stats()["hits"] == 1
 
 
 def test_distinct_queries_do_not_collide(tmp_path, monkeypatch):
     """A cache that confuses two queries would corrupt every downstream answer."""
     monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
-    SC.put("KO stock news", 3, "KO")
-    SC.put("JPM stock news", 3, "JPM")
-    assert SC.get("KO stock news", 3) == "KO"
-    assert SC.get("JPM stock news", 3) == "JPM"
+    SC.put("KO stock news", 3, _real("KO"))
+    SC.put("JPM stock news", 3, _real("JPM"))
+    assert SC.get("KO stock news", 3) == _real("KO")
+    assert SC.get("JPM stock news", 3) == _real("JPM")
 
 
 def test_max_results_is_part_of_the_key(tmp_path, monkeypatch):
     """Asking for more results must not be answered from a smaller cached set."""
     monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
-    SC.put("q", 3, "three")
+    SC.put("q", 3, _real("three"))
     assert SC.get("q", 10) is None
 
 
@@ -87,7 +98,7 @@ def test_expired_entries_are_not_served(tmp_path, monkeypatch):
     """A measurement session, not a permanent store."""
     monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("RAICA_SEARCH_CACHE_TTL", "0")
-    SC.put("q", 3, "stale")
+    SC.put("q", 3, _real("stale"))
     assert SC.get("q", 3) is None
 
 
@@ -97,7 +108,7 @@ def test_a_broken_cache_never_breaks_a_search(tmp_path, monkeypatch):
     bad.write_text("i am a file")
     monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(bad))
     assert SC.get("q", 3) is None          # no raise
-    SC.put("q", 3, "x")                    # no raise
+    SC.put("q", 3, _real("x"))             # no raise
 
 
 def test_the_server_declares_the_cache_at_startup():
@@ -115,3 +126,44 @@ def test_search_web_consults_the_cache_before_the_network():
     i_get = src.index("_sc.get(query, max_results)", i_def)
     i_ddgs = src.index("from ddgs import DDGS", i_def)
     assert i_get < i_ddgs, "the cache is consulted only AFTER the network call"
+
+
+# ─────────────────────────────────── the poisoning that a real run actually produced
+def test_a_thin_throttled_result_is_never_cached(tmp_path, monkeypatch):
+    """THE defect this floor exists for.
+
+    A cached benchmark arm reported `citation_count 0` / `specific_url_ratio 0` because the
+    cache had captured a SINGLE-source result — the wikipedia fallback surviving while the
+    other engines were 429ed — and kept serving it. A cache that freezes one throttled moment
+    is worse than no cache at all.
+
+    Floor derived from the poisoned cache, which separated with no overlap:
+        degraded : 1 source,    440-1,590 chars
+        healthy  : 2-7 sources, 7,901-32,536 chars
+    """
+    monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
+    thin = "\n📄 SOURCE: List of jazz genres - Wikipedia\n🔗 CITATION URL: https://en.wikipedia.org/wiki/x\n"
+    SC.put("jazz origins", 3, thin)
+    assert SC.get("jazz origins", 3) is None, "a single-source (throttled) result was cached"
+    assert SC.stats()["rejected_thin"] == 1
+
+
+def test_a_healthy_multi_source_result_is_cached(tmp_path, monkeypatch):
+    """The floor must not block real results — it would silently disable the cache."""
+    monkeypatch.setenv("RAICA_SEARCH_CACHE_DIR", str(tmp_path))
+    healthy = ("🔗 CITATION URL: https://a.test/1\n" * 1 +
+               "🔗 CITATION URL: https://b.test/2\n" * 1 + "body")
+    SC.put("KO stock news", 3, healthy)
+    assert SC.get("KO stock news", 3) == healthy
+    assert SC.stats()["rejected_thin"] == 0
+
+
+def test_the_floor_is_tunable_but_defaults_protective(monkeypatch):
+    """A deployment may raise it; the default must already be safe."""
+    import importlib
+    monkeypatch.setenv("RAICA_SEARCH_CACHE_MIN_SOURCES", "5")
+    importlib.reload(SC)
+    assert SC._MIN_SOURCES == 5
+    monkeypatch.delenv("RAICA_SEARCH_CACHE_MIN_SOURCES")
+    importlib.reload(SC)
+    assert SC._MIN_SOURCES == 2
