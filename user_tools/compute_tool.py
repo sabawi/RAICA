@@ -16,6 +16,7 @@ amount of AST validation can predict that.
 """
 
 import asyncio
+import json
 import logging
 from typing import Any, Dict
 
@@ -46,6 +47,10 @@ _TIMEOUT_SECONDS = 5.0
 # truncation is DISCLOSED rather than silently applied (SI-027's lesson).
 _MAX_RETURNED_ELEMENTS = 200
 
+# Expressions per call when `expr` is a list. Enough for a full descriptive-statistics
+# request (n, mean, median, std, min, max, percentiles) without becoming a batch job.
+_MAX_EXPRESSIONS = 12
+
 
 
 # FAIL-CLOSED NOTICE (SI-036). Appended to EVERY compute failure.
@@ -68,6 +73,30 @@ _FAIL_CLOSED = (
     "an expression, or an observation count for it. Say plainly that the calculation could not be "
     "completed, and why. If you can correct the expression, call compute again instead."
 )
+
+
+def _looks_like_multiple_statements(expr: str) -> bool:
+    """True when `expr` is a SCRIPT rather than a single expression (SI-067).
+
+    Detected structurally by asking Python, not by pattern-matching text: if it fails to parse
+    in `eval` mode but parses in `exec` mode, it is statements. That covers assignments,
+    semicolon chains and newlines without enumerating their spellings, and it cannot
+    misclassify a valid expression — a valid expression always parses in eval mode.
+    """
+    import ast
+    if not isinstance(expr, str) or not expr.strip():
+        return False
+    try:
+        ast.parse(expr, mode="eval")
+        return False                      # a genuine single expression
+    except SyntaxError:
+        pass
+    try:
+        ast.parse(expr, mode="exec")
+        return True                       # parses as statements -> it is a script
+    except SyntaxError:
+        return False                      # simply invalid; let the evaluator report it
+
 
 class ComputeTool(BaseUserTool):
     """Evaluate a numpy expression over caller-supplied numeric series."""
@@ -95,12 +124,15 @@ class ComputeTool(BaseUserTool):
             "type": "object",
             "properties": {
                 "expr": {
-                    "type": "string",
                     "description": (
                         "A numpy expression over the names in `data`. Examples: "
                         "\"np.min(y30 - y10)\", \"np.max(prices)\", \"np.mean(np.diff(gdp))\", "
                         "\"np.corrcoef(a, b)[0][1]\", \"np.percentile(x, 90)\". "
-                        "Use `np.` for functions; refer to series by their key in `data`."
+                        "Use `np.` for functions; refer to series by their key in `data`. "
+                        "ONE EXPRESSION ONLY — assignments and `;` are not evaluated. For several "
+                        "figures over the same data, pass a LIST and each is computed separately "
+                        "in a single call: [\"len(mag)\", \"np.mean(mag)\", \"np.median(mag)\", "
+                        "\"np.std(mag, ddof=1)\"]."
                     ),
                 },
                 "data": {
@@ -141,6 +173,47 @@ class ComputeTool(BaseUserTool):
         data = kwargs.get("data")
         label = kwargs.get("label") or ""
 
+        # SI-067 belt-and-braces: the upstream resolver now decodes JSON-string arguments, but
+        # `compute` is also reachable on paths that never pass through it. A string here is
+        # unambiguous — decode it rather than rejecting a call the model got right.
+        if isinstance(data, str):
+            try:
+                _decoded = json.loads(data)
+                if isinstance(_decoded, dict):
+                    data = _decoded
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        # SI-067 (2): a BARE reference where a mapping belongs. The model sent
+        #     data = {"from": "lookup_website#1", "column": "mag"}
+        # instead of {"mag": {...}}. Say exactly what to send rather than guessing a name —
+        # inventing one would silently bind the series to a name `expr` does not use, and the
+        # model would get a confusing "name not defined" instead of the real problem.
+        if isinstance(data, dict) and "from" in data and not any(
+                isinstance(v, (list, tuple, dict)) for v in data.values()):
+            _col = data.get("column") or "series"
+            return {"success": False,
+                    "error": (f"`data` must MAP A NAME to each series, and the reference goes "
+                              f"inside. You sent the reference itself. Use: "
+                              f'{{"{_col}": {json.dumps(data)}}} — then refer to it in `expr` '
+                              f'as `{_col}`.{_FAIL_CLOSED}')}
+
+        # SI-067 (3): several statistics in ONE call. The model tried
+        #     "n = len(mag); mean_mag = np.mean(mag); std_mag = np.std(mag, ddof=1); ..."
+        # because the request asked for four figures at once. That is a script, not an
+        # expression: ast.parse(mode="eval") rejects it and it also blows the character cap.
+        # Accepting a LIST of expressions turns four round-trips into one and removes the
+        # incentive to write a script.
+        if isinstance(expr, (list, tuple)):
+            return await self._evaluate_many(list(expr), data, label)
+        if isinstance(expr, str) and _looks_like_multiple_statements(expr):
+            return {"success": False,
+                    "error": ("`expr` is ONE expression, not a script — assignments and `;` are "
+                              "not evaluated. For several figures, pass a LIST and each is "
+                              'computed separately, e.g. `"expr": ["len(mag)", "np.mean(mag)", '
+                              '"np.median(mag)", "np.std(mag, ddof=1)"]`.'
+                              f"{_FAIL_CLOSED}")}
+
         try:
             # The evaluator is synchronous and CPU-bound; a thread keeps the event loop responsive
             # and gives the timeout something it can actually interrupt waiting on.
@@ -179,6 +252,58 @@ class ComputeTool(BaseUserTool):
             return max(int(np.asarray(v).size) for v in data.values())
         except Exception:  # noqa: BLE001
             return 0
+
+    async def _evaluate_many(self, exprs, data, label) -> Dict[str, Any]:
+        """Evaluate several expressions over the SAME data in one call (SI-067).
+
+        The request that exposed this asked for sample size, mean, median and standard
+        deviation at once. With one expression per call the model wrote a script instead —
+        rejected as a syntax error and over the character cap — and then kept retrying. Four
+        figures should cost one round-trip, not four.
+
+        Each expression is evaluated INDEPENDENTLY: one bad expression reports its own error
+        and the others still return their values. Failing the whole batch would reproduce the
+        all-or-nothing behaviour this fix exists to remove.
+        """
+        if not exprs:
+            return {"success": False,
+                    "error": f"`expr` was an empty list — nothing to compute.{_FAIL_CLOSED}"}
+        if len(exprs) > _MAX_EXPRESSIONS:
+            return {"success": False,
+                    "error": (f"{len(exprs)} expressions requested; the limit is "
+                              f"{_MAX_EXPRESSIONS} per call. Split them across calls."
+                              f"{_FAIL_CLOSED}")}
+        lines, ok_count = [], 0
+        for one in exprs:
+            if not isinstance(one, str) or not one.strip():
+                lines.append(f"- (skipped a non-string entry: {one!r})")
+                continue
+            try:
+                raw = await asyncio.wait_for(
+                    asyncio.to_thread(evaluate, one, data), timeout=_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                lines.append(f"- `{one}` -> took longer than {_TIMEOUT_SECONDS}s and was stopped")
+                continue
+            except RestrictedEvalError as e:
+                lines.append(f"- `{one}` -> rejected: {e}")
+                continue
+            except Exception as e:  # noqa: BLE001
+                lines.append(f"- `{one}` -> failed: {type(e).__name__}: {e}")
+                continue
+            if isinstance(raw, tuple):
+                lines.append(f"- `{one}` -> returned {len(raw)} arrays, not one series; "
+                             f"index the one you need e.g. `{one}[0]`")
+                continue
+            lines.append("- " + self._format(raw, one, data, ""))
+            ok_count += 1
+        head = f"{label}:\n" if label else ""
+        body = head + "\n".join(lines)
+        if ok_count == 0:
+            return {"success": False, "error": f"No expression produced a value.\n{body}{_FAIL_CLOSED}"}
+        if ok_count < len(exprs):
+            body += ("\n\nNOTE: the entries above marked rejected/failed produced NO figure — "
+                     "you are forbidden to state those quantities.")
+        return {"success": True, "result": body}
 
     @classmethod
     def _format(cls, raw, expr, data, label) -> str:

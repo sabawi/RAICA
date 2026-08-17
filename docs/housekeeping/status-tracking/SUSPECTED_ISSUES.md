@@ -29,6 +29,35 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-067 — `compute` rejected 28/28 correct calls: `data` arrived as a JSON string  [RESOLVED v1.0.0.303, 2026-08-17]
+- **Symptom (user-reported):** a USGS earthquake request returned an answer stating "the compute
+  tool calls ... all failed" and reporting NO mean/median/std-dev at all. 28 attempts, all rejected.
+- **Cause:** the model sent `'data': '{"mag": {"from": "lookup_website#1", "column": "mag"}}'` — a
+  STRING containing JSON. `_prepare_data` does `isinstance(data, dict)` → False → "`data` must be a
+  non-empty object mapping names to arrays". The top-level `arguments` blob is json.loads'd in
+  `_resolve_call_references`; NESTED values were not, so the resolver never saw the reference either.
+  **The reference was CORRECT** — right output id, right column. RAICA rejected it at the door.
+- **Verified NOT broken (by inspection):** `extract_column` returns all 225 magnitudes; the reference
+  block shown to the model lists `lookup_website#1` + all 22 column names + the reference syntax; the
+  tool schema documents the reference form and says "PREFER THE REFERENCE"; both prompt paths include it.
+- **Two further shapes from the same run:** a BARE reference where a mapping belongs; and a SCRIPT
+  (`n = len(mag); mean_mag = np.mean(mag); ...`) because four figures were wanted at once — which
+  fails `ast.parse(mode="eval")` and blows the 500-char cap.
+- **Fix:** decode nested JSON-string arguments before resolution (conservative: only strings starting
+  `{`/`[` that parse to dict/list); actionable error naming the exact shape for a bare reference;
+  `expr` may be a LIST (≤12) evaluated independently so one bad expression does not lose the others.
+- **Proven on the real failing case:** mean 5.8828, median 5.8, std(ddof=1) 0.421845, max 7.8 over
+  n=225 — matching the user's own reported 225 events / M7.8 max. 12 tests, 9 failing pre-fix.
+
+### SI-068 — `kind: "bar"` is silently ignored unless x_type is categorical  [P3 — OPEN, 2026-08-17]
+- **Observed:** `plot_data(kind="bar", x_type="quantitative")` renders a LINE. `data_chart_generator.py:152`
+  gates bar rendering on `series.x_type == "categorical"`, so the requested kind falls through with no notice.
+- **Impact:** a true histogram over quantitative bins cannot be rendered as bars. For a probability
+  DISTRIBUTION curve a line is arguably the right rendering, so the output was correct in this case —
+  but a silently ignored parameter will mislead whoever asks for bars next.
+- **Evidence needed to clear:** decide whether bar-over-quantitative should render (binned bars) or
+  whether the tool should say plainly that it downgraded the kind, then pin it with a test.
+
 ### SI-066 — transport failures were converted to prose and fed to the LLM as evidence  [RESOLVED v1.0.0.301, 2026-08-17]
 - **Found by tracing SI-064 down to the transport layer** (user directive: "root cause" means
   the transport layer, not the first application-level story that fits).

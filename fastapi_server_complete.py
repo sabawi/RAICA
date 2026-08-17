@@ -8189,6 +8189,34 @@ def _merge_regenerated_results(tools_results_list: list, regenerated_results: li
     return merged, names
 
 
+def _decode_json_valued_args(args: dict) -> dict:
+    """Decode argument values that arrived as JSON-encoded strings (SI-067).
+
+    Tool-calling models often serialise an object- or array-valued argument rather than
+    emitting it inline. The top-level `arguments` blob is already decoded by the caller; this
+    does the same one level down, which is where `compute`'s `data` reference lives.
+
+    CONSERVATIVE BY CONSTRUCTION: a value is replaced only when it is a string whose first
+    non-space character is `{` or `[` AND it parses as JSON AND the result is a dict or list.
+    A prose argument, a URL, or a quoted number is returned untouched, so no legitimate string
+    argument can be reinterpreted.
+    """
+    out = {}
+    for key, value in (args or {}).items():
+        if isinstance(value, str):
+            probe = value.lstrip()
+            if probe[:1] in ("{", "["):
+                try:
+                    decoded = json.loads(probe)
+                    if isinstance(decoded, (dict, list)):
+                        out[key] = decoded
+                        continue
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+        out[key] = value
+    return out
+
+
 def _resolve_call_references(calls: list, prior_results) -> list:
     """Substitute data references in round-2 tool arguments with the REAL prior output (SI-036).
 
@@ -8211,6 +8239,22 @@ def _resolve_call_references(calls: list, prior_results) -> list:
         if not isinstance(args, dict):
             out.append(call)
             continue
+        # SI-067: a NESTED argument value that is itself a JSON STRING must be decoded before
+        # resolution, or the reference inside it is invisible to the resolver.
+        #
+        # Tool-calling models routinely serialise object-valued arguments. Measured on
+        # production 2026-08-17, the model sent a PERFECTLY CORRECT reference:
+        #     'data': '{"mag": {"from": "lookup_website#1", "column": "mag"}}'
+        #              ^ a STRING containing JSON, not an object
+        # The top-level `arguments` blob is decoded a few lines above; nested values were not.
+        # So the resolver walked a string, matched nothing, and `compute` then rejected it with
+        # "`data` must be a non-empty object mapping names to arrays". 28 attempts, all lost,
+        # on a call the model had got RIGHT.
+        #
+        # Structural only: a string is decoded ONLY when it parses cleanly as a JSON object or
+        # array. Anything else — prose, a URL, a bare number in quotes — is left exactly as it
+        # was, so this cannot change the meaning of a legitimate string argument.
+        args = _decode_json_valued_args(args)
         # SI-036 diagnosis: shapes BEFORE resolution, so an unrecognised reference form is visible.
         # The previous log only fired when a TOP-LEVEL list changed length, which is why compute —
         # whose references sit nested inside `data` — never appeared here at all.
