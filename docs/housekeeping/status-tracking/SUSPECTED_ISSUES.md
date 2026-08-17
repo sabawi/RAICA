@@ -29,6 +29,31 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-063 — S2 `dr_latency_s` exceeds tolerance, localized to GATHER, and throttle does NOT explain it  [P2 — OPEN, 2026-08-17]
+- **Observed (v1.0.0.299 Tier-1):** `S2_dr_delivery.dr_latency_s` **354.5s** vs baseline
+  **140.7s** (tolerance 120, so the bar is 260.7). Sole non-PASS row in the run; every CODE
+  metric passed and `citation_count` was an IMPROVEMENT (16 vs 13).
+- **Attributed to a phase, not guessed:** synthesize 79.1 → 82.0 (stable), verify 34.7 → 53.8,
+  **gather+other 118.9 → 218.7 (+84%)**. The growth is in retrieval, not generation.
+- **What REFUTES the easy explanation:** throttle in that scenario was **59** events this run
+  versus **76** in the previous one — *lower* throttle with *higher* gather latency. A simple
+  "more rate-limiting = slower" story is contradicted by the data, so it is not recorded as
+  the cause. Plausible but UNVERIFIED alternatives: 429 backoff duration (not event count) is
+  the real cost driver; slow-but-successful responses add latency without incrementing the
+  counter at all; DR plans queries dynamically so two runs do not issue the same work.
+- **Baseline is provider-comparable** — measured 2026-07-23, Ollama era, so this is not a
+  DeepInfra-vs-Ollama artifact. That was checked, not assumed.
+- **n=1.** S2 declares `MAX_REPEATS=1` (DR is expensive), so there is no within-run spread.
+  Observed history: 140.7 (baseline), 232.7, 700.1 (client timeout, see v299), 354.5. The
+  spread straddles the tolerance, which may mean the tolerance is too tight for this metric —
+  but widening a tolerance because a run failed it is the "soften the metric that moved
+  against you" trap, so nothing has been changed.
+- **Evidence needed to clear:** accrue 3–5 more S2 measurements now that runs are archived
+  with per-repeat samples (v1.0.0.297), and instrument gather with the 429 *backoff seconds*
+  rather than the event count. If the centre really has moved, rebaseline with a stated
+  reason; if it is variance, widen the tolerance with the distribution as justification.
+- **Not a deploy blocker:** PERF only, single sample, all quality metrics intact.
+
 ### SI-055 threshold half — the guard over-fired and called four healthy runs unmeasurable  [RESOLVED v1.0.0.298, 2026-08-17]
 - **Observed:** a single throttle threshold (150) marked a run INCONCLUSIVE regardless of what
   the metrics said. Four runs were falsely invalidated; the clearest had **33/33 rows PASS** and
