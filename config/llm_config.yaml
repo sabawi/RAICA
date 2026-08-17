@@ -521,7 +521,28 @@ deep_research:
         enabled: true
     loop:
       max_rounds_ceiling: 4
+      # Budget for the WHOLE gather loop. NOTE: it is evaluated between rounds, so it cannot
+      # interrupt work inside one — that is what dispatch_timeout_seconds below is for.
       wall_clock_seconds: 240
+      # Seconds a SINGLE source may take before it is abandoned and the round continues
+      # without it. Bounds a HUNG source, never a lengthy request: a long research run may
+      # still take as many rounds as its own budget allows.
+      #
+      # DERIVED, not chosen. Measured round durations across every archived run were 15-46s
+      # (the widest round dispatched 48 sources in parallel and took 45s), and a round's wall
+      # time is ~its slowest task. A realistic bounded worst case for one source is ~60-90s
+      # (search_web: 6 engines x 5s + ~3 extractions x 10s).
+      #
+      # MUST STAY BELOW wall_clock_seconds. A per-source budget larger than the loop's own
+      # budget is self-contradictory: one stuck source could outlive the entire gather phase
+      # it belongs to. 180s is ~4x the slowest measured round, ~2x a realistic worst case,
+      # and still comfortably inside the 240s loop budget.
+      #
+      # Why it exists: on 2026-08-17 one source stopped returning and froze a production DR
+      # round for 41 minutes — silently, at ~98% idle CPU, with zero LLM calls in the
+      # provider's own journal. wall_clock_seconds could not fire because the loop never got
+      # back to its check.
+      dispatch_timeout_seconds: 180
       assess_max_tokens: 4000
     sources:
       allowed:

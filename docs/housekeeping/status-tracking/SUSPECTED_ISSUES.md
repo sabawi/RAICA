@@ -83,7 +83,20 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   today December 2025` — the tool-calling model wrote a stale date. That is where the bot's
   "December 2025" came from. Tracked separately; it is a tool-argument problem, not formatting.
 
-### SI-064 — a Deep Research request on LIVE went silent mid-flight and never completed  [P1 — OPEN, 2026-08-17]
+### SI-064 — a Deep Research request on LIVE went silent mid-flight and never completed  [P2 — AMPLIFIER FIXED v1.0.0.302; CAUSE STILL OPEN, 2026-08-17]
+- **SEVERITY CORRECTED:** originally filed P1 as a "hang". That was a judgment drawn from two
+  data points with no mechanism. Measured afterwards: all 22 server threads sleeping, none
+  blocked on a socket, full thread pool, serving requests normally. Nothing was held hostage.
+- **AMPLIFIER FIXED (v1.0.0.302):** `_dispatch_round` awaited `asyncio.gather` with no timeout
+  and logged only AFTER it, so one stuck source froze the round in silence. `loop.wall_clock_seconds`
+  (240s) existed but is evaluated at the TOP of the round loop — a hung round never returns to
+  the check, so a limit testable only BETWEEN iterations cannot bound work inside one. Now
+  bounded PER TASK (`dispatch_timeout_seconds: 180`, derived from 15-46s measured rounds), which
+  drops a stuck source without preempting a lengthy request. Round now announces itself BEFORE
+  the await.
+- **STILL OPEN — why the source stuck.** The fix explains why 41 minutes produced no
+  diagnostic; it does not explain the stall. With v301 (dropped sources logged with URL +
+  reason) and v302 (per-source timeout + pre-await log), a recurrence will now leave evidence.
 - **Observed on live (`2f5a2e6`, v1.0.0.284), not local.** Sent the S2 benchmark prompt
   ("Deep research the history of jazz music in America … Save the result as a PDF file and an
   HTML file") to `localhost:5000/v1` ON the live host. Client waited **1800s and received 0

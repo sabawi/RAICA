@@ -622,11 +622,66 @@ class DeepResearchEngine:
     def _wall_clock(self) -> float:
         return float(self._cfg.get("loop", {}).get("wall_clock_seconds", 240))
 
+    @property
+    def _dispatch_timeout(self) -> float:
+        """Seconds a SINGLE source may take before it is abandoned.
+
+        DERIVED from measured round durations, not chosen. A round awaits its tasks in
+        parallel, so a round's wall time is approximately its SLOWEST task. Across every
+        archived run:
+
+            round durations   15s, 17s, 19s, 19s, 19s, 22s, 26s, 45s, 46s
+            widest round       48 sources in parallel -> 45s
+
+        so the slowest legitimate single task is ~46s — and that is an OVER-estimate, because
+        the interval between round markers also contains the inter-round assess LLM call.
+
+        A realistic bounded worst case for one source is ~60-90s (search_web: 6 engines x 5s
+        plus ~3 extractions x 10s). The default of 180s is ~4x the slowest measured round and
+        ~2x that worst case.
+
+        IT MUST STAY BELOW `wall_clock_seconds` (240s). A per-source budget larger than the
+        loop's own budget is self-contradictory — one stuck source could outlive the entire
+        gather phase it belongs to. An earlier draft of this fix set 300s and had exactly that
+        contradiction.
+        """
+        return float(self._cfg.get("loop", {}).get("dispatch_timeout_seconds", 180))
+
     async def _safe_dispatch(self, source: str, query: str) -> str:
-        """Run one tool; never raise — a failed source must not abort the round."""
+        """Run one tool; never raise — a failed source must not abort the round.
+
+        BOUNDED per TASK, deliberately NOT per request (SI-064).
+        ---------------------------------------------------------
+        `_dispatch_round` awaits `asyncio.gather(...)` with no timeout, and the only log line
+        in that region comes AFTER it. So one source that never returns froze an entire round
+        silently: measured on production 2026-08-17, a DR round went quiet for 41 minutes —
+        no error, no output, ~98% idle CPU, and zero LLM calls in the provider's own journal.
+
+        `loop.wall_clock_seconds` (240s) was supposed to cover this, but it is evaluated at
+        the TOP of the round loop, between rounds. A hung round never returns to the check, so
+        the budget could not fire. A limit that can only be tested between iterations cannot
+        bound the work inside one.
+
+        The bound therefore goes HERE, on the individual task, and NOT on the round or the
+        request:
+          * a stuck SOURCE is dropped and recorded — the round keeps every other result;
+          * a genuinely lengthy REQUEST is untouched. It may run as many rounds as its own
+            budget allows, and each round may take as long as its sources legitimately need.
+        Bounding the gather itself, or charging it against the wall clock, WOULD preempt long
+        legitimate research — which is precisely the failure mode to avoid.
+        """
         try:
-            out = await self._dispatch(source, query)
+            out = await asyncio.wait_for(self._dispatch(source, query), self._dispatch_timeout)
             return out if isinstance(out, str) else str(out)
+        except asyncio.TimeoutError:
+            # Distinct from the generic failure below: a timeout means the source is HUNG, not
+            # that it answered badly. Logged loudly because this is the signature that had no
+            # diagnostic at all when it took down a production round.
+            logger.warning("⏱️ source '%s' TIMED OUT after %.0fs for %r — abandoning this "
+                           "source; the round continues with the rest",
+                           source, self._dispatch_timeout, query[:60])
+            return (f"[source '{source}' timed out after {self._dispatch_timeout:.0f}s "
+                    f"and returned nothing]")
         except Exception as e:  # noqa: BLE001 — a single source failure is non-fatal
             logger.warning("🔎 source '%s' failed for %r: %s", source, query[:60], e)
             return f"[source '{source}' returned no usable result: {e}]"
@@ -673,6 +728,13 @@ class DeepResearchEngine:
         if not pending:
             return []
 
+        # ANNOUNCE BEFORE AWAITING. The only log line in this region used to come AFTER the
+        # gather, so a round that never completed produced no output whatsoever — the reason
+        # a 41-minute production stall left nothing to diagnose. One line before the await
+        # makes the difference between "we know it entered round N with these sources" and
+        # total silence.
+        logger.info("🔎 Round %d: dispatching %d source(s) (per-source limit %.0fs) ...",
+                    round_num, len(pending), self._dispatch_timeout)
         outputs = await asyncio.gather(*[c for _, c in pending], return_exceptions=True)
         items: List[Dict[str, Any]] = []
         for (t, _), out in zip(pending, outputs):
