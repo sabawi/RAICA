@@ -193,7 +193,29 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   with per-repeat samples (v1.0.0.297), and instrument gather with the 429 *backoff seconds*
   rather than the event count. If the centre really has moved, rebaseline with a stated
   reason; if it is variance, widen the tolerance with the distribution as justification.
-- **Not a deploy blocker:** PERF only, single sample, all quality metrics intact.
+- **SAMPLES ACCRUED (2026-08-17, 6 archived runs — this is the evidence SI-063 asked for):**
+
+  | run | synth | verify | dr_latency |
+  |---|---|---|---|
+  | v297-era | 79.1 | 34.7 | 232.7 |
+  | v299 | 82.0 | 53.8 | 354.5 |
+  | v301 | 61.7 | 84.7 | 344.8 |
+  | v302 | 81.5 | 39.6 | 197.5 |
+  | v303 | 92.4 | 138.0 | 321.6 |
+  | **baseline (2026-07-23)** | **42.4** | **53.8** | **140.7** |
+
+  `dr_synthesize_s` sits at **61-92s** against a 42.4s baseline (threshold 82.4) — v302 PASSED at
+  81.5 and v303 FAILED at 92.4, i.e. ordinary variance straddling the line rather than a change in
+  behaviour. `dr_verify_s` ranges 34.7-138.0. All three are LLM-generation times.
+- **Not caused by any change in v297-v303:** the elevated level is present in the FIRST run of the
+  day (79.1, v297-era) and those releases changed benchmark-harness code only. `_resolve_call_references`
+  (v303) is not in the DR path at all — DR dispatches via `_safe_dispatch`.
+- **CONCLUSION FORMING:** the S2 PERF baseline is STALE (captured 2026-07-23, ~25 builds ago) and no
+  longer describes the system. The honest fix is a rebaseline WITH A STATED REASON on a rested,
+  low-throttle run — not a tolerance widened to swallow a failure. Deliberately NOT done here: a
+  rebaseline taken while chasing a red verdict is the exact "soften the metric that moved against
+  you" trap.
+- **Not a deploy blocker:** PERF only, all CODE/quality metrics intact across all 6 runs.
 
 ### SI-055 threshold half — the guard over-fired and called four healthy runs unmeasurable  [RESOLVED v1.0.0.298, 2026-08-17]
 - **Observed:** a single throttle threshold (150) marked a run INCONCLUSIVE regardless of what
