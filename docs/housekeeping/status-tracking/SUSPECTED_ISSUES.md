@@ -33,8 +33,23 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Observed (v1.0.0.299 Tier-1):** `S2_dr_delivery.dr_latency_s` **354.5s** vs baseline
   **140.7s** (tolerance 120, so the bar is 260.7). Sole non-PASS row in the run; every CODE
   metric passed and `citation_count` was an IMPROVEMENT (16 vs 13).
-- **Attributed to a phase, not guessed:** synthesize 79.1 → 82.0 (stable), verify 34.7 → 53.8,
-  **gather+other 118.9 → 218.7 (+84%)**. The growth is in retrieval, not generation.
+- **ATTRIBUTION CORRECTED 2026-08-17 — the first one was an arithmetic artifact.** I computed
+  `total − synthesize − verify`, labelled the remainder "gather+other", and then reported it as
+  gather (+84%). But the server METERS plan and gather explicitly
+  (`🧭 Deep research complete: … (plan Xs + gather Ys)`), and measured gather barely moved:
+  **75.0s → 87.1s**. The residual was mostly phases I had not accounted for. Never infer a
+  phase by subtraction when the phase is instrumented.
+- **Real decomposition of the 354.5s (v299 S2), from the log:**
+  plan 22.0 (6%) · gather 87.1 (25%) · grade 8.2 (2%) · synthesize 82.0 (23%) · verify 53.8 (15%)
+  · **unmetered inside the pipeline 62.7 (18%)** · **delivery + streaming 38.7 (11%)**.
+  Metered stages sum to 253.1s against a pipeline total of 315.8s and a client-observed 354.5s,
+  so **~101s (29%) of wall time sits in gaps nothing measures.**
+- **What the volumes rule out:** v299 gathered LESS than the faster v297 run — 25 evidence items
+  / 89 URLs / 129,579 chars vs 31 / 66 / 129,077 — and every run stops at `max_rounds` (4), so
+  extra rounds, source count and ingest volume are all refuted as the cause.
+- **The volatile phases are LLM calls, not retrieval:** synthesize across runs 77.3 / 202.8 /
+  82.0 / 133.7; verify 124.7 / 133.1 / 53.8 / 188.4. DR latency is dominated by generation plus
+  unmetered overhead.
 - **What REFUTES the easy explanation:** throttle in that scenario was **59** events this run
   versus **76** in the previous one — *lower* throttle with *higher* gather latency. A simple
   "more rate-limiting = slower" story is contradicted by the data, so it is not recorded as
