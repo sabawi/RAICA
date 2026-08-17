@@ -128,3 +128,39 @@ numbers are therefore not comparable to a DeepInfra run.
 `deepseek-v4-pro` unpinned and MiniMax/Kimi vision rather than the `-0813` pin and Qwen3-VL.
 The originals are preserved in each line's `(was ...)` tag — use `convert --revert`, or
 re-set those three lanes explicitly.
+
+---
+
+## ADDENDUM (v1.0.0.295) — repeated runs rate-limit themselves; use the search cache
+
+The first A/B attempt lost **2 of 6 runs** to throttling (GLM n=1 vs Flash n=3):
+
+| run | throttle | suite |
+|---|---|---|
+| p1 GLM | 84 | PASS |
+| p1 Flash | 141 | PASS |
+| p2 GLM | **226** | **INCONCLUSIVE** |
+| p2 Flash | 141 | REGRESSION (PERF only) |
+| p3 GLM | **152** | **INCONCLUSIVE** |
+| p3 Flash | 142 | PASS |
+
+**Spacing does not fix this.** At 12–18 min apart the counts do not trend down; the only low
+reading followed a ~12-hour idle. Measured: **395 of 587 queries (67%) repeat ACROSS runs**,
+because re-running the same scenarios issues the same queries.
+
+**So for A/B repeats, enable the search cache on the SERVER:**
+
+```bash
+export RAICA_SEARCH_CACHE_DIR=$HOME/.raica_bench_search_cache
+./stop_complete.sh && sleep 10 && ./start_complete.sh      # server declares it at startup
+```
+
+The server logs `🗂️ SEARCH CACHE ENABLED: …` and the benchmark reads that line, so a cached
+run can never be mistaken for a live one.
+
+**When to use it:** comparing two MODELS. Fixing retrieval removes the variance that swamped
+every quality delta in the first comparison (`unique_sources` looked like +46% on one run and
+was *identical* at n=3).
+
+**When NOT to use it:** validating retrieval, citations or freshness. A cached run cannot
+detect a live-search regression. Unset the variable and restart for those.

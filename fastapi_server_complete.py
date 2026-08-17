@@ -476,6 +476,18 @@ class AsyncToolManager:
         self.current_request_context = {}
 
         logger.info(f"AsyncToolManager initialized with {len(self.available_functions)} tools")
+        # SI-055 — declare the search cache LOUDLY at startup. A cached run must never be
+        # mistaken for a live one: the benchmark reads this line to report the state
+        # accurately, and an operator seeing it knows retrieval is not fresh.
+        try:
+            from utils import search_cache as _search_cache
+            if _search_cache.enabled():
+                logger.warning(
+                    "🗂️ SEARCH CACHE ENABLED: %s — outbound web searches may be served "
+                    "from disk. Benchmark/measurement use only, NEVER production.",
+                    os.getenv("RAICA_SEARCH_CACHE_DIR"))
+        except Exception:  # noqa: BLE001 — a reporting line must never break startup
+            pass
     
     def set_image_context(self, images: list, context: dict = None):
         """🖼️ Set image context for tools that need image data"""
@@ -1620,6 +1632,17 @@ class AsyncToolManager:
 
                 # DuckDuckGo search function (from original)
                 def ducducgo(query, max_results=3):
+                    # SI-055 (volume half) — OPT-IN search cache, off unless
+                    # RAICA_SEARCH_CACHE_DIR is set. Measured across one A/B session: 395 of
+                    # 587 queries (67%) repeat ACROSS runs, because re-running the same
+                    # scenarios issues the same queries. That repetition is what drives the
+                    # rate-limiting that made 2 of 6 benchmark runs unusable; spacing runs
+                    # 12-18 min apart did not help. Never active in production: serving stale
+                    # news, prices or citations silently would be far worse than a slow run.
+                    from utils import search_cache as _sc
+                    _cached = _sc.get(query, max_results)
+                    if _cached is not None:
+                        return _cached
                     try:
                         from ddgs import DDGS
                         # v1.0.0.165 — exclude the dead/redundant mullvad_* proxies (leta.mullvad.net
@@ -1682,6 +1705,7 @@ class AsyncToolManager:
                                     source_num=i
                                 )
                                 res += formatted_result
+                            _sc.put(query, max_results, res)
                             return res
                     except Exception as e:
                         print(f"DuckDuckGo Error: {e}", flush=True)

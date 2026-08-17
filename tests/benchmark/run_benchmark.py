@@ -117,6 +117,27 @@ def run_tier1(live, repeats, update_baseline, reason):
     server_log = os.path.join(REPO_ROOT, "logs", "server_complete.log")
     log_start = TH.log_position(server_log)
 
+    # SI-055 (volume half) — a measurement SESSION may reuse search results across runs.
+    # 67% of queries repeat across runs of the same scenarios, and that repetition is what
+    # rate-limits the suite into INCONCLUSIVE. Opt-in and always disclosed: `--search-cache`
+    # only, never a default, because a cached run measures the pipeline against FIXED
+    # retrieval and therefore cannot detect a live-search regression.
+    # The cache lives in the SERVER process (search_web runs there), so our own environment
+    # says nothing about it. Read the server's own startup declaration instead — reporting a
+    # cache that is not actually on would be worse than not reporting one at all.
+    search_cache_dir = None
+    try:
+        with open(server_log, errors="replace") as _fh:
+            for _line in _fh:
+                if "SEARCH CACHE ENABLED" in _line:
+                    search_cache_dir = _line.split("ENABLED", 1)[1].strip(" :→-\n")
+    except OSError:
+        pass
+    if search_cache_dir:
+        print(f"  {YELLOW}search cache ENABLED (server-side){RESET}: {search_cache_dir}")
+        print(f"  {YELLOW}retrieval is FIXED for this session — a cached run CANNOT detect a "
+              f"live-search regression.{RESET}")
+
     all_metrics = []
     per_scenario_throttle = {}
     for mod in SCENARIOS:
@@ -145,7 +166,8 @@ def run_tier1(live, repeats, update_baseline, reason):
     degraded, env_message = TH.assess(throttle_events)
     environment = {"degraded": degraded, "message": env_message,
                    "throttle_events": throttle_events,
-                   "per_scenario": per_scenario_throttle}
+                   "per_scenario": per_scenario_throttle,
+                   "search_cache_dir": search_cache_dir}
 
     if update_baseline and degraded:
         # A throttled run must NEVER become the baseline: every future comparison would be
@@ -174,6 +196,10 @@ def run_tier1(live, repeats, update_baseline, reason):
 def main():
     ap = argparse.ArgumentParser(description="RAICA quality/performance benchmark")
     ap.add_argument("--tier", choices=["0", "1", "2", "all"], default="0")
+    # NOTE: the search cache is enabled on the SERVER, not here —
+    #   export RAICA_SEARCH_CACHE_DIR=/path && ./start_complete.sh
+    # because search_web runs in the server process. This runner only REPORTS it, read from
+    # the server's own startup log.
     ap.add_argument("--live", action="store_true", help="Tier 1/2: run against LIVE RAICA (default: local)")
     ap.add_argument("--repeats", type=int, default=3, help="Tier 1 runs per scenario (median); default 3")
     ap.add_argument("--update-baseline", action="store_true", help="rewrite baseline.json (requires --reason)")
