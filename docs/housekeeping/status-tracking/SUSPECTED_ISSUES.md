@@ -29,6 +29,33 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-065 — news articles reach the LLM with no publication date; the feed's date was parsed and discarded  [RESOLVED v1.0.0.300, 2026-08-17]
+- **Reported by a live bot**, asked for a briefing on the last 8 hours: *"the tool results I
+  received do not contain any news items with publication timestamps ... the news summaries
+  provided are undated aggregates."* True on every count.
+- **Retrieval was NOT broken.** Live `03:37:21 PM`: `Parallel fetch completed in 1.4s with 8
+  articles` + `2.3s with 16 articles`. 24 fresh articles reached the model (`evidence=30`,
+  56,021-char context, 0 fabricated citations).
+- **My own earlier claim that the tool "returned nothing, silently" was WRONG** — those
+  `Parallel fetch completed` lines are `print()` output with no timestamp prefix, and my grep
+  required `^<timestamp>`. The tool was never broken; the search for evidence of it working
+  was. Second time in one session a bad pattern manufactured a false failure.
+- **Cause:** the RSS parser stored the feed's date in `article['pub_date']` (line 3131) and
+  **nothing read it** — 4 occurrences, all writes. The printed date came only from
+  `_extract_content_date`, which regex-hunts the article BODY for a literal "Published:
+  <Month D, YYYY>" string RSS descriptions do not carry. Locally: **1 of 16 articles dated**.
+- **Fix (v1.0.0.300):** `_normalize_pub_date()` (RFC-822 ±zone, ISO-8601 → `August 17, 2026
+  15:16 UTC`, unparseable passes through verbatim); `_format_source_block(..., pub_date=None)`
+  prefers it over the body scrape; the news path forwards `article.get('pub_date')`. TIME is
+  kept because a bare day cannot answer "the last 8 hours".
+- **Proven through the real tool call:** dated articles **1/16 → 16/16**; 16/16 timestamps
+  parse; newest 0.2h old; **13/16 inside the 8-hour window** the bot was asked about, versus
+  zero it could previously place. 12 tests, 8 failing pre-fix. Tier-0 10/10, smoke 6/6,
+  unit 623 passed.
+- **Related, NOT fixed:** the same request's `search_web` queries read `breaking world news
+  today December 2025` — the tool-calling model wrote a stale date. That is where the bot's
+  "December 2025" came from. Tracked separately; it is a tool-argument problem, not formatting.
+
 ### SI-064 — a Deep Research request on LIVE went silent mid-flight and never completed  [P1 — OPEN, 2026-08-17]
 - **Observed on live (`2f5a2e6`, v1.0.0.284), not local.** Sent the S2 benchmark prompt
   ("Deep research the history of jazz music in America … Save the result as a PDF file and an

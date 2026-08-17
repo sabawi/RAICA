@@ -2710,7 +2710,40 @@ async def check_ollama_health() -> bool:
         logger.warning(f"Ollama health check failed: {e}")
         return False
 
-def _format_source_block(source_url: str, title: str, content: str, source_num: int, timestamp: str = None) -> str:
+def _normalize_pub_date(raw: str) -> str:
+    """RSS/Atom publication date -> '<Month> <D>, <YYYY> HH:MM UTC'. None if unusable.
+
+    The TIME matters, not just the day: the failure this exists for was a bot asked for news
+    "from the last 8 hours", a question no bare date can answer.
+
+    Feeds are inconsistent (RFC-822 with and without zone, ISO-8601, junk), so anything
+    unparseable falls back to the RAW string — a feed's own date shown verbatim is far better
+    than no date at all. Uses `email.utils.parsedate_to_datetime`, already this project's
+    RFC-822 parser (utils/email_library.py:246).
+    """
+    if not raw or not str(raw).strip():
+        return None
+    raw = str(raw).strip()
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(raw)
+        if dt is not None:
+            if dt.tzinfo is not None:
+                from datetime import timezone as _tz
+                dt = dt.astimezone(_tz.utc)
+            return dt.strftime('%B %d, %Y %H:%M UTC')
+    except Exception:                                     # noqa: BLE001
+        pass
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(raw.replace('Z', '+00:00')).strftime('%B %d, %Y %H:%M UTC')
+    except Exception:                                     # noqa: BLE001
+        pass
+    return raw
+
+
+def _format_source_block(source_url: str, title: str, content: str, source_num: int, timestamp: str = None,
+                         pub_date: str = None) -> str:
     """
     Format individual source with simplified block structure for accurate LLM citation.
 
@@ -2725,12 +2758,25 @@ def _format_source_block(source_url: str, title: str, content: str, source_num: 
         content: The actual content from the source
         source_num: Sequential source number for organization
         timestamp: Deprecated parameter (kept for backward compatibility)
+        pub_date: The source's OWN publication date, when the caller has one (RSS/Atom feeds
+                  supply it). Preferred over scraping the body — it is authoritative and present.
 
     Returns:
         Formatted source block with clear citation requirements, content dates, and accessibility indicators
     """
-    # Extract actual publication date from content
-    content_date = _extract_content_date(content)
+    # Prefer the caller's STRUCTURED date; fall back to scraping the body text.
+    #
+    # WHY (2026-08-17): the RSS parser already extracted the feed's date into
+    # `article['pub_date']` — and nothing ever read it. That name had four occurrences in this
+    # file and all four were writes. The date shown here came solely from
+    # `_extract_content_date`, which regex-hunts the body for literal "Published: August 17,
+    # 2026" text that RSS descriptions essentially never carry. Measured locally: 1 of 16
+    # articles got a date.
+    #
+    # Live consequence: a news bot asked for the last 8 hours received 24 genuinely fresh
+    # articles carrying no timestamps, could not show any of them fell inside the window, and
+    # correctly refused to answer rather than fabricate one. Fresh content, made unusable.
+    content_date = _normalize_pub_date(pub_date) or _extract_content_date(content)
 
     # Build date line only if we found an actual publication date
     date_line = ""
@@ -3199,7 +3245,12 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
                     title = article.get('title', 'Untitled Article')
                     description = article.get('description', '')
 
-                    # Use description as content (date will be extracted by _format_source_block)
+                    # The description is the content. The DATE comes from the feed itself —
+                    # this comment used to read "date will be extracted by
+                    # _format_source_block", which was the whole bug: that function scrapes
+                    # the body for a literal "Published: ..." string that RSS descriptions
+                    # do not contain, while the feed's real date sat unused in
+                    # article['pub_date'].
                     enhanced_content = description
 
                     # Create source block for each article
@@ -3207,7 +3258,8 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
                         source_url=article_url,
                         title=title,
                         content=enhanced_content,
-                        source_num=source_num_start + i
+                        source_num=source_num_start + i,
+                        pub_date=article.get('pub_date')
                     )
                     content_blocks.append(formatted_source)
 
