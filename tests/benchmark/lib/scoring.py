@@ -23,7 +23,9 @@ IMPROVEMENT, PASS, REGRESSION, WARN, INFO = "IMPROVEMENT", "PASS", "REGRESSION",
 # regression; REGRESSION would block a good deploy and teach people to ignore the suite. The
 # honest answer is that the measurement did not happen.
 INCONCLUSIVE = "INCONCLUSIVE"
-_C = {IMPROVEMENT: "\033[36m", PASS: "\033[32m", REGRESSION: "\033[31m", WARN: "\033[33m",
+# A metric the run never obtained. NOT a regression: see verdict_for.
+UNMEASURED = "UNMEASURED"
+_C = {UNMEASURED: "\033[35m", IMPROVEMENT: "\033[36m", PASS: "\033[32m", REGRESSION: "\033[31m", WARN: "\033[33m",
       INFO: "\033[2m", INCONCLUSIVE: "\033[35m"}
 _RESET = "\033[0m"
 
@@ -37,7 +39,16 @@ def verdict_for(value, baseline, *, cls, direction, tolerance):
     if baseline is None:
         return INFO  # first run / new metric — record it, don't fail
     if value is None:
-        return WARN if cls == "ENV" else REGRESSION  # the run couldn't measure it
+        # NOT measured is NOT failed. This line used to return REGRESSION while its own
+        # comment said "the run couldn't measure it" — the conflation in one place.
+        #
+        # Real cost, 2026-08-17: S2's client timed out at exactly 700.0s. The server had
+        # actually FINISHED — "Deep research complete: 4 rounds, 53 evidence items", a
+        # verified 107,956-byte %PDF-1.7 and a 72,405-byte HTML on disk, written ~30s after
+        # the client stopped listening. The suite reported REGRESSION on seven rows for a
+        # run that produced correct output. A harness that gives up early must say so, not
+        # blame the system it was measuring.
+        return UNMEASURED
     bad = WARN if cls == "ENV" else REGRESSION
     if direction == "must_equal":
         return PASS if value == baseline else bad
@@ -124,7 +135,13 @@ def retrieval_collapsed(rows):
     """
     reasons = []
     for r in rows:
-        if r.get("cls") != "CODE" or r.get("direction") != "higher_better":
+        # `higher_better` ONLY was too narrow, and the run of 2026-08-17 proved it: the
+        # canonical collapse signature quoted above includes `dr_completed True -> False` and
+        # `attachment_count 2 -> 0`, both of which are declared `must_equal`. They were
+        # invisible to the detector that cites them as its own definition. `lower_better`
+        # stays excluded: a latency of 0 is suspicious, but it is not "retrieval returned
+        # nothing".
+        if r.get("cls") != "CODE" or r.get("direction") not in ("higher_better", "must_equal"):
             continue
         base, val = r.get("baseline"), r.get("value")
         if isinstance(base, bool):
@@ -174,7 +191,14 @@ def score_run(metrics, baseline, environment=None):
     env["collapse_reasons"] = collapse_reasons
     env["degraded"] = degraded
 
+    # A run with holes in it cannot report PASS — "we did not measure this" is not evidence
+    # of health. Precedence: REGRESSION (measured bad) > INCONCLUSIVE (did not measure) > PASS.
+    unmeasured = [f"{r['scenario']}.{r['name']}" for r in rows if r["verdict"] == UNMEASURED]
+    env["unmeasured"] = unmeasured
+
     suite = PASS
+    if unmeasured:
+        suite = INCONCLUSIVE
     if any(r["verdict"] == REGRESSION for r in rows):
         suite = REGRESSION
     if degraded:

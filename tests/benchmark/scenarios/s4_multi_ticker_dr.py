@@ -37,7 +37,7 @@ def run(base, repeats=1):
         a = SP.audit_numbers(text)
         SP.retain(SCENARIO, text, log, tag=__import__("os").environ.get("BENCH_ARM"))
         _m = lambda n, c, v, u, d, t: SP.m(SCENARIO, n, c, v, u, d, t)
-        runs.append([
+        runs.append(RC.unmeasured_if_no_response(r, [
             # --- the invariants that broke on 2026-08-10 ---
             _m("tickers_with_dcf",        "CODE", SP.tickers_with_dcf(text, TICKERS), "count", "higher_better", 0),
             _m("tickers_with_call",       "CODE", SP.tickers_with_call(text, TICKERS), "count", "higher_better", 0),
@@ -59,5 +59,5 @@ def run(base, repeats=1):
             _m("sources_truncated",       "CODE", trunc,                              "count", "lower_better", 0),
             _m("answer_chars",            "CODE", len(text),                          "chars", "higher_better", 0),
             _m("dr_latency_s",            "PERF", r["latency_s"],                     "seconds", "lower_better", 300),
-        ])
+        ]))
     return runs

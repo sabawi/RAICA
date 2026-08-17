@@ -195,3 +195,27 @@ def created_delivery_files(log_lines):
             names = re.findall(r"'([^']+\.(?:pdf|html|md|txt))'", line)
             return [os.path.join(sandbox, n) for n in names]
     return []
+
+
+def unmeasured_if_no_response(r, metrics):
+    """Null every metric value when the request never came back.
+
+    WHY (2026-08-17): `post_v1` returns `ok: False` on a timeout, and NOT ONE scenario looked
+    at it. They computed metrics from the empty response instead, so a client timeout was
+    indistinguishable from a broken system: `dr_completed False`, `attachment_count 0`,
+    `pdf_valid False`.
+
+    In the run that exposed this the server had actually SUCCEEDED — "Deep research complete:
+    4 rounds, 53 evidence items", a verified 107,956-byte %PDF-1.7 and a 72,405-byte HTML on
+    disk — written roughly 30 seconds AFTER the client stopped listening at exactly 700.0s.
+    The suite called that a CODE REGRESSION on seven rows.
+
+    `dr_latency_s` is deliberately KEPT: how long we waited before giving up is a real
+    observation, and it is the value that makes the timeout visible in the scorecard.
+
+    None then scores as UNMEASURED (never REGRESSION) and forces the suite to INCONCLUSIVE —
+    the honest outcome, which also prompts a re-run instead of a false alarm.
+    """
+    if r.get("ok"):
+        return metrics
+    return [m if m["name"].endswith("latency_s") else {**m, "value": None} for m in metrics]

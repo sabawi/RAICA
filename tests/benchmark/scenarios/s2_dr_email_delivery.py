@@ -62,14 +62,23 @@ def run(base, repeats=1):   # DR is ~5 min; default 1 run (expensive). Median of
     runs = []
     for _ in range(repeats):
         t0 = time.time()
-        r = RC.post_v1(PROMPT, base=base, deep_research=True, timeout=700)
+        # 700 -> 1800, matching S4, which asks for MORE work (8 tickers) and always allowed
+        # 1800. The mismatch had no rationale and it bit: on 2026-08-17 this DR finished
+        # correctly (verified PDF + HTML on disk) roughly 30 SECONDS after the client gave
+        # up at exactly 700.0s, and the suite called it a REGRESSION on seven rows.
+        #
+        # Raising a limit that your own run just tripped deserves suspicion, so note what
+        # this is NOT: it is not the safety net. `unmeasured_if_no_response` is — a timeout
+        # now scores UNMEASURED/INCONCLUSIVE instead of REGRESSION, so a genuinely stuck run
+        # is still reported honestly. This only stops a NORMAL run being cut off mid-flight.
+        r = RC.post_v1(PROMPT, base=base, deep_research=True, timeout=1800)
         log = RC.log_window_since(t0)
         files = RC.created_delivery_files(log)
         phases = RC.dr_phase_timings(log)   # Tier-2 per-stage
         pdfs = [f for f in files if f.lower().endswith(".pdf")]
         htmls = [f for f in files if f.lower().endswith(".html")]
         html0 = htmls[0] if htmls else None
-        runs.append([
+        runs.append(RC.unmeasured_if_no_response(r, [
             _m("dr_completed",          "CODE", bool(r["text"]) and len(r["text"]) > 500, "bool", "must_equal", 0),
             _m("attachment_count",      "CODE", len(files),                               "count", "must_equal", 0),
             _m("pdf_valid",             "CODE", _pdf_valid(pdfs[0]) if pdfs else False,   "bool", "must_equal", 0),
@@ -78,5 +87,5 @@ def run(base, repeats=1):   # DR is ~5 min; default 1 run (expensive). Median of
             _m("dr_synthesize_s",       "PERF", phases.get("synthesize"),                 "seconds", "lower_better", 40),
             _m("dr_verify_s",           "PERF", phases.get("verify"),                     "seconds", "lower_better", 40),
             _m("dr_latency_s",          "PERF", r["latency_s"],                           "seconds", "lower_better", 120),
-        ])
+        ]))
     return runs

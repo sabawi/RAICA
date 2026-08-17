@@ -29,10 +29,10 @@ def run(base, repeats=3):
         ran = bool(r["text"]) and len(r["text"]) > 40
         hits = round(sum(1 for k in EXPECTED if k in low) / len(EXPECTED), 3)
         vis_s = RC.vision_seconds(RC.log_window_since(t0))   # Tier-2 per-stage (the kimi/minimax dial)
-        runs.append([
+        runs.append(RC.unmeasured_if_no_response(r, [
             _m("vision_ran",               "CODE", ran,            "bool",    "must_equal",    0),
             _m("description_keyword_hits", "CODE", hits,           "ratio",   "higher_better", 0.25),
             _m("vision_model_s",           "PERF", vis_s,          "seconds", "lower_better",  10),
             _m("latency_s",                "PERF", r["latency_s"], "seconds", "lower_better",  20),
-        ])
+        ]))
     return runs

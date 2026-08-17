@@ -151,3 +151,71 @@ def test_the_ceiling_sits_between_the_measured_good_and_bad_runs():
     assert 226 < TH.CEILING < 2806
     assert TH.is_elevated(164) is True, "164 must still be REPORTED as elevated"
     assert TH.assess(164)[0] is False, "164 must not be disqualifying on its own"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# v1.0.0.299 — a harness that gives up early must not blame the system it was measuring
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# S2's client timed out at exactly 700.0s. The server had FINISHED: "Deep research complete:
+# 4 rounds, 53 evidence items", a verified 107,956-byte %PDF-1.7 and a 72,405-byte HTML on
+# disk, written ~30s after the client stopped listening. The suite reported REGRESSION on
+# seven rows for a run that produced correct output.
+
+def test_an_unmeasured_metric_is_not_a_regression():
+    """FAILS PRE-FIX: verdict_for returned REGRESSION for value None while its own comment
+    said 'the run couldn't measure it'."""
+    assert S.verdict_for(None, 42.4, cls="PERF", direction="lower_better",
+                         tolerance=40) == S.UNMEASURED
+
+
+def test_a_run_with_holes_is_inconclusive_not_pass():
+    """'We did not measure this' is not evidence of health."""
+    rows = [_m("dr_synthesize_s", None, scenario="S2", cls="PERF", direction="lower_better")]
+    base = {S.key("S2", "dr_synthesize_s"): {"value": 42.4}}
+    sc = S.score_run(rows, base, environment=_env(3))
+    assert sc["suite"] == S.INCONCLUSIVE
+    assert "S2.dr_synthesize_s" in sc["environment"]["unmeasured"]
+
+
+def test_a_real_measured_regression_still_outranks_an_unmeasured_row():
+    """A hole must never MASK a genuine failure elsewhere in the run."""
+    rows = [_m("dr_synthesize_s", None, scenario="S2", cls="PERF", direction="lower_better"),
+            _m("citation_count", 2)]
+    base = {S.key("S2", "dr_synthesize_s"): {"value": 42.4},
+            S.key("S1", "citation_count"): {"value": 13}}
+    assert S.score_run(rows, base, environment=_env(3))["suite"] == S.REGRESSION
+
+
+def test_a_failed_request_nulls_the_metrics_but_keeps_the_latency():
+    """The wait itself is a real observation — it is what makes a timeout visible."""
+    sys.path.insert(0, os.path.join(BENCH, "lib"))
+    from lib import raica_client as RC
+    metrics = [_m("dr_completed", False, scenario="S2"),
+               _m("attachment_count", 0, scenario="S2"),
+               _m("dr_latency_s", 700.1, scenario="S2", cls="PERF", direction="lower_better")]
+    out = RC.unmeasured_if_no_response({"ok": False}, metrics)
+    by = {m["name"]: m["value"] for m in out}
+    assert by["dr_completed"] is None, "a timed-out request still reported a False result"
+    assert by["attachment_count"] is None
+    assert by["dr_latency_s"] == 700.1, "the observed wait was discarded"
+
+
+def test_a_successful_request_is_passed_through_untouched():
+    """CONTROL: the guard must not null anything on a normal run."""
+    from lib import raica_client as RC
+    metrics = [_m("dr_completed", True, scenario="S2")]
+    assert RC.unmeasured_if_no_response({"ok": True}, metrics) == metrics
+
+
+def test_must_equal_metrics_count_as_collapse():
+    """FAILS PRE-FIX: the detector filtered to higher_better, so dr_completed True->False
+    and attachment_count 2->0 -- the very signature quoted in its own docstring -- were
+    invisible to it."""
+    rows = [{**_m("dr_completed", False, scenario="S2", direction="must_equal"),
+             "baseline": True},
+            {**_m("attachment_count", 0, scenario="S2", direction="must_equal"),
+             "baseline": 2}]
+    collapsed, reasons = S.retrieval_collapsed(rows)
+    assert collapsed is True
+    assert len(reasons) == 2, f"expected both rows flagged, got {reasons}"
