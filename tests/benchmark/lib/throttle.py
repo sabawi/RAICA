@@ -36,18 +36,34 @@ _PATTERNS = (
     re.compile(r"unusual traffic|captcha|rate.?limit", re.I),
 )
 
-# DERIVED from the measured distribution across every archived run (2026-08-16), not chosen:
+# ── two levels, because one number could not do this job ────────────────────────────────
 #
-#     normal runs          2, 5, 5, 10, 15, 17
-#     heavy-search runs    55, 92, 99          <- degraded, but still produced usable results
-#     the failed Tier-1    2,806               <- every scenario returned empty
+# v1.0.0.291 used a SINGLE threshold of 150 and treated crossing it as "this run cannot
+# measure". That was wrong in the expensive direction: it produced FOUR false INCONCLUSIVEs
+# on runs whose metrics were perfectly healthy. The clearest was v1.0.0.297 at 164 events —
+# every one of 33 rows PASS, `citation_count` samples `[14, 14, 14]` against a baseline of
+# 13, i.e. ZERO within-arm variance. The guard's own stated premise ("an empty result is
+# indistinguishable from a regression") was refuted by the run's own data: nothing was empty.
 #
-# 150 sits above the heaviest run that still measured correctly and an order of magnitude
-# below the one that could not measure at all. Set deliberately HIGH: over-triggering would
-# make the suite useless by calling healthy runs inconclusive, which is its own way of
-# teaching people to ignore it. The count is ALWAYS reported regardless of the threshold, so
-# a run drifting toward the limit is visible before it crosses.
-THROTTLE_LIMIT = int(os.getenv("RAICA_BENCH_THROTTLE_LIMIT", "150"))
+# A throttle COUNT is a proxy for the thing we care about. What actually invalidates a run is
+# retrieval COLLAPSING, and that is directly observable in the metrics (see
+# scoring.retrieval_collapsed). So the count is now used for what it can support:
+#
+#   ELEVATED_AT  reporting only. Traffic is heavy; say so. Never degrades a run on its own.
+#   CEILING      throttle so extreme the metrics cannot be trusted even if they look fine.
+#
+# CEILING derivation — honest about a WIDE uncertainty band. Measured:
+#     usable results at   ... 164 (all 33 rows PASS), 226
+#     no results at all   ... 2,806 (every scenario empty)
+# Nothing was measured between 226 and 2,806, so any value in that gap is a judgement call.
+# Taking the GEOMETRIC mean of the two boundaries — sqrt(226 * 2806) ~= 796 — puts it at the
+# proportional midpoint of what is genuinely unknown, rather than pretending to a precision
+# the data does not have. Rounded to 800.
+ELEVATED_AT = int(os.getenv("RAICA_BENCH_THROTTLE_ELEVATED", "150"))
+CEILING = int(os.getenv("RAICA_BENCH_THROTTLE_CEILING", "800"))
+
+# Back-compat alias: the reporting level is what this name always meant in practice.
+THROTTLE_LIMIT = ELEVATED_AT
 
 
 def log_position(log_path):
@@ -71,12 +87,29 @@ def count_since(log_path, start_offset):
 
 
 def assess(events, limit=None):
-    """(degraded: bool, message: str) for a run that observed `events` throttle responses."""
-    limit = THROTTLE_LIMIT if limit is None else limit
+    """(ceiling_exceeded: bool, message: str) — does the COUNT ALONE invalidate the run?
+
+    `[0]` is deliberately NOT "was this run degraded". Degradation is decided by
+    `scoring.score_run`, which can also see whether the metrics actually collapsed; throttle
+    on its own can only answer the extreme case. A run above ELEVATED_AT but below CEILING
+    with healthy metrics is a GOOD run that happened to be noisy, and calling it inconclusive
+    was the defect this split fixes.
+    """
+    limit = CEILING if limit is None else limit
     if events > limit:
         return True, (
             f"{events} rate-limit/captcha responses observed during this run "
-            f"(threshold {limit}). Search retrieval was materially degraded, so this run "
-            f"CANNOT distinguish a code regression from the environment."
+            f"(ceiling {limit}). Retrieval was throttled so heavily that no metric can be "
+            f"trusted, whatever the values look like."
         )
-    return False, f"{events} rate-limit response(s) — within normal background (limit {limit})."
+    if events > ELEVATED_AT:
+        return False, (
+            f"{events} rate-limit response(s) — ELEVATED (above {ELEVATED_AT}, ceiling "
+            f"{limit}). Not degrading on its own: the metrics decide."
+        )
+    return False, f"{events} rate-limit response(s) — within normal background (limit {ELEVATED_AT})."
+
+
+def is_elevated(events):
+    """Traffic heavy enough that a metric COLLAPSE is plausibly the environment, not the code."""
+    return events > ELEVATED_AT

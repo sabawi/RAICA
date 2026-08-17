@@ -107,6 +107,39 @@ def save_baseline(path, metrics, reason, measured_at):
     return data
 
 
+def retrieval_collapsed(rows):
+    """(collapsed: bool, reasons: list[str]) — did a measured quantity fall to NOTHING?
+
+    This is the signature of retrieval dying, taken from the run where it actually happened
+    (2,806 throttle events): `citation_count 0` against a baseline of 13, `answer_chars 0`,
+    `dr_completed False`. Not "worse than baseline" — *zero*, where the baseline was not.
+
+    Deliberately NOT a list of metric names. Any CODE metric that is higher-better and had a
+    non-zero baseline qualifies, so a metric added tomorrow is covered with no edit here, and
+    nobody has to remember to register it. (A name list in one file that must track constants
+    in another is the exact class of bug that made the runner run S4 three times per run.)
+
+    Metrics with no baseline are skipped: without one, zero cannot be distinguished from a
+    legitimately-zero measurement. That gap is covered by throttle.CEILING.
+    """
+    reasons = []
+    for r in rows:
+        if r.get("cls") != "CODE" or r.get("direction") != "higher_better":
+            continue
+        base, val = r.get("baseline"), r.get("value")
+        if isinstance(base, bool):
+            if base is True and val is False:
+                reasons.append(f"{r['scenario']}.{r['name']}: True -> False")
+            continue
+        if not isinstance(base, (int, float)) or base <= 0:
+            continue
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        if val == 0:
+            reasons.append(f"{r['scenario']}.{r['name']}: {base} -> 0")
+    return bool(reasons), reasons
+
+
 def score_run(metrics, baseline, environment=None):
     """Compare a run's metrics to baseline. Returns a scorecard dict.
 
@@ -121,7 +154,26 @@ def score_run(metrics, baseline, environment=None):
         bval = b["value"] if b else None
         v = verdict_for(m["value"], bval, cls=m["cls"], direction=m["direction"], tolerance=m["tolerance"])
         rows.append({**m, "baseline": bval, "verdict": v})
-    degraded = bool((environment or {}).get("degraded"))
+    # ── CONJUNCTIVE degradation (v1.0.0.298) ────────────────────────────────────────────
+    # Old rule: throttle over a threshold => INCONCLUSIVE. That called four healthy runs
+    # unmeasurable, most clearly one with 33/33 rows PASS and zero within-arm variance.
+    #
+    #   ceiling exceeded              -> INCONCLUSIVE (count alone is disqualifying)
+    #   elevated AND metrics collapsed-> INCONCLUSIVE (genuinely cannot attribute the cause)
+    #   elevated, metrics healthy     -> score it normally; noisy is not broken
+    #   NOT elevated, metrics collapsed -> REGRESSION. A collapse without heavy traffic has
+    #                                    no environmental excuse -- that is the bug case, and
+    #                                    the old rule could never express it.
+    env = environment or {}
+    collapsed, collapse_reasons = retrieval_collapsed(rows)
+    elevated = bool(env.get("elevated"))
+    ceiling_exceeded = bool(env.get("ceiling_exceeded", env.get("degraded")))
+    degraded = ceiling_exceeded or (elevated and collapsed)
+
+    env["collapsed"] = collapsed
+    env["collapse_reasons"] = collapse_reasons
+    env["degraded"] = degraded
+
     suite = PASS
     if any(r["verdict"] == REGRESSION for r in rows):
         suite = REGRESSION
@@ -131,7 +183,7 @@ def score_run(metrics, baseline, environment=None):
         suite = INCONCLUSIVE
         for r in rows:
             r["unreliable"] = True
-    return {"rows": rows, "suite": suite, "environment": environment or {}}
+    return {"rows": rows, "suite": suite, "environment": env}
 
 
 def render(scorecard):
@@ -156,6 +208,12 @@ def render(scorecard):
     lines.append(f"  SUITE: {_C.get(s,'')}{s}{_RESET}")
     if env.get("message"):
         lines.append(f"  ENVIRONMENT: {env['message']}")
+    # Name the collapsed metrics. "INCONCLUSIVE" without them just looks like the suite
+    # giving up; with them the reader can see the retrieval-died signature for themselves.
+    if env.get("collapsed"):
+        lines.append("  RETRIEVAL COLLAPSE — measured quantities fell to nothing:")
+        for reason in env.get("collapse_reasons", []):
+            lines.append(f"      {reason}")
     # Per-scenario attribution, so the NEXT volume decision is made from data instead of from
     # reading timestamp clusters out of a log after the fact.
     per_scen = env.get("per_scenario") or {}

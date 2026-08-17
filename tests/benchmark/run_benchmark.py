@@ -163,13 +163,23 @@ def run_tier1(live, repeats, update_baseline, reason, label=None):
               flush=True)
 
     throttle_events = TH.count_since(server_log, log_start)
-    degraded, env_message = TH.assess(throttle_events)
-    environment = {"degraded": degraded, "message": env_message,
+    ceiling_exceeded, env_message = TH.assess(throttle_events)
+    # `degraded` is no longer decided here: score_run also needs to see whether the metrics
+    # actually collapsed, and only it has them. This dict reports the OBSERVATION; the
+    # conclusion is drawn once, in one place.
+    environment = {"elevated": TH.is_elevated(throttle_events),
+                   "ceiling_exceeded": ceiling_exceeded,
+                   "message": env_message,
                    "throttle_events": throttle_events,
                    "per_scenario": per_scenario_throttle,
                    "search_cache_dir": search_cache_dir}
 
-    if update_baseline and degraded:
+    # Score against the CURRENT baseline first, purely to learn whether the run is degraded —
+    # that verdict needs the metrics, so it cannot be known before this point. A rebaseline
+    # would re-score against the new numbers (making everything PASS by construction), which
+    # is exactly why the refusal has to be decided here, off the pre-update comparison.
+    if update_baseline and S.score_run(all_metrics, baseline,
+                                       environment=dict(environment))["suite"] == S.INCONCLUSIVE:
         # A throttled run must NEVER become the baseline: every future comparison would be
         # measured against numbers produced while retrieval was broken. Refuse, loudly.
         print(f"\n  {RED}REFUSING --update-baseline: {env_message}{RESET}")

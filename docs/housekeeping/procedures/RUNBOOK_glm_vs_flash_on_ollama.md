@@ -46,6 +46,13 @@ python tests/benchmark/run_benchmark.py --tier 1
 cp tests/benchmark/scorecard.json tests/benchmark/scorecard_ARM_glm.json
 ```
 
+> **UPDATED v1.0.0.298 — the degradation gate changed.** A run is no longer INCONCLUSIVE
+> just because throttle is high. It is INCONCLUSIVE only if throttle exceeds the CEILING
+> (800), or throttle is ELEVATED (>150) **and** the metrics actually collapsed. Elevated
+> traffic with healthy metrics now scores normally. The two INCONCLUSIVE rows in the table
+> below (226 and 152) were **false alarms under the old single-threshold rule** — their
+> metrics were healthy — and would score normally today.
+
 Check `THROTTLE BY SCENARIO` in the output. If the suite reports **INCONCLUSIVE**, the run
 could not measure — fix the volume (the per-scenario numbers say which scenario) and re-run
 before treating any of it as a result.

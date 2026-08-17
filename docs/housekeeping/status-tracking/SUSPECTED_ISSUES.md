@@ -29,6 +29,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-055 threshold half — the guard over-fired and called four healthy runs unmeasurable  [RESOLVED v1.0.0.298, 2026-08-17]
+- **Observed:** a single throttle threshold (150) marked a run INCONCLUSIVE regardless of what
+  the metrics said. Four runs were falsely invalidated; the clearest had **33/33 rows PASS** and
+  `citation_count` samples `[14, 14, 14]` against a baseline of 13 — zero within-arm variance.
+- **Refuted premise:** the guard asserted "an empty result is indistinguishable from a real
+  regression". Nothing was empty. The run's own data killed the premise.
+- **Why it mattered:** a false INCONCLUSIVE blocks a good deploy AND trains the reader to
+  discount the suite — the same harm the guard was written to prevent, from the other side.
+- **Fix:** degradation is now CONJUNCTIVE — ceiling exceeded, OR elevated throttle AND a real
+  retrieval collapse (`scoring.retrieval_collapsed`, derived from the 2,806-event run's
+  signature: a higher-better CODE metric hitting zero against a non-zero baseline; no metric
+  name list). Two levels: ELEVATED_AT=150 (report only), CEILING=800 (geometric mean of the
+  measured good/bad boundary, 226 vs 2,806 — honest about a wide unknown).
+- **Also made STRICTER where it was too lenient:** a collapse with NORMAL traffic is now a
+  REGRESSION, not INCONCLUSIVE. The old rule could not express that case and excused real bugs.
+- **Verified:** the real v297 archive re-scores INCONCLUSIVE → PASS; truth table exercised in
+  all four corners; identical input returns INCONCLUSIVE at HEAD and PASS now; 13 new tests.
+
 ### SI-060 — A `git pull` deploy silently migrates the LIVE provider, and would have 401'd every lane  [P1 — CONFIRMED + FIXED, 2026-08-17]
 - **Observed:** live (`2f5a2e6`) runs every lane on Ollama at `127.0.0.1:11434`. `HEAD` pointed every
   lane at `https://api.deepinfra.com` — residue of a LOCAL trial that got committed. Live's `.env`
