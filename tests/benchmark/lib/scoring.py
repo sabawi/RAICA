@@ -69,6 +69,16 @@ def median_runs(per_run_metrics):
             base["value"] = sum(1 for v in vals if v) * 2 >= len(vals)   # majority True
         else:
             base["value"] = statistics.median(vals)
+        # RETAIN THE SPREAD, not just the centre.
+        #
+        # These raw values were computed here and then thrown away, so a saved scorecard held
+        # one number per metric and nothing about how much it moved between repeats. That made
+        # the only question an A/B actually asks — "is this delta bigger than the noise?" —
+        # unanswerable after the fact. Measured 2026-08-16: a GLM-vs-Flash comparison showed
+        # unique_sources +46% on one pair of runs and ~0% at n=4, and there was no way to tell
+        # which was signal because the per-repeat numbers no longer existed.
+        base["samples"] = vals
+        base["n"] = len(vals)
         out.append(base)
     return out
 

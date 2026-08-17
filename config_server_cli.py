@@ -1405,11 +1405,28 @@ class ModelAliasManager:
                      or llm_config.get('providers') or {})
         block = providers.get(target) or {}
         defaults = PROVIDER_DEFAULTS.get(target, {})
+        if API_KEY_ENV_VARS.get(target):
+            api_key = block.get('api_key') or '${%s}' % API_KEY_ENV_VARS[target]
+        else:
+            # SI-061: target needs NO credential. Returning None here skipped the api_key
+            # rewrite entirely, so a lane kept the PREVIOUS provider's variable: converting
+            # deepinfra -> ollama left `api_key: ${DEEPINFRA_API_KEY}` sitting on a
+            # 127.0.0.1 endpoint. Harmless on Ollama, which ignores it -- but the same
+            # branch strands DEEPINFRA_API_KEY on an OpenRouter endpoint, which is a 401,
+            # and it silently drifts the repo config away from the deployed one.
+            #
+            # This is the exact mirror of SI-017 (keyless -> keyed, which INSERTS a key).
+            # That direction was fixed; this one was not.
+            #
+            # The line cannot simply be deleted: lanes declared `type: openai` against a
+            # local Ollama endpoint go through an OpenAI-compatible client that requires a
+            # non-empty token. A keyless OpenAI-compatible endpoint accepts any token by
+            # convention, so the provider's own name is used -- no per-vendor table, and it
+            # reproduces what the deployed config already carries (`api_key: "ollama"`).
+            api_key = block.get('api_key') or f'"{target}"'
         return {
             'base_url': block.get('base_url') or defaults.get('base_url'),
-            'api_key': block.get('api_key') or (
-                '${%s}' % API_KEY_ENV_VARS[target]
-                if API_KEY_ENV_VARS.get(target) else None),
+            'api_key': api_key,
         }
 
 

@@ -95,7 +95,7 @@ def run_tier0():
     return 1
 
 
-def run_tier1(live, repeats, update_baseline, reason):
+def run_tier1(live, repeats, update_baseline, reason, label=None):
     import json
     from datetime import datetime, timezone
     from lib import scoring as S
@@ -184,6 +184,17 @@ def run_tier1(live, repeats, update_baseline, reason):
 
     sc = S.score_run(all_metrics, baseline, environment=environment)
     json.dump(sc, open(os.path.join(BENCH_DIR, "scorecard.json"), "w"), indent=2, default=str)
+
+    # ARCHIVE every run. scorecard.json is overwritten by the next one, so an A/B used to
+    # depend on remembering to `cp` it — and when that was missed, the comparison could not be
+    # redone at all. Cheap insurance: a timestamped copy that includes the per-repeat samples.
+    runs_dir = os.path.join(BENCH_DIR, "runs")
+    os.makedirs(runs_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = f"_{label}" if label else ""
+    archive = os.path.join(runs_dir, f"{stamp}{suffix}.json")
+    json.dump(sc, open(archive, "w"), indent=2, default=str)
+    print(f"  {DIM}run archived → {os.path.relpath(archive, BENCH_DIR)}{RESET}")
     print(S.render(sc))
     print()
     # Exit 2 = INCONCLUSIVE: distinct from pass(0) and regression(1) so a caller/CI can tell
@@ -201,6 +212,7 @@ def main():
     # because search_web runs in the server process. This runner only REPORTS it, read from
     # the server's own startup log.
     ap.add_argument("--live", action="store_true", help="Tier 1/2: run against LIVE RAICA (default: local)")
+    ap.add_argument("--label", help="tag the archived run (e.g. an A/B arm name)")
     ap.add_argument("--repeats", type=int, default=3, help="Tier 1 runs per scenario (median); default 3")
     ap.add_argument("--update-baseline", action="store_true", help="rewrite baseline.json (requires --reason)")
     ap.add_argument("--reason", default="", help="why the baseline is being updated (mandatory with --update-baseline)")
@@ -214,7 +226,7 @@ def main():
     if args.tier in ("0", "all"):
         rc |= run_tier0()
     if args.tier in ("1", "all"):
-        rc |= run_tier1(args.live, args.repeats, args.update_baseline, args.reason)
+        rc |= run_tier1(args.live, args.repeats, args.update_baseline, args.reason, args.label)
     # Tier 2 latency lands with Tier 1 (Phase C).
     return 1 if rc else 0
 

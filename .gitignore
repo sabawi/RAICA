@@ -154,6 +154,10 @@ test_reasoning.py
 
 # Benchmark run output
 tests/benchmark/scorecard.json
+# Per-run archives (v1.0.0.297): retained LOCALLY for post-hoc variance analysis.
+# Not committed -- they are measurements of one machine/session and would accumulate
+# without bound. Commit a specific run deliberately when it is evidence for a decision.
+tests/benchmark/runs/
 
 # Benchmark engine (override any generic lib/ ignore)
 !tests/benchmark/lib/

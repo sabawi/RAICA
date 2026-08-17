@@ -11,6 +11,83 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-062 — 59 integration tests fail under a full pytest run, and no report has ever covered them  [P3 — LOGGED, 2026-08-17]
+- **Observed:** `pytest tests/unit tests/integration` gives **63 failed / 707 passed**. Verified
+  identical (63, same test IDs) on a clean `HEAD` worktree, so this is pre-existing, not a regression.
+- **Why it was never visible:** every changelog reports "**552 passed, 4 pre-existing failures**".
+  That figure is `tests/unit` ONLY — and `tests/unit` does indeed fail exactly 4. The 59 integration
+  failures have simply never been inside the reported scope, so the number looked healthy for months.
+- **Not explained by a missing server:** a healthy server was running on :5000 during both runs.
+- **Largest cluster:** `test_intent_classifier_characterization.py` (19), `test_tool_calling_retry.py`
+  (5), `test_user_tools_integration.py` (3). Note `test_tool_calling_retry.py` and
+  `test_dr_title_extraction.py` **pass** when run as standalone scripts in Tier-0 (10/10), so at
+  least some of these are pytest-harness/async-collection artifacts rather than product defects —
+  which is a hypothesis, not a finding.
+- **Evidence needed to clear:** classify all 59 into (a) harness artifacts, (b) tests asserting
+  behaviour that legitimately changed, (c) real product defects. Only (c) is a bug; (a) and (b) are
+  test debt that is currently hiding (c).
+- **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
+  the swallowed-error class this log exists for — a broad green headline over an unexamined red.
+
+### SI-060 — A `git pull` deploy silently migrates the LIVE provider, and would have 401'd every lane  [P1 — CONFIRMED + FIXED, 2026-08-17]
+- **Observed:** live (`2f5a2e6`) runs every lane on Ollama at `127.0.0.1:11434`. `HEAD` pointed every
+  lane at `https://api.deepinfra.com` — residue of a LOCAL trial that got committed. Live's `.env`
+  has **no `DEEPINFRA_API_KEY`** (measured, not inferred: `grep -c` returned 0).
+- **Impact if deployed:** 401 on every LLM call — primary, tool-calling, arbitrator, DR, convergence,
+  codegen, vision. A total outage, from a change nobody asked for. "Deploy the fixes" reads as a code
+  deploy; the pull carries `config/llm_config.yaml` too.
+- **Why nothing caught it:** every existing check validates the config against the machine it is ON
+  (`doctor`, the lane suite, the Tier-0 transport gate) — where the key exists. None asked whether the
+  config that is about to LAND works on the host it is landing on. The secret that decides it lives
+  outside the repo, so no diff review could see it either.
+- **How it surfaced:** the user disputed a claim that live was broken, having just run a real DR query
+  on live with a good result. Checking live's actual config refuted my claim (SI-056/057 were
+  LOCAL-ONLY) and exposed this instead. Two false production claims in one session, same disposition:
+  reasoning about production from local state instead of measuring it.
+- **Fix:** `tools/deploy_preflight.py` — compares the incoming config against the target's CURRENT
+  config and env. Reports (1) any lane whose endpoint host changes, (2) any `${VAR}` an incoming
+  active lane needs that is absent on the target. Exit 0 GO / 1 NO-GO / 2 GO-WITH-DECISION.
+  Secrets are read by NAME only; no value is ever transferred or printed.
+- **Falsified:** NO-GO (exit 1) on `HEAD`→live naming `DEEPINFRA_API_KEY` × 11 lanes; GO (exit 0) on
+  live's own config → live. Tests in `tests/integration/test_deploy_preflight.py`.
+- **Status:** repo config converted back to Ollama via the configurator; preflight against live now
+  **GO — no provider migration, no missing credentials**.
+
+### SI-061 — `convert` to a keyless provider strands the previous provider's credential  [P2 — CONFIRMED + FIXED, 2026-08-17]
+- **Observed:** after `convert --to ollama`, three lanes read `api_key: ${DEEPINFRA_API_KEY}` while
+  sitting on `http://127.0.0.1:11434` (`llm.primary`, `vision.model`, `vision.fallback_model`).
+- **Cause:** `API_KEY_ENV_VARS['ollama'] is None`, so `_target_transport` returned `api_key: None`,
+  and the writer's rewrite branch (`if ... tgt_block.get('api_key')`) never fired. The stale line
+  simply survived.
+- **Exact mirror of SI-017**, which fixed keyless→keyed (INSERT a key). The keyed→keyless direction
+  (NEUTRALISE a key) was never fixed.
+- **Why it matters beyond cosmetics:** Ollama ignores the key, so this looked harmless — but the same
+  branch strands `DEEPINFRA_API_KEY` on an **OpenRouter** endpoint, which is a 401, and it silently
+  drifted the repo config away from the deployed one.
+- **Fix:** for a target needing no credential, `_target_transport` now yields the provider name as a
+  literal (`"ollama"`) rather than `None`. Not deletable: lanes declared `type: openai` against a
+  local Ollama endpoint go through an OpenAI-compatible client that requires a non-empty token — and
+  this reproduces exactly what the deployed config already carries.
+- **Falsified:** 8/8 in `test_deploy_preflight.py`; the repo-wide `test_the_shipped_config_has_no_stranded_credential`
+  FAILED naming all three lanes before the re-conversion and passes after.
+
+### SI-059 — On Ollama, a lane's configured `max_tokens` is ignored; `num_predict` falls back to 16384  [P2 — CONFIRMED, 2026-08-16]
+- **Observed:** `llm.tool_calling.config.max_tokens: 8192`, but the effective Ollama budget is
+  **num_predict=16384**. `ollama.py::_wire_params` falls through to `self.get_num_predict()`, which
+  reads `config['num_predict']` — a key the lane does not set — and defaults to 16384. The lane's
+  `max_tokens` is never consulted when no caller kwarg is present.
+- **Same class as SI-057:** a value declared in config is silently ignored at the transport. The
+  openai path honours it (`get_max_tokens()` → 8192); the ollama path does not. The two transports
+  disagree about the SAME lane config, which is exactly what `param_map` exists to prevent.
+- **Not fixed immediately, on purpose:** discovered mid-A/B (GLM-5.2 vs DeepSeek-V4-Flash on Ollama).
+  BOTH arms run at 16384, so the comparison is unaffected — changing the budget between arms would
+  confound the very experiment it was found during. Fix after the A/B completes.
+- **Fix:** `_wire_params` should fall back to `config['num_predict']` THEN `config['max_tokens']`
+  before the 16384 default, so a lane that declares only `max_tokens` is honoured on both transports.
+- **To clear:** effective num_predict equals the lane's configured max_tokens on Ollama, with a test
+  that fails on the current fallback order.
+
+
 ### ~~SI-058~~ — The provider converter was SINGLE-USE: a converted line could never convert again  [RESOLVED v1.0.0.290, 2026-08-16]
 - **Found by a user-requested full-circle test** (Ollama → DeepInfra → OpenRouter → Ollama). A single
   forward conversion always looked perfect; only a round trip exposed it.
@@ -34,6 +111,23 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 
 ### ~~SI-057~~ — `doctor` gave a clean bill of health to SIX 404-ing lanes  [RESOLVED v1.0.0.289, 2026-08-16]
+
+> **SCOPE CORRECTION (2026-08-16, verified against the live server): LOCAL ONLY.**
+> These lane mismatches were created by the LOCAL DeepInfra trial and never reached production.
+> Verified by reading sabawi.net's actual `config/llm_config.yaml` over SSH, not by inference:
+> every live lane is an Ollama `name:cloud` slug at an Ollama endpoint
+> (`primary: deepseek-v4-pro:cloud`, `tool_calling`/`arbitrator: glm-5.2:cloud` at
+> `127.0.0.1:11434/v1`, `api_key: "ollama"`), which is CONSISTENT — no 404s, no dead lanes.
+> The `api.deepinfra.com` line in the live file sits inside the dormant `providers:` block.
+> The config's own comments say "LOCAL DEEPINFRA TRIAL" and "LOCAL trial first".
+>
+> The "178 attempts / 1 success" measurement is real but is a LOCAL measurement.
+>
+> **How the error happened:** I reasoned from my local config's history and asserted it about
+> production without reading live's file — and then used that false premise to argue for an
+> urgent deploy. The user caught it by running a real Deep Research prompt on live and getting
+> a well-researched answer. A claim about production requires reading production.
+
 - **Found because the user asked why the provider switch had not been done with the configurator.**
   It had not been used at all — the migration was hand-edited, so lanes were converted piecemeal.
 - **Six ACTIVE lanes were dead:** `deep_research.engine.model` / `.heavy_model`,
@@ -57,6 +151,23 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 
 ### ~~SI-056~~ — Ollama→DeepInfra migration left two lanes behind  [RESOLVED v1.0.0.288, 2026-08-16]
+
+> **SCOPE CORRECTION (2026-08-16, verified against the live server): LOCAL ONLY.**
+> These lane mismatches were created by the LOCAL DeepInfra trial and never reached production.
+> Verified by reading sabawi.net's actual `config/llm_config.yaml` over SSH, not by inference:
+> every live lane is an Ollama `name:cloud` slug at an Ollama endpoint
+> (`primary: deepseek-v4-pro:cloud`, `tool_calling`/`arbitrator: glm-5.2:cloud` at
+> `127.0.0.1:11434/v1`, `api_key: "ollama"`), which is CONSISTENT — no 404s, no dead lanes.
+> The `api.deepinfra.com` line in the live file sits inside the dormant `providers:` block.
+> The config's own comments say "LOCAL DEEPINFRA TRIAL" and "LOCAL trial first".
+>
+> The "178 attempts / 1 success" measurement is real but is a LOCAL measurement.
+>
+> **How the error happened:** I reasoned from my local config's history and asserted it about
+> production without reading live's file — and then used that false premise to argue for an
+> urgent deploy. The user caught it by running a real Deep Research prompt on live and getting
+> a well-researched answer. A claim about production requires reading production.
+
 - **Fixed:** arbitrator repointed to DeepInfra; vision moved to `Qwen/Qwen3-VL-235B-A22B-Instruct` +
   `meta-llama/Llama-3.2-90B-Vision-Instruct` (both verified BY INVOCATION on a real test image);
   new Tier-0 gate `test_lane_transport_consistency.py` makes the class impossible to commit again.

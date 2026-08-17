@@ -1,5 +1,22 @@
 # CHANGELOG v1.0.0.289 — provider switching becomes one self-verifying command
 
+> **SCOPE CORRECTION (2026-08-16, verified against the live server): LOCAL ONLY.**
+> These lane mismatches were created by the LOCAL DeepInfra trial and never reached production.
+> Verified by reading sabawi.net's actual `config/llm_config.yaml` over SSH, not by inference:
+> every live lane is an Ollama `name:cloud` slug at an Ollama endpoint
+> (`primary: deepseek-v4-pro:cloud`, `tool_calling`/`arbitrator: glm-5.2:cloud` at
+> `127.0.0.1:11434/v1`, `api_key: "ollama"`), which is CONSISTENT — no 404s, no dead lanes.
+> The `api.deepinfra.com` line in the live file sits inside the dormant `providers:` block.
+> The config's own comments say "LOCAL DEEPINFRA TRIAL" and "LOCAL trial first".
+>
+> The "178 attempts / 1 success" measurement is real but is a LOCAL measurement.
+>
+> **How the error happened:** I reasoned from my local config's history and asserted it about
+> production without reading live's file — and then used that false premise to argue for an
+> urgent deploy. The user caught it by running a real Deep Research prompt on live and getting
+> a well-researched answer. A claim about production requires reading production.
+
+
 **Date:** 2026-08-16 · **Against:** v1.0.0.288 · **Closes:** SI-057
 
 ## What went wrong, and why this exists
