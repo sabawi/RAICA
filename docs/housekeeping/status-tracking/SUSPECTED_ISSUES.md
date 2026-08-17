@@ -29,6 +29,33 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-066 — transport failures were converted to prose and fed to the LLM as evidence  [RESOLVED v1.0.0.301, 2026-08-17]
+- **Found by tracing SI-064 down to the transport layer** (user directive: "root cause" means
+  the transport layer, not the first application-level story that fits).
+- **Cause:** three layers of exception handling, each hiding the failure. `sync_pooled_get`
+  catches everything and returns `{status_code:0, ok:False, error:...}`; `raise_for_status()`
+  correctly raises; then `get_text_from_url_simplified` catches it and
+  **`return f"Error extracting content: {e}"`** — prose, returned as page content. The `error`
+  field is never read by anything (same dead-write shape as `article['pub_date']`, SI-065).
+- **Measured on production:** 211 occurrences in one log; **13 reached the model** inside the
+  `"prompt"` payload under `DATA AND INFORMATION GATHERED` — 403s, 401 paywalls, 429s, TCP
+  resets served to the LLM as research evidence.
+- **Functional impact:** no retry was possible (no failure to react to); `citation_count` /
+  `unique_sources` / `evidence_items` counted fetches that never returned a page — corrupting
+  the benchmark used all week to judge quality; "thin page" was indistinguishable from
+  "connection reset".
+- **Fix:** return the `None` sentinel the caller already honours (in the extractor AND the
+  caller's duplicate handler); `response.close()` in a `finally`; log + classify each dropped
+  source (transient 429/5xx/reset vs permanent 401/403/404) and report per-search losses.
+  Retry policy deliberately deferred — it changes timing behaviour.
+- **Verified:** 14 tests, **9 failing pre-fix**; a real refused connection through the actual
+  transport returns `ok=False` + error rather than empty success. Tier-0 10/10, smoke 6/6,
+  unit 637 passed, sync 19/19.
+- **WITHDRAWN CLAIM:** an earlier draft blamed this for the 43 CLOSE-WAIT sockets on live. A
+  harness driving 30 peer-closed responses leaked ZERO fds both with and without the fix — the
+  reproduction does not discriminate. Those sockets are plausibly just pooled keep-alive
+  connections the remote closed. `close()` is retained as hygiene, recorded as unproven.
+
 ### SI-065 — news articles reach the LLM with no publication date; the feed's date was parsed and discarded  [RESOLVED v1.0.0.300, 2026-08-17]
 - **Reported by a live bot**, asked for a briefing on the last 8 hours: *"the tool results I
   received do not contain any news items with publication timestamps ... the news summaries

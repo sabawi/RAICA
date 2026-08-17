@@ -1600,6 +1600,15 @@ class AsyncToolManager:
             # Remove TOOLS_AVAILABLE check - let function handle missing deps gracefully
                 
             def sync_web_search():
+                # Per-search record of sources DROPPED because their fetch failed.
+                #
+                # Item 4 of the transport-layer fix: a search that mostly failed must be
+                # VISIBLE. Previously each failure became a prose string wedged into the
+                # evidence, so a search where every fetch 403'd looked, from the outside,
+                # exactly like a search that worked — and the 41-minute DR stall of
+                # 2026-08-17 produced no diagnostic at all because nothing counted anything.
+                _extraction_failures: List[Dict[str, Any]] = []
+
                 # Handle parameter parsing like the original
                 if isinstance(args, str):
                     try:
@@ -1692,7 +1701,16 @@ class AsyncToolManager:
                                 try:
                                     extracted_content = get_text_from_url_simplified(href)
                                 except Exception as e:
-                                    extracted_content = f"Error extracting content: {str(e)}"
+                                    # Same rule as inside the extractor: a failure must not
+                                    # become content. Anything escaping to here is unexpected,
+                                    # so record it and DROP the source rather than describing
+                                    # the error to the model.
+                                    logger.warning("🔌 search_web extraction raised past its own "
+                                                   "handler — dropping source: %s | %s",
+                                                   str(href)[:100], str(e)[:160])
+                                    _extraction_failures.append(
+                                        {"url": href, "error": str(e)[:200], "transient": False})
+                                    extracted_content = None
                                 if extracted_content is None:
                                     print(f"🔎 search_web: skipping dead/redirected result URL: {str(href)[:80]}", flush=True)
                                     continue
@@ -1705,6 +1723,17 @@ class AsyncToolManager:
                                     source_num=i
                                 )
                                 res += formatted_result
+
+                            # VISIBILITY: say how much of this search was lost, and to what.
+                            # A thin result is now distinguishable from a result that was
+                            # never fetched — which is the signal a retry policy would need.
+                            if _extraction_failures:
+                                _tr = sum(1 for f in _extraction_failures if f["transient"])
+                                logger.warning(
+                                    "🔌 search_web '%s': %d source(s) DROPPED on fetch failure "
+                                    "(%d transient / %d permanent) — result is incomplete",
+                                    query[:60], len(_extraction_failures), _tr,
+                                    len(_extraction_failures) - _tr)
                             _sc.put(query, max_results, res)
                             return res
                     except Exception as e:
@@ -1745,8 +1774,37 @@ class AsyncToolManager:
                         return result[:per_page_char_budget] + "..." if len(result) > per_page_char_budget else result  # config: deep_research.search.per_page_char_budget
                         
                     except Exception as e:
-                        return f"Error extracting content: {str(e)}"
-                
+                        # RETURN THE SENTINEL, NEVER PROSE.
+                        #
+                        # This used to `return f"Error extracting content: {e}"`, which handed a
+                        # TRANSPORT FAILURE to the caller as if it were page text. Measured on
+                        # production 2026-08-17: 211 occurrences in one log, and 13 of them
+                        # reached the model inside the "prompt" payload under "DATA AND
+                        # INFORMATION GATHERED" — 403s, 401 paywalls, 429s and TCP resets fed to
+                        # the LLM as research evidence.
+                        #
+                        # Three consequences, all of them silent:
+                        #   * nothing could RETRY, because there was no failure to react to;
+                        #   * evidence/citation/source counts included fetches that never
+                        #     returned a page, corrupting the very benchmark used to judge
+                        #     quality;
+                        #   * a caller could not tell "page had little text" from "connection
+                        #     was reset".
+                        #
+                        # `None` is the convention this function ALREADY uses ten lines above for
+                        # dead links, and the caller already skips on it — so the failure now
+                        # removes the source instead of poisoning it.
+                        _msg = str(e)
+                        _transient = any(s in _msg for s in
+                                         ('429', '500', '502', '503', '504', 'timed out',
+                                          'Timeout', 'Connection reset', 'Max retries'))
+                        logger.warning(
+                            "🔌 search_web extraction FAILED (%s) — dropping source: %s | %s",
+                            "transient" if _transient else "permanent", str(url)[:100], _msg[:160])
+                        _extraction_failures.append(
+                            {"url": url, "error": _msg[:200], "transient": _transient})
+                        return None
+
                 # Perform the search
                 try:
                     web_results = ducducgo(query, max_results)

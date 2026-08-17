@@ -145,11 +145,12 @@ def sync_pooled_get(url: str, headers: Optional[Dict[str, str]] = None,
     Synchronous wrapper for pooled_get - uses persistent session for all sync contexts
     Compatible with requests.get() interface
     """
+    response = None
     try:
         # ALWAYS use persistent sync session for sync calls
         # This avoids event loop context issues completely
         session = get_persistent_sync_session()
-        
+
         response = session.get(url, headers=headers, timeout=timeout, **kwargs)
         return {
             'status_code': response.status_code,
@@ -159,7 +160,7 @@ def sync_pooled_get(url: str, headers: Optional[Dict[str, str]] = None,
             'url': str(response.url),
             'ok': response.ok
         }
-            
+
     except Exception as e:
         return {
             'status_code': 0,
@@ -170,6 +171,26 @@ def sync_pooled_get(url: str, headers: Optional[Dict[str, str]] = None,
             'ok': False,
             'error': str(e)
         }
+    finally:
+        # Release the connection on EVERY path, including the exception path where the
+        # response object used to be dropped without close().
+        #
+        # HONEST SCOPE — this is hygiene, NOT a proven fix for anything observed.
+        # Production showed 43 sockets in CLOSE-WAIT (~1/hour over 49h uptime) and an earlier
+        # note here claimed this code caused them. That claim did not survive testing: a
+        # local harness driving 30 peer-closed responses leaked ZERO fds both WITH and
+        # WITHOUT this finally block, so the reproduction does not discriminate and the
+        # attribution is unproven. Those CLOSE-WAIT sockets may simply be pooled keep-alive
+        # connections the remote closed and urllib3 has not yet reaped — normal pool
+        # behaviour, not a leak.
+        #
+        # Closing explicitly is still correct (deterministic release beats relying on GC),
+        # so it stays — but it is not evidence of a bug fixed.
+        if response is not None:
+            try:
+                response.close()
+            except Exception:                             # noqa: BLE001
+                pass
 
 
 def sync_pooled_post(url: str, data: Optional[Any] = None,
