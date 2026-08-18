@@ -29,6 +29,41 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-074 — the arbitrator is a CRASH detector, not a correctness checker; expand it to a semantic judge  [P2 — FUTURE LINE ITEM, opened 2026-08-18]
+- **Raised by the user**, who identified the arbitrator as the architecturally correct lane to
+  validate a tool call and its parameters before results reach the primary model. Inspection
+  confirmed the lane exists, has an LLM behind it (glm-5.2), and already has a retry-with-feedback
+  loop that regenerates tool calls — but does not do the job.
+- **Why it did not fire on SI-073:** `arbitrator_validate_tasks` marks a result BAD only when the
+  output text matches a HARDCODED ERROR-STRING LIST:
+      `"Tool 'sandboxed_executor' error"`, `"Command failed with code"`, `"FileNotFoundError"`,
+      `"ModuleNotFoundError"`, `"SyntaxError"`, `"IndexError"`, `"ValueError"`, `"TypeError"`,
+      `"KeyError"`, `"AttributeError"`, `"error occurred"`, …
+  The Treasury result was `4.37752 | computed as: np.mean(spread_10y_2y) | over n=157` — clean,
+  well-formed, no error string → **GOOD**. The tool did exactly what it was asked; the ARGUMENTS
+  were wrong.
+- **Three structural limits:**
+  1. It is keyword/pattern matching deciding meaning — the exact practice CLAUDE.md's LLM-Policy
+     Gate forbids, still governing this decision.
+  2. It inspects RESULTS, never the ARGUMENTS that produced them, so a series named `spread_10y_2y`
+     bound to a single column is invisible to it.
+  3. A wrong-but-plausible number is indistinguishable from a right one at the string level.
+- **What to investigate:**
+  * Replace the error-string list with POLICY LANGUAGE: "is this result correct and complete for
+    what was asked?" — judged by the model, not by patterns. Keep the list only as a fast-path
+    pre-filter, never as the decider.
+  * Give the arbitrator the CALL ARGUMENTS alongside the result, plus the schema preview of the
+    referenced data, so it can see that a named quantity was bound to one raw column.
+  * Add an arithmetic-plausibility clause (difference ≤ its inputs, share ≤ 100%, count ≤ n,
+    std ≤ range) as policy, and let its existing regeneration loop issue the corrected call.
+  * This is the natural home for the **generate-check-correct cycle** the user raised: the
+    arbitrator already regenerates; extending WHAT it judges is cheaper than building a new loop.
+- **Cautions:** this lane was silently DEAD for a night (SI-056, 178 attempts / 1 success) and its
+  regeneration path caused SI-048/051/052 when it fired repeatedly. Any change needs the lane
+  suite green first, a measured before/after, and must not increase regeneration rate.
+- **Interim cover (v1.0.0.308):** the second-round prompt now performs the plausibility check
+  before the answer is written. That is a narrower, prompt-side stand-in — not a substitute.
+
 ### SI-072 — `expr` as a JSON string returned the EXPRESSIONS as the result  [RESOLVED v1.0.0.307, 2026-08-18]
 - **Found running testcase #2 (Treasury) on live.** Model sent
   `'expr': '["np.size(y3mo)", "np.mean(y3mo)", ...]'` — a JSON STRING, not a list. The string is a

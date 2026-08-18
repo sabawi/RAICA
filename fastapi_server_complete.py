@@ -8381,6 +8381,22 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
         "familiar; measure the shape first if it is not yet computed, and plot the observed data "
         "alone if no family is defensible. Pass the data BY REFERENCE as described above — never "
         "retype the rows. Do NOT repeat a call that already appears above. "
+        # SI-073: this round is the ONLY place a WRONG figure can still be corrected — it runs
+        # BEFORE the answer is written, so a fix here means the answer is right the first time
+        # rather than regenerated afterwards. Previously this prompt asked only what was
+        # MISSING, never whether what was already computed is POSSIBLE. Production 2026-08-18
+        # reported a "10Y-2Y spread" of 4.38 while quoting the 10-year at 4.72 and the 2-year at
+        # 4.19 — impossible; the series had been bound to ONE raw column so the subtraction never
+        # happened, and nothing in the pipeline could catch it.
+        "ALSO CHECK THE FIGURES ALREADY COMPUTED ABOVE, not only what is missing. For each one, "
+        "ask whether it is POSSIBLE for the quantity it claims to be: a difference cannot exceed "
+        "the numbers it is drawn from, a share cannot exceed 100%, a count cannot exceed the "
+        "sample size, a standard deviation cannot exceed the range. If a figure fails that test "
+        "the calculation is wrong — most often because a series was NAMED for a quantity but "
+        "bound to a single raw column, so the arithmetic never happened. RE-ISSUE the corrected "
+        "call now, with every column the calculation needs and the arithmetic written in the "
+        "expression (e.g. both `10 Yr` and `2 Yr` in data, and `np.mean(y10 - y2)` as the "
+        "expression). Correcting it here is free; a wrong figure in the answer is not. "
         "If the data in hand is sufficient to answer accurately, return NO tool calls."
     )
     try:
