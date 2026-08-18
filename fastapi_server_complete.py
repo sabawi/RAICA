@@ -11060,9 +11060,45 @@ The above image analysis was automatically performed on newly uploaded images. T
                                             result = await tool_manager.safe_function_call(function_name, function_args)
                                             return (function_name, result, start_time, False, None)
                                         
-                                        phase1_tasks = [execute_single_tool(call) for call in phase1_tools]
+                                        # ── SI-080: the FIRST batch needs the SI-044 deferral too ──────
+                                        # `_split_calls_awaiting_batch_output` was written for this exact
+                                        # failure and wired into ONE place — the gather-gate loop — which is
+                                        # `enabled: false` in production. So the batch that actually runs for
+                                        # every request had no deferral, and the defect is most likely HERE:
+                                        # round 1 selects every tool BEFORE any tool has run, so a consumer
+                                        # scheduled beside its producer is the NORMAL case, not an edge case.
+                                        #
+                                        # Measured 2026-08-18, DGS10 testcase, the model's own call:
+                                        #     'x': '{"from": "compute#5", "column": "d2"}'
+                                        # correct syntax, correct id, correct column — and `compute#5` cannot
+                                        # exist yet, because those computes are in THIS batch and it runs in
+                                        # parallel. plot_data then received `x` unresolved and rejected it
+                                        # with "x must be a list", 8-11 times per run. The model was not at
+                                        # fault; the scheduling was.
+                                        #
+                                        # Deferring, not topological ordering: parallel execution is kept and
+                                        # the per-tool 1-based ids stay stable (asyncio.gather preserves
+                                        # order, so `compute#5` is still the 5th compute).
+                                        _p1_ready, _p1_deferred = _split_calls_awaiting_batch_output(
+                                            phase1_tools, [])
+                                        if _p1_deferred:
+                                            logger.info(
+                                                "⏳ PHASE 1: deferring %s to run after this batch "
+                                                "(reads output this batch has not produced yet)",
+                                                [(c.get('function', {}) or {}).get('name')
+                                                 for c in _p1_deferred])
+                                        phase1_tasks = [execute_single_tool(call) for call in _p1_ready]
                                         phase1_results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
                                         all_results.extend(phase1_results)
+                                        if _p1_deferred:
+                                            # Inputs exist now. Same resolver as every other path.
+                                            _p1_deferred = _resolve_call_references(_p1_deferred, phase1_results)
+                                            logger.info("⏳ PHASE 1: running %s deferred call(s)", len(_p1_deferred))
+                                            _p1_dres = await asyncio.gather(
+                                                *[execute_single_tool(c) for c in _p1_deferred],
+                                                return_exceptions=True)
+                                            phase1_results = list(phase1_results) + list(_p1_dres)
+                                            all_results.extend(_p1_dres)
 
                                         logger.info(f"✅ PHASE 1 COMPLETE: All {len(phase1_tools)} search tools finished")
 

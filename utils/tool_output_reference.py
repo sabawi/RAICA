@@ -194,6 +194,20 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
     rows.
     """
     text = text or ""
+    # SI-081 — announce compute results BEFORE the tabular guess, and announce EVERY series in a
+    # multi-expression result. Description and resolution must agree on what is addressable, or the
+    # model is told one thing and the resolver enforces another.
+    _entries = computed_entries(text)
+    if _entries and len(_entries) > 1:
+        _lines = []
+        for _i, (_e, _v) in enumerate(_entries):
+            _head = ", ".join(f"{x:g}" for x in _v[:6])
+            _more = f", … ({len(_v)} values)" if len(_v) > 6 else ""
+            _lines.append(f'  [{_i}] `{_e}` -> {_head}{_more}')
+        return (f"=== {ref_id} === {len(_entries)} computed series\n"
+                + "\n".join(_lines) + "\n"
+                + "REFERENCE ONE BY ITS EXPRESSION — do not retype the values and do not re-send "
+                  f'the source column: {{"from": "{ref_id}", "column": "{_entries[0][0]}"}}')
     if _looks_tabular(text):
         try:
             header, rows = _parse_table(text)
@@ -273,6 +287,75 @@ def _to_number(raw: Any) -> Optional[float]:
 _COMPUTE_MARKER = "computed as:"
 
 
+def _values_from_compute_block(block: str) -> Optional[List[float]]:
+    """Numbers out of ONE compute entry's value text (array form or scalar form).
+
+    The value is what immediately PRECEDES "computed as:", so a scalar is read from the LAST
+    non-empty line, never the first: `_evaluate_many` puts a batch LABEL above the first entry
+    ("DGS10 yield statistics: valid count, mean, ...:") and reading from the top picked up the
+    label instead of the number.
+    """
+    lines = [l for l in (block or "").splitlines()
+             if l.strip() and not l.strip().startswith("[TRUNCATED")]
+    if not lines:
+        return None
+    # The bullet in `_evaluate_many` is presentation, not part of the value.
+    lines = [l.strip()[2:] if l.strip().startswith("- ") else l for l in lines]
+    joined = "\n".join(lines)
+    start, end = joined.find("["), joined.rfind("]")
+    if start != -1 and end > start:
+        inner = joined[start + 1:end].replace("\n", " ")
+        values = [_to_number(p) for p in (q.strip() for q in inner.split(",")) if p]
+        if values and all(v is not None for v in values):
+            return values
+        return None
+    last = lines[-1]
+    candidate = last.rsplit(": ", 1)[-1] if ": " in last else last
+    value = _to_number(candidate.strip())
+    return [value] if value is not None else None
+
+
+def computed_entries(text: str) -> Optional[List[Tuple[str, List[float]]]]:
+    """Every referenceable series in a `compute` result, as (expression, values). SI-081.
+
+    `compute` can evaluate a LIST of expressions in one call (SI-067 `_evaluate_many`, up to 12),
+    rendering one bulleted entry each. `computed_series` splits on the FIRST "computed as:" and so
+    could only ever see the first of them — there was no way to address expression #3, and the
+    model correctly tried both `{"column": "d[::10]"}` (the expression) and `{"column": "0"}` (an
+    index). Neither was supported, and neither was announced.
+
+    Structure, from `compute_tool._format`, matched on RAICA's OWN markers rather than on wording:
+
+        <value>                       <- collected
+        computed as: <expr>           <- closes the entry
+        over n=... / dtype: ...       <- provenance, skipped
+        STATE THE EXPRESSION ...      <- trailing directive, skipped
+        - <value>                     <- a bullet opens the next entry
+
+    A failed expression emits no "computed as:" line and therefore yields no entry, so a figure
+    that was never computed can never be referenced (fail-closed).
+    """
+    if not text or _COMPUTE_MARKER not in text:
+        return None
+    entries: List[Tuple[str, List[float]]] = []
+    buf: List[str] = []
+    collecting = True
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_COMPUTE_MARKER):
+            values = _values_from_compute_block("\n".join(buf))
+            if values is not None:
+                entries.append((stripped.split(_COMPUTE_MARKER, 1)[1].strip(), values))
+            buf, collecting = [], False        # everything after is provenance
+            continue
+        if stripped.startswith("- "):          # a bullet opens the next entry
+            buf, collecting = [line], True
+            continue
+        if collecting:
+            buf.append(line)
+    return entries or None
+
+
 def computed_series(text: str) -> Optional[List[float]]:
     """Values from a `compute` result, which is NOT a table (SI-047).
 
@@ -321,6 +404,33 @@ def extract_column(text: str, column: str, numeric: bool = True):
     Raises ReferenceError_ naming the available columns when the requested one is absent — the model
     can then retry with a real name instead of silently charting the wrong series.
     """
+    # SI-081 — a COMPUTE RESULT IS RECOGNISED BY ITS OWN MARKER, BEFORE the tabular heuristic.
+    # `_looks_tabular` is a comma-counting guess, and a computed array prints as
+    # `- [-0.03, -0.04, 0.03, ...]` — commas enough to look like CSV. So the computed branch below
+    # was SKIPPED for exactly the outputs it exists to serve, `_parse_table` read that value line as
+    # a header, and the model was told its available columns were
+    #     ['- [-0.03', '-0.04', '0.03', '0.01', ...]
+    # i.e. the data itself, offered as column names. Checking our own marker first is not a guess.
+    _entries = computed_entries(text)
+    if _entries:
+        _col = str(column or "").strip()
+        if len(_entries) == 1:
+            series = _entries[0][1]          # one series: the output IS the answer (SI-047)
+        else:
+            _match = next((v for e, v in _entries if _col.lower() == e.lower()), None)
+            if _match is None and _col.isdigit() and int(_col) < len(_entries):
+                _match = _entries[int(_col)][1]
+            if _match is None:
+                raise ReferenceError_(
+                    f"{column!r} does not name one of the {len(_entries)} computed series here; "
+                    f"reference one by its expression or its index — available: "
+                    f"{[e for e, _ in _entries]}")
+            series = _match
+        if len(series) > _MAX_CELLS:
+            raise ReferenceError_(
+                f"computed series has {len(series)} values, over the {_MAX_CELLS} limit")
+        return [str(v) for v in series] if not numeric else series
+
     # SI-047 — shape first. A `compute` result carries no columns, so demanding one before
     # looking at the text rejected every computed series outright.
     records = _json_records(text)

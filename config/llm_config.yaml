@@ -176,6 +176,15 @@ security:
     requests_per_minute: 60
     burst_limit: 10
 arbitrator:
+  # SI-079 — RESTORED. `enabled` is what manager.py:127 reads to build the provider at all
+  #   (`arbitrator_config.get('enabled', False)`), so its ABSENCE silently disables the lane.
+  # It was dropped by d07ec70 (v1.0.0.297) when this block was reverted from DeepInfra back
+  # to Ollama — the revert reinstated an older block that never had the key. Result: every
+  # `call_arbitrator` raised on local AND live from v297 onward, which killed plot_data's
+  # post-LLM dispatch (it generates the tool's parameters via the arbitrator) and left
+  # `🧠 Arbitrator disabled - skipping arbitrator provider` in the startup log as the only
+  # notice. Do not remove: a missing key here fails CLOSED and silently.
+  enabled: true
   type: ollama
   config:
     model: glm-5.2:cloud

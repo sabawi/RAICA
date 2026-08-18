@@ -29,6 +29,150 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-082 — charts still fail: the model passes NaN data and mis-addresses compute outputs  [P2 — OPEN, opened 2026-08-18]
+- **State after SI-079/080/081: still 0 real charts in 18 end-to-end runs.** What has changed is
+  WHERE it fails. The plumbing faults are gone; what remains is the model's own data hygiene:
+  ```
+  plot_data: quantitative x values must all be finite numbers
+  plot_data: temporal  x values must all be finite numbers      <- x RESOLVED, then rejected on NaN
+  'd[::4]' does not name one of the 2 computed series           <- expression from a DIFFERENT compute
+  'd' does not name one of the 2 computed series                <- a variable name, not an expression
+  unknown output reference(s) ['compute#10']                    <- an id that does not exist
+  ```
+- **The first two are the significant ones**: `x` now resolves to a real numeric series and reaches
+  `plot_data`'s validator, which rejects it because DGS10 carries missing observations as NaN. The
+  request explicitly asks the model to handle them; it computes NaN-aware statistics and then plots
+  the RAW series. That is a policy gap in the tool prompt, not plumbing.
+- **The rest are reference bookkeeping**: naming an expression that lives in a different `compute`
+  output, naming an input variable instead of an expression, and inventing an output id.
+  `describe_reference` now announces the real expressions per output; whether the model is being
+  shown all of them at selection time has NOT been checked.
+- **Evidence needed to clear:** decide whether NaN-stripping belongs in `plot_data` (drop
+  non-finite pairs, report how many) or in the prompt (require a finite series). Then re-run the
+  6-run protocol against the 0/18 baseline, scoring PUBLISHED-IMAGE markers.
+- **Priority rationale:** P2 and NOT worth another investigation cycle without a decision on the
+  above — the cost of this line of work is already the dominant concern.
+
+### SI-081 — reference extraction parses `compute` prose output as a TABLE, inventing columns  [P2 — OPEN, opened 2026-08-18]
+- **The current chart blocker**, reached only after SI-080. `plot_data` now resolves its
+  references and fails on the column lookup:
+  ```
+  could not use the referenced data — column '0' not found; available columns:
+      ['- [-0.03', '-0.04', '0.03', '0.01', '0.02', '0.', '']
+  could not use the referenced data — column 'd[::10]' not found; available columns: [
+  could not use the referenced data — referenced output does not contain a table with a header
+  ```
+- **What that column list shows:** the extractor is treating a `compute` result's PROSE output as
+  CSV and reading its first line as a header, so the "columns" are fragments of the values
+  themselves (`'- [-0.03'` is a bracket and a number, not a name). SI-075 added a computed-series
+  branch that announces `{"from": "compute#N", "column": "value"}`; these outputs are not taking
+  it and are falling through to the generic table parser.
+- **Two distinct sub-cases in the same runs**, both need checking: (1) the model referencing a
+  column by the EXPRESSION TEXT (`'d[::10]'`) rather than the announced name — a prompt/announce
+  mismatch, likely where `compute` returned a LIST of expressions; (2) the extractor's table
+  fallback producing garbage names instead of reporting "this is a computed series".
+- **Evidence needed to clear:** read what `describe_reference` announces for a multi-expression
+  `compute` result and what `extract_column` accepts for it; they must agree. Then re-run the
+  6-run protocol and score PUBLISHED-IMAGE markers against the 0/6 baseline.
+
+### SI-080 — the SI-044 batch deferral was wired into ONE path, and not the one that runs  [FIXED v1.0.0.310, 2026-08-18]
+- **Cause, by inspection:** `_split_calls_awaiting_batch_output` was written for SI-044 and had
+  exactly ONE call site — line 11260, inside the gather-gate loop, which is `enabled: false` in
+  production. The phase-1 batch at :11157 executed `phase1_tools` unsplit. Round 1 selects every
+  tool before any tool has run, so a consumer scheduled beside its producer is the NORMAL case
+  there, not an edge case — the helper was wired into the one path where the problem is rarest.
+- **Measured on the DGS10 testcase**, the model's own call, correct in every particular:
+  ```
+  'x':      '{"from": "compute#5", "column": "d2"}'
+  'series': '[{"name": "...", "y": {"from": "compute#5", "column": "y"}}]'
+  ```
+  `compute#5` is produced by a compute in the SAME batch, which runs in parallel, so the id could
+  not exist. `plot_data` received `x` unresolved and rejected it — `x must be a list`, 8–11 times
+  per run, in every arm of every experiment that day. **The model was never at fault.**
+- **Fix:** split the phase-1 batch, run the ready calls, then resolve the deferred ones against
+  the results and run them — the same sequence the gate loop already used, reusing the same
+  resolver rather than reimplementing it.
+- **HONEST STATUS — correct by inspection and test, NOT yet observed firing.** In the 3
+  verification runs the deferral logged **zero** times: the model happened to schedule `plot_data`
+  in the SI-036 second round, which already resolved references. So the error moving on from
+  `x must be a list` in those runs is **stochastic placement, not evidence for this fix**. It
+  needs a run where `plot_data` lands in phase 1 — which is what happened in every earlier run
+  today, so it will recur.
+- **Tests:** 7 (`test_phase1_batch_deferral.py`); 2 fail on pre-fix code — precisely the two
+  WIRING tests. The other 5 exercise the helper, which was always correct. That split is the
+  finding: the logic was right and unreachable.
+
+### SI-079 — the ARBITRATOR was silently disabled on local AND live since v1.0.0.297  [FIXED v1.0.0.310, 2026-08-18]
+- **Severity: this is a production regression I introduced and shipped.** From v1.0.0.297 until
+  now, every `call_arbitrator` raised on both environments.
+- **Cause, exactly:** `manager.py:127` builds the provider only if
+  `arbitrator_config.get('enabled', False)`. The key is therefore **fail-closed and silent** — its
+  ABSENCE disables the lane with no error. `d07ec70` (v1.0.0.297) reverted the arbitrator block
+  from DeepInfra back to Ollama, correctly, to stop a deploy that would have 401'd every lane; but
+  the revert reinstated an older block that **never carried `enabled: true`**:
+  ```yaml
+  # before d07ec70            # after
+  arbitrator:                 arbitrator:
+    enabled: true               type: ollama
+    type: deepinfra             config: {model: glm-5.2:cloud, ...}
+  ```
+- **How it presented:** not as an error but as a capability that simply never fired. The only
+  notice anywhere was one startup line, `🧠 Arbitrator disabled - skipping arbitrator provider`.
+- **Confirmed blast radius (measured, not assumed):** `plot_data`'s POST-LLM generic dispatch
+  generates the tool's parameters *via the arbitrator*, so it died at the door —
+  `❌ POST-LLM GENERIC DISPATCH failed for plot_data: Arbitrator LLM provider not available`.
+  **Charts could not be produced by that route at all**, on either environment, for 13 builds.
+  Also dead: `arbitrator_validate_tasks` and the tool-validation retry path.
+- **Verified by INVOKING it, not by reading config:** after restoring the key,
+  `arbitrator_provider = OllamaProvider` and a live `call_arbitrator` returns `'OK'`. Before, it
+  was `None`.
+- **CORRECTION — its contribution to the CHART failure is marginal, and I first overstated it.**
+  I saw `plot_data` in `TOOLS EXECUTED` in the post-fix log and called it "the first time it has
+  run", without checking the pre-fix log. Counting both arms refutes that:
+
+  | | `plot_data` in TOOLS EXECUTED | `x must be a list` | arbitrator dispatch failures |
+  |---|---|---|---|
+  | before fix (3 runs) | 6 | 8–9 | 2 |
+  | after fix (3 runs)  | 6 | 10–11 | 0 |
+
+  `plot_data` was already being called and already failing the SAME way. The fix removed 2
+  failures on the post-LLM dispatch route and left the dominant failure — `x must be a list`,
+  on the ordinary tool-call route — completely untouched. **SI-079 is a real, production-affecting
+  regression on its own merits (`arbitrator_validate_tasks` and the tool-validation retry path
+  were dead for 13 builds); it is NOT the chart blocker.**
+- **Why this went unnoticed for 13 builds:** nothing asserts the lane is LIVE. `doctor` and the
+  lane tests check models and transports; a lane switched off by a missing key is invisible to
+  both. Same shape as SI-056, and the lesson from that one — *a listing check is not evidence a
+  thing works* — applies to config keys too.
+- **Follow-up worth doing:** a boot-time assertion, or a Tier-0 gate, that every configured lane
+  is actually constructed. A silent `enabled`-default-False is a footgun wherever it appears.
+
+### SI-078 — marker FABRICATION recurs whenever `plot_data` is unreachable  [P2 — OPEN, opened 2026-08-18]
+- **Observed in 3 of 6 local runs** of the DGS10 testcase. Asked for two plots and unable to get
+  `plot_data` called (SI-077), the model emitted chart markers it invented:
+  ```
+  [[chart:line|title=10-Year Treasury ...|data=[{"name":"DGS10","x":["1962-01-02", ...
+  [[chart:https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10]]
+  ```
+  The first invents a marker syntax and inlines the data; the second passes off the source CSV URL.
+  A real marker carries a PUBLISHED IMAGE URL, and no `generate_data_chart` / `publish_chart`
+  activity appears in either log — no image was ever produced.
+- **This is the exact failure `plot_data` was built to end.** Its own header records it: *"the model
+  FABRICATED the marker in three runs out of three — a UUID where a real marker carries a published
+  image URL."* Building the tool removed the excuse; it did not remove the behaviour, because
+  SI-077 keeps the tool unreachable. The instruction to produce a marker still outranks, in
+  practice, the absence of any means to mint one.
+- **Why it matters beyond a missing picture (SI-038):** NewX's citation guard treats marker presence
+  as evidence a reply is tool-sourced, so a fabricated marker can carry an ungrounded answer past
+  it. A fabrication is therefore worse than an honest "no chart available".
+- **It also corrupts measurement.** Scoring charts by counting `[[chart:` in the answer — which is
+  what a first pass of these runs did — reports 1/3 where the truth is 0/6. Any future chart metric
+  must assert a published image URL and a matching publish in the log.
+- **Evidence needed to clear:** fix SI-077, then re-run and confirm markers are published-image
+  URLs; separately decide whether a post-answer check should strip a marker that has no
+  corresponding published asset.
+- **Priority rationale:** P2 — silent, plausible-looking, and it defeats a downstream trust signal.
+
 ### SI-075 — a computed series was referenceable but never announced as such  [RESOLVED v1.0.0.309, 2026-08-18]
 - **Found by the user asking** whether aggregation should happen on compute's resultant series
   before it reaches plot_data. It should — and the plumbing already existed, invisibly.
