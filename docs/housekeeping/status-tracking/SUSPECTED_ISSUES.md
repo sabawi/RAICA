@@ -29,7 +29,7 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
-### SI-082 — charts still fail: the model passes NaN data and mis-addresses compute outputs  [P2 — OPEN, opened 2026-08-18]
+### SI-082 — a missing observation was a FATAL error instead of a gap  [FIXED v1.0.0.311, 2026-08-18]
 - **State after SI-079/080/081: still 0 real charts in 18 end-to-end runs.** What has changed is
   WHERE it fails. The plumbing faults are gone; what remains is the model's own data hygiene:
   ```
@@ -52,6 +52,44 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   6-run protocol against the 0/18 baseline, scoring PUBLISHED-IMAGE markers.
 - **Priority rationale:** P2 and NOT worth another investigation cycle without a decision on the
   above — the cost of this line of work is already the dominant concern.
+
+### SI-084 — a real chart is drawn, then the model INVENTS a marker instead of relaying it  [P1 — OPEN, opened 2026-08-18]
+- **This is now the only thing between a working chart and the user seeing one.** With SI-082
+  fixed, `plot_data` renders and publishes reliably — 5 real JPEGs across 5 runs — but the ANSWER
+  carries an invented marker in 3 of those 5:
+  ```
+  [[chart:full-series                        [[chart:daily-changes            (placeholder names)
+  [[chart:0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e                                    (a fake sequential hex id)
+  ```
+  while the tool had returned `[[chart:/static/images/media/<real>.jpg|align=center|caption="..."]]`.
+  The user gets a broken image either way, so a rendered chart is worth nothing until this holds.
+- **Score, measured:** charts PUBLISHED 5/5 runs; a REAL marker reached the answer 2/5.
+- **This is SI-078 recurring at a later stage.** That entry recorded fabrication when `plot_data`
+  was unreachable — "it had an explicit instruction to produce a marker, no tool that could mint
+  one, and so it invented one". The tool is reachable now and mints a correct marker; the model
+  still sometimes writes its own. So the cause recorded in SI-078 was necessary but not
+  sufficient, and the remaining half is a RELAY failure in synthesis.
+- **Where to look first (not yet done):** `synthesis.py` already relays `[[chart:]]` from evidence
+  on the DR path (`DESIGN_unified_artifact_pathway.md` §6 calls this out as existing, reused
+  machinery). The non-DR answer path is what is dropping/re-writing it. Confirm whether the real
+  marker is even present in the context the answering model sees before touching any prompt.
+- **Priority rationale:** P1 — it is the last gate, it silently produces a broken image, and per
+  SI-038 an invented marker can carry an ungrounded answer past NewX's citation guard.
+
+### SI-083 — the model plots the WRONG SERIES and labels it correctly  [P2 — OPEN, opened 2026-08-18]
+- **Found by INSPECTING the rendered images**, not by reading logs — three charts rendered, and
+  only one was right:
+  | chart | verdict |
+  |---|---|
+  | daily-change histogram, x −0.75…+0.64, sharp peak ~4,600 at 0 | **CORRECT** — a proper leptokurtic distribution |
+  | "Daily Change" histogram, x 0…16 | real histogram of YIELD LEVELS, mislabelled as changes |
+  | "Distribution of daily changes", perfect y=x diagonal | nonsense — the same series passed as BOTH x and y |
+- The pipeline drew faithfully what it was given each time; the defect is which series the model
+  references. Note the failure is invisible to every log check — all three logged as a successful
+  publish. Only looking at the picture found it.
+- **Evidence needed to clear:** a chart-level sanity signal. A histogram whose x-range equals its
+  source series' range is plotting levels, not changes; an x-series identical to its y-series is
+  never a real chart. Decide whether that belongs in `plot_data` (reject/warn) or in policy.
 
 ### SI-081 — reference extraction parses `compute` prose output as a TABLE, inventing columns  [P2 — OPEN, opened 2026-08-18]
 - **The current chart blocker**, reached only after SI-080. `plot_data` now resolves its

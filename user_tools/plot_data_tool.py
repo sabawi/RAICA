@@ -32,6 +32,7 @@ is what keeps this from becoming a way to render numbers of unknown origin.
 
 import json
 import logging
+import math
 from datetime import date
 from typing import Any, Dict, List
 
@@ -168,13 +169,21 @@ class PlotDataTool(BaseUserTool):
                              "time and describe the data instead. Do NOT write a marker yourself."}
 
         marker = _marker(url, payload["caption"] or payload["title"])
+        _skipped = payload.get("_skipped_points") or 0
         logger.info(f"📊 plot_data: {len(payload['series'])} series x {len(payload['x'])} points "
-                    f"→ {url}")
+                    f"{f'({_skipped} skipped, no value) ' if _skipped else ''}→ {url}")
         try:
             digest = format_digest(series)
         except Exception:  # noqa: BLE001 — a digest is a nicety; the chart is the deliverable
             digest = ""
-        return {"success": True, "result": f"{marker}\n\n{digest}".strip()}
+        # SI-082 — a skipped point is a fact about the data, so the ANSWER must be able to state it.
+        # Silently drawing over a gap would make the chart quietly misrepresent its own coverage.
+        note = ""
+        if _skipped:
+            note = (f"\n\nNOTE: {_skipped} point(s) carried no value (e.g. non-trading days) and were "
+                    f"skipped in the drawing — the line joins across them and every plotted point "
+                    f"keeps its own {payload['x_name']}. Say so when you present this chart.")
+        return {"success": True, "result": f"{marker}\n\n{digest}{note}".strip()}
 
     @staticmethod
     def _to_decimal_year(value):
@@ -256,11 +265,13 @@ class PlotDataTool(BaseUserTool):
                 raise ValueError(
                     f"series[{i}] ('{entry.get('name', '?')}') has {len(y)} y values but x has "
                     f"{len(x)} — they must align 1:1, same order")
-            out_y = []
+            out_y, declared_gap = [], []
             for v in y:
                 if v is None or (isinstance(v, str) and not v.strip()):
                     out_y.append(None)                    # a genuine gap, drawn as a gap
+                    declared_gap.append(True)             # SI-082: the CALLER asked for a break here
                     continue
+                declared_gap.append(False)
                 try:
                     out_y.append(float(v))
                 except (TypeError, ValueError):
@@ -268,7 +279,8 @@ class PlotDataTool(BaseUserTool):
                         f"series[{i}] ('{entry.get('name', '?')}') contains a non-numeric value: "
                         f"{v!r}") from None
             cleaned.append({"name": str(entry.get("name") or f"series {i + 1}"),
-                            "unit": entry.get("unit"), "y": out_y})
+                            "unit": entry.get("unit"), "y": out_y,
+                            "_declared_gap": declared_gap})
 
         x_type = str(kwargs.get("x_type") or "").strip().lower()
         if x_type not in _X_TYPES:
@@ -292,7 +304,56 @@ class PlotDataTool(BaseUserTool):
             order = sorted(range(len(x)), key=lambda i: x[i])
             if order != list(range(len(x))):
                 x = [x[i] for i in order]
-                cleaned = [{**s, "y": [s["y"][i] for i in order]} for s in cleaned]
+                cleaned = [{**s, "y": [s["y"][i] for i in order],
+                            "_declared_gap": [s["_declared_gap"][i] for i in order]}
+                           for s in cleaned]
+
+        # ── SI-082: a MISSING OBSERVATION IS A GAP, NOT A FATAL ERROR ────────────────────
+        # Real series have holes. FRED writes market holidays into DGS10 as ".", which becomes NaN
+        # the moment the column is made numeric, and every chart of it was refused outright:
+        #     plot_data: temporal x values must all be finite numbers
+        # The model had done nothing wrong — it computed NaN-aware statistics exactly as asked and
+        # then handed over the series it was asked to plot.
+        #
+        # POLICY (user, 2026-08-18): a NaN y is SKIPPED in the drawing but KEPT in the series, the
+        # line joins Y(n-1) to Y(n+1) across it, and every surviving point keeps its own true x —
+        # the date/label axis must stay correct, never be re-indexed.
+        #
+        # Skipping rather than emitting `None`: `_segments` (data_chart_generator.py:59) BREAKS a
+        # line at a None, which is deliberate and right for a declared discontinuity (SRS↔NIBRS).
+        # A public holiday is not a discontinuity, and drawing it as one would state something
+        # false about the data. Dropping the point instead lets the neighbours join naturally and
+        # leaves discontinuity semantics untouched.
+        _skipped_no_x = _skipped_no_y = 0
+        if x_type in ("temporal", "quantitative"):
+            # A point with no position cannot be drawn at all, by any series.
+            _placeable = [i for i, v in enumerate(x)
+                          if isinstance(v, (int, float)) and math.isfinite(v)]
+            _skipped_no_x = len(x) - len(_placeable)
+            if _skipped_no_x:
+                x = [x[i] for i in _placeable]
+                cleaned = [{**s_, "y": [s_["y"][i] for i in _placeable],
+                            "_declared_gap": [s_["_declared_gap"][i] for i in _placeable]}
+                           for s_ in cleaned]
+            for s_ in cleaned:
+                s_["y"] = [None if (v is not None and not math.isfinite(v)) else v
+                           for v in s_["y"]]
+            # A hole the CALLER declared (an explicit null) is a statement about the data and keeps
+            # its break — `test_gaps_are_preserved_not_zero_filled` has guarded that since SI-028.
+            # Only a hole FOUND IN THE NUMBERS (NaN/inf, i.e. a non-trading day) is skipped. Both
+            # are `None` by this point, so the distinction is carried explicitly rather than
+            # re-derived, which would be a guess.
+            _drawable = [i for i in range(len(x))
+                         if any(s_["y"][i] is not None for s_ in cleaned)
+                         or any(s_["_declared_gap"][i] for s_ in cleaned)]
+            _skipped_no_y = len(x) - len(_drawable)
+            if _skipped_no_y:
+                x = [x[i] for i in _drawable]
+                cleaned = [{**s_, "y": [s_["y"][i] for i in _drawable]} for s_ in cleaned]
+            if len(x) < 2:
+                raise ValueError(
+                    f"after skipping {_skipped_no_x + _skipped_no_y} point(s) with no finite value "
+                    f"there are fewer than 2 left to plot")
 
         kind = str(kwargs.get("kind") or "auto").strip().lower()
         if kind not in _KINDS:
@@ -301,7 +362,10 @@ class PlotDataTool(BaseUserTool):
         if tier not in _TIERS:
             tier = "unknown"
 
-        return {"title": str(kwargs.get("title") or "").strip(),
+        for s_ in cleaned:
+            s_.pop("_declared_gap", None)      # internal bookkeeping; DatasetSeries must not see it
+        return {"_skipped_points": _skipped_no_x + _skipped_no_y if x_type != "categorical" else 0,
+                "title": str(kwargs.get("title") or "").strip(),
                 "source": str(kwargs.get("source") or "").strip(),
                 "url": str(kwargs.get("url") or "").strip(),
                 "x_name": str(kwargs.get("x_name") or "").strip(),
