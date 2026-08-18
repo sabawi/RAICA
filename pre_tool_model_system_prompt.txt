@@ -790,6 +790,27 @@ compute(expr="<numpy expression>", data={"<name>": <series>}, label="<what this 
 - Only pure-maths numpy is available: write np.size(x), np.mean(x), np.std(x, ddof=1), np.median(x),
   np.percentile(x, 90), np.corrcoef(a, b)[0][1], np.sum(x >= 7.0) / np.size(x).
 
+A DIFFERENCE BETWEEN TWO COLUMNS IS ARITHMETIC IN `expr`, NOT A NAME IN `data`
+Naming a series "spread_10y_2y" does NOT make it a spread. `data` maps names to the RAW columns
+you fetched; the subtraction happens in the expression. Pass BOTH columns and subtract:
+
+  CORRECT   compute(expr=["np.mean(y10 - y2)", "np.min(y10 - y2)", "np.sum((y10 - y2) < 0)"],
+                    data={"y10": {"from": "lookup_website#1", "column": "10 Yr"},
+                          "y2":  {"from": "lookup_website#1", "column": "2 Yr"}},
+                    label="10Y-2Y spread")
+
+  WRONG     data={"spread_10y_2y": {"from": "lookup_website#1", "column": "10 Yr"}}
+            The name says spread; the data is the 10-year yield. Every statistic you then
+            compute describes the 10-year yield, not the spread — and it will look plausible.
+            Measured 2026-08-18: this produced a "mean spread" of 4.37752 (the 10Y mean) where
+            the true spread mean is 0.5086, and an "inversion count" that was really counting
+            days the 10-year yield was negative.
+
+IF A RESULT LOOKS WRONG, SAY SO — DO NOT EXPLAIN IT AWAY. A spread of 4.4 between two yields
+that are 4.7 and 4.2 is impossible. When a returned figure contradicts what the quantity should
+be, report the contradiction and recompute; never invent a unit conversion or a scaling factor
+to make it fit.
+
 WHAT IT RETURNS
 The value, the expression that produced it, and the number of observations — e.g.
 "5.8828 | computed as: np.mean(mag) | over n=225 data point(s)". Quote the expression and n

@@ -222,6 +222,28 @@ class ComputeTool(BaseUserTool):
         data = kwargs.get("data")
         label = kwargs.get("label") or ""
 
+        # SI-072: `expr` can arrive as a JSON STRING CONTAINING A LIST — '["np.mean(x)", ...]'.
+        # That is catastrophic rather than merely rejected: the string parses as a valid Python
+        # list-literal OF STRINGS, so the evaluator happily "computes" it and returns THE
+        # EXPRESSION TEXTS as the result, with success=True. Production 2026-08-18 reported
+        # exactly this — "the tool output listed the expressions np.mean(y3mo), np.std(...)
+        # but did not return their computed values" — and the answer then had to omit every
+        # per-tenor statistic. A silent wrong answer, not an error.
+        #
+        # Decoded BEFORE the list check below so the batch path sees a real list.
+        if isinstance(expr, str):
+            _probe = expr.lstrip()
+            if _probe.startswith("["):
+                try:
+                    _decoded_expr = json.loads(_probe)
+                    if isinstance(_decoded_expr, list) and all(
+                            isinstance(e, str) for e in _decoded_expr):
+                        logger.info("compute: `expr` arrived as a JSON string containing %d "
+                                    "expressions — decoded to a list (SI-072)", len(_decoded_expr))
+                        expr = _decoded_expr
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+
         # SI-067 belt-and-braces: the upstream resolver now decodes JSON-string arguments, but
         # `compute` is also reachable on paths that never pass through it. A string here is
         # unambiguous — decode it rather than rejecting a call the model got right.

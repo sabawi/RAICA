@@ -226,3 +226,48 @@ def test_an_unparseable_expression_is_left_for_the_evaluator_to_report():
     """The rewriter must never mask a syntax error with its own failure."""
     from user_tools.compute_tool import _rewrite_builtin_calls as R
     assert R("np.mean(") == "np.mean("
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# SI-072 — `expr` as a JSON STRING containing a list: a SILENT WRONG ANSWER
+# ═══════════════════════════════════════════════════════════════════════════════════════
+#
+# Production 2026-08-18, Treasury yield-curve prompt. The model sent:
+#     'expr': '["np.size(y3mo)", "np.mean(y3mo)", "np.std(y3mo, ddof=1)", ...]'
+# a JSON STRING, not a list. That string is a VALID Python list-literal of strings, so the
+# evaluator "computed" it and returned THE EXPRESSION TEXTS as the result — with success=True.
+# The answer reported: "the tool output listed the expressions np.mean(y3mo), np.std(...) but
+# did not return their computed values", and every per-tenor statistic had to be omitted.
+#
+# Worse than a rejection: a rejection is visible, this looked like success.
+
+def test_expr_as_a_json_string_list_is_decoded_and_evaluated():
+    """FAILS PRE-FIX: returned the expression TEXTS as the result, success=True."""
+    out = _run(expr=json.dumps(["np.size(mag)", "np.mean(mag)"]), data={"mag": MAGS})
+    assert out["success"] is True, out.get("error")
+    assert "np.size(mag)" in out["result"]
+    assert "6.15" in out["result"], "the mean was not actually computed"
+    assert "'np.size(mag)'" not in out["result"], "expression text returned as a value"
+
+
+def test_the_expression_texts_are_never_returned_as_the_value():
+    """The precise production symptom, pinned."""
+    out = _run(expr=json.dumps(["np.mean(mag)"]), data={"mag": MAGS})
+    assert "dtype: <U" not in out.get("result", ""), \
+        "result dtype is a STRING array — the expressions were evaluated as data"
+
+
+def test_a_genuine_numeric_list_literal_still_evaluates_as_data():
+    """CONTROL: the decode must fire ONLY for a list of expression strings.
+
+    `[1, 2, 3]` is a legitimate expression and must keep working.
+    """
+    out = _run(expr="[1, 2, 3]", data={"mag": MAGS})
+    assert out["success"] is True
+    assert "1" in out["result"] and "3" in out["result"]
+
+
+def test_a_plain_single_expression_is_unaffected():
+    """CONTROL: the common case must not be disturbed."""
+    out = _run(expr="np.mean(mag)", data={"mag": MAGS})
+    assert out["success"] is True and "6.15" in out["result"]
