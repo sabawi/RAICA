@@ -1,96 +1,104 @@
-"""SI-047 — a COMPUTED series must be chartable, not just a fetched column.
+"""A computed series must ANNOUNCE that it is referenceable, or its chart is lost.
 
-THE DEFECT. `extract_column` resolved every reference through `_parse_table`, which requires a
-header and at least two rows. A `compute` result is not a table — it is a labelled scalar or array
-followed by its provenance:
+FAILURE THIS PREVENTS (SI-075)
+------------------------------
+`extract_column` has resolved `compute` results since SI-047, via a purpose-built
+`computed_series()` helper. But `describe_reference` classified those same results as prose:
 
-    25th/75th/90th percentiles: [5.6  , 6.   , 6.4  ]
-    computed as: np.percentile(mag, [25, 75, 90])
-    over n=225 data point(s); inputs: mag
-    dtype: float64
+    === compute#1 === text, 180 characters
+    - [74, 62, 17, 32, 11]
+    computed as: np.histogram(mag, bins=5)[0]
+    ...
 
-So `{"from": "compute#9", ...}` could NEVER resolve, and anything the model calculated — a
-histogram, a fitted curve, a transformed axis — was unchartable by construction. On production
-every plot_data call for a distribution curve failed with "referenced output does not contain a
-table with a header and rows".
+The capability existed; its signpost did not. The model was never told those values could be
+referenced, so to chart a histogram it had ALREADY COMPUTED CORRECTLY it re-sent the raw
+16,859-point source column instead. Measured 2026-08-18 on the DGS10 prompt: ten plot_data
+attempts, ten rejections ("x has 16859 points, over the 5000 limit" / "x must be a list"), and
+zero charts across four runs — for a chart that needed 50 points.
 
-It only became fatal once the SI-046 directive started pushing the model to plot computed things.
-Before that, charts referenced a raw fetched column, which IS a table and resolved fine — which is
-why the defect sat unnoticed behind a working feature.
+THE INVARIANT: description and resolution must agree about what is referenceable. Both now go
+through `computed_series()`, so they cannot drift apart.
 """
-import pytest
+import os
+import sys
 
-# `computed_series` is imported INSIDE the one test that needs it. At module level it would make
-# this whole file error at collection against pre-fix code, where the function does not exist —
-# and an ERROR proves nothing. Imported lazily, the behavioural tests below fail on their own
-# assertions instead, which is what discriminates.
-from utils.tool_output_reference import ReferenceError_, extract_column
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
 
+from utils.tool_output_reference import (  # noqa: E402
+    ReferenceError_, computed_series, describe_reference, extract_column)
 
-def _compute(body, expr="np.mean(mag)", n=225, dtype="float64"):
-    """The exact shape compute_tool._format emits."""
-    return (f"{body}\ncomputed as: {expr}\n"
-            f"over n={n} data point(s); inputs: mag\ndtype: {dtype}\n"
-            f"STATE THE EXPRESSION AND n ALONGSIDE THIS VALUE when you use it.")
-
-
-CSV = "Date,Close\n2026-01-01,101.5\n2026-01-02,103.25\n2026-01-03,99.0\n"
-JSON = '[{"date":"2026-01-01","close":101.5},{"date":"2026-01-02","close":103.25}]'
+SERIES = ("- [74, 62, 17, 32, 11]\n"
+          "computed as: np.histogram(mag, bins=5)[0]\n"
+          "over n=225 data point(s); inputs: mag\ndtype: int64")
+SCALAR = ("5.8828\ncomputed as: np.mean(mag)\n"
+          "over n=225 data point(s); inputs: mag\ndtype: float64")
+PROSE = "As of today here are the website lookup results: ordinary prose, no computed values."
+TABLE = "Date,Value\n2026-01-01,1.5\n2026-01-02,2.5"
 
 
-class TestComputedSeriesResolves:
-
-    def test_an_array_result_resolves_without_a_column(self):
-        """A compute result has no columns — the output IS the series. Pre-fix this raised
-        'a reference needs a column naming which values to take'."""
-        text = _compute("25th, 75th, 90th, 95th, 99th percentiles: [5.6  , 6.   , 6.4  , 6.68 , 7.476]")
-        assert extract_column(text, None) == [5.6, 6.0, 6.4, 6.68, 7.476]
-
-    def test_integer_histogram_counts_resolve(self):
-        """The exact series a distribution chart needs."""
-        text = _compute("counts (15 bins): [74, 62, 17, 32, 11, 8, 5, 6, 0, 2, 1, 2, 2, 2, 1]",
-                        expr="np.histogram(mag, bins=15)[0]", dtype="int64")
-        assert extract_column(text, None)[:4] == [74.0, 62.0, 17.0, 32.0]
-
-    def test_a_scalar_result_resolves_as_a_one_value_series(self):
-        assert extract_column(_compute("mean magnitude: 5.88"), None) == [5.88]
-
-    def test_an_unlabelled_array_resolves(self):
-        assert extract_column(_compute("[1.5, 2.5, 3.5]"), None) == [1.5, 2.5, 3.5]
-
-    def test_a_truncation_note_is_not_mistaken_for_data(self):
-        """compute appends '[TRUNCATED: showing the first N of M values]' — square brackets that
-        are prose, not values. Parsing them would poison the series with garbage."""
-        text = ("curve: [0.1, 0.2, 0.3]\n[TRUNCATED: showing the first 3 of 900 values]\n"
-                "computed as: np.linspace(0,1,900)\nover n=900 data point(s); inputs: x\ndtype: float64")
-        assert extract_column(text, None) == [0.1, 0.2, 0.3]
-
-    def test_a_column_name_is_ignored_rather_than_rejected(self):
-        """The model often passes a column out of habit. Erroring on it would fail a reference
-        that is otherwise perfectly resolvable."""
-        text = _compute("counts: [74, 62, 17]", expr="np.histogram(mag, bins=3)[0]")
-        assert extract_column(text, "count") == [74.0, 62.0, 17.0]
+def test_a_computed_series_is_described_as_referenceable():
+    """FAILS PRE-FIX: described as "text, N characters" with no hint it could be referenced."""
+    d = describe_reference("compute#1", SERIES)
+    assert "computed series" in d, d[:120]
+    assert "text," not in d, "still described as prose"
 
 
-class TestExistingPathsUnchanged:
-    """Widening the resolver must not weaken it: a table is still a table, and a missing or wrong
-    column must still fail loudly rather than silently charting the wrong numbers."""
+def test_the_description_shows_the_exact_reference_syntax():
+    """The model must not have to guess the column name for a series that has none."""
+    d = describe_reference("compute#2", SERIES)
+    assert '{"from": "compute#2", "column": "value"}' in d
 
-    def test_a_csv_column_still_resolves(self):
-        assert extract_column(CSV, "Close") == [101.5, 103.25, 99.0]
 
-    def test_json_records_still_resolve(self):
-        assert extract_column(JSON, "close") == [101.5, 103.25]
+def test_the_description_states_the_value_count_and_expression():
+    """Length decides whether it fits plot_data's 5,000-point limit; the expression is provenance."""
+    d = describe_reference("compute#1", SERIES)
+    assert "5 value(s)" in d
+    assert "np.histogram(mag, bins=5)[0]" in d
 
-    def test_a_table_without_a_column_still_errors(self):
-        with pytest.raises(ReferenceError_, match="needs a 'column'"):
-            extract_column(CSV, None)
 
-    def test_a_wrong_column_name_still_errors_and_lists_the_real_ones(self):
-        with pytest.raises(ReferenceError_, match="available columns"):
-            extract_column(CSV, "Nope")
+def test_description_and_resolution_agree():
+    """THE invariant. If describe says referenceable, extract must deliver — same helper, both."""
+    d = describe_reference("compute#1", SERIES)
+    assert "computed series" in d
+    assert extract_column(SERIES, "value") == [74.0, 62.0, 17.0, 32.0, 11.0]
 
-    def test_non_compute_prose_is_not_treated_as_a_series(self):
-        from utils.tool_output_reference import computed_series
-        assert computed_series("just some prose with no marker at all") is None
-        assert computed_series("") is None
+
+def test_a_scalar_result_is_also_referenceable():
+    """A single computed figure is a 1-value series, not prose."""
+    assert "computed series, 1 value(s)" in describe_reference("compute#1", SCALAR)
+    assert extract_column(SCALAR, "value") == [5.8828]
+
+
+def test_it_tells_the_model_NOT_to_resend_the_source_column():
+    """The exact production mistake: re-sending the raw column the series was derived from."""
+    d = describe_reference("compute#1", SERIES)
+    assert "do not re-send the source column" in d
+
+
+# ─────────────────────────────────────────── controls: nothing else may be reclassified
+def test_prose_is_still_described_as_text():
+    d = describe_reference("lookup_website#1", PROSE)
+    assert "text," in d and "computed series" not in d
+
+
+def test_prose_still_fails_to_resolve():
+    """The control must stay unresolvable — otherwise the branch is too eager."""
+    try:
+        extract_column(PROSE, "value")
+        raise AssertionError("prose resolved as a series")
+    except ReferenceError_:
+        pass
+
+
+def test_a_real_table_is_still_described_as_a_table():
+    d = describe_reference("lookup_website#1", TABLE)
+    assert "table," in d and "computed series" not in d
+    assert "'Date'" in d and "'Value'" in d
+
+
+def test_computed_series_helper_is_the_single_source_of_truth():
+    """Both paths must key off the same helper so they cannot disagree."""
+    assert computed_series(SERIES) == [74.0, 62.0, 17.0, 32.0, 11.0]
+    assert computed_series(PROSE) is None
+    assert computed_series(TABLE) is None

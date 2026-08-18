@@ -29,6 +29,25 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P3 because it is long-standing and stable, but it is exactly the shape of
   the swallowed-error class this log exists for — a broad green headline over an unexamined red.
 
+### SI-075 — a computed series was referenceable but never announced as such  [RESOLVED v1.0.0.309, 2026-08-18]
+- **Found by the user asking** whether aggregation should happen on compute's resultant series
+  before it reaches plot_data. It should — and the plumbing already existed, invisibly.
+- **Cause:** `extract_column` has resolved compute results since SI-047 (`computed_series()`), but
+  `describe_reference` classified them as `text, N characters` and dumped the raw block. The model
+  was never told the values could be referenced, so to chart a histogram it had ALREADY COMPUTED it
+  re-sent the raw 16,859-point source column. Ten plot_data attempts, ten rejections, zero charts
+  across four DGS10 runs — for a chart needing 50 points.
+- **Same shape as SI-069 / SI-073:** the right thing was computed, then the wrong thing was passed.
+- **Fix:** a computed-series branch in `describe_reference`, keyed off the SAME helper the resolver
+  uses so the two cannot drift; section N documents referencing `compute#N`.
+- **Result:** limit rejections 5 → 0, `x must be a list` 8 → 0, `compute#` references 0 → 32,
+  charts 0/4 runs → 2 in one run. **PARTIAL — 1 of 2 runs; run B attempted no chart at all,
+  unexplained.**
+- **Also corrected my own v1.0.0.308 advice:** "aggregate monthly with compute" is IMPOSSIBLE
+  (pure numpy, no grouping, no dates — `reshape` is rejected by the fence). Replaced with slicing,
+  which is supported and tested (`y[::20]`, `y[-500:]`).
+- **Verified:** 10 tests, 6 failing pre-fix; controls confirm prose and tables are unaffected.
+
 ### SI-074 — the arbitrator is a CRASH detector, not a correctness checker; expand it to a semantic judge  [P2 — FUTURE LINE ITEM, opened 2026-08-18]
 - **Raised by the user**, who identified the arbitrator as the architecturally correct lane to
   validate a tool call and its parameters before results reach the primary model. Inspection

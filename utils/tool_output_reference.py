@@ -211,6 +211,29 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
         return (f"=== {ref_id} === JSON records, {len(records)} entries\n"
                 f"fields: {', '.join(repr(k) for k in keys)}\n"
                 f"first entry: {json.dumps(records[0])[:300]}")
+    # SI-075: a COMPUTED SERIES is referenceable — say so, or the model cannot chart it.
+    #
+    # `extract_column` has resolved compute results since SI-047 (via `computed_series`), but this
+    # description called them "text, 180 characters" and dumped the raw block. The model was never
+    # told the values could be referenced, so to chart a histogram it had computed it re-sent the
+    # RAW 16,859-point source column instead — ten attempts, ten rejections, no chart, on 2026-08-18.
+    # The bridge existed; only its signpost was missing. Description and resolution now use the SAME
+    # helper, so they cannot disagree about what is referenceable.
+    _series = computed_series(text)
+    if _series is not None:
+        _expr = ""
+        for _line in text.splitlines():
+            if _line.strip().startswith("computed as:"):
+                _expr = _line.split("computed as:", 1)[1].strip()
+                break
+        _head = ", ".join(f"{v:g}" for v in _series[:8])
+        _more = f", … ({len(_series)} values)" if len(_series) > 8 else ""
+        return (f"=== {ref_id} === computed series, {len(_series)} value(s)\n"
+                + (f"expression: {_expr}\n" if _expr else "")
+                + f"values: {_head}{_more}\n"
+                + f'REFERENCE THESE VALUES — do not retype them and do not re-send the source '
+                  f'column: {{"from": "{ref_id}", "column": "value"}}')
+
     body = text.strip()
     budget = prose_chars or _PROSE_PREVIEW_CHARS
     if len(body) <= budget:

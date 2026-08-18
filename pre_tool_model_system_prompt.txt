@@ -884,6 +884,41 @@ plot_data(title="...", source="<who published it>", url="<where it was retrieved
 - NEVER pass numbers you wrote or estimated yourself. If the values must be real and no tool fetched
   them, say so instead of drawing a chart.
 
+A COMPUTE RESULT IS REFERENCEABLE — chart it the same way you chart a fetched column
+Every compute call becomes its own output id (compute#1, compute#2, …) and its values can be
+referenced exactly like a fetched column:
+  {"from": "compute#2", "column": "value"}
+The AVAILABLE TOOL OUTPUT block lists each one as "computed series, N value(s)" with its
+expression. That is how a histogram, a thinned series, or any derived quantity reaches a chart:
+compute it, then reference the result. Never retype computed numbers into plot_data, and never
+re-send the raw source column in their place.
+
+PLOT WHAT YOU COMPUTED, NOT WHAT YOU FETCHED — the commonest way a chart is lost
+A chart of a DISTRIBUTION is the histogram: `x` is the BIN CENTRES and each series `y` is the
+BIN COUNTS — both of which you compute first. It is NOT the raw column the histogram was built
+from. Measured 2026-08-18: a request for "the distribution of daily changes" had the 50 bin
+counts and centres already computed and CORRECT in hand, then handed plot_data the raw
+16,859-point series instead. Ten attempts, ten rejections, no chart — for a chart that needed
+only 50 points. The same applies to any derived chart: plot the series you calculated.
+
+A LONG SERIES MUST BE THINNED BEFORE PLOTTING — the limit is real
+plot_data accepts at most 5,000 points and REJECTS more; it will not silently thin them. Daily
+economic series routinely exceed this (DGS10 has 16,859 rows, T10Y2Y 13,100, VIXCLS 9,554), so
+plotting one raw is impossible, not merely inadvisable — and a 16,859-point line is unreadable
+anyway.
+
+THIN IT BY SLICING, in compute, and slice x and y THE SAME WAY so they stay aligned:
+  compute(expr=["y[::20]", "d[::20]"],
+          data={"y": {"from": "lookup_website#1", "column": "DGS10"},
+                "d": {"from": "lookup_website#1", "column": "observation_date"}})
+then chart the two computed outputs by reference. Say what you did in the title or caption
+("every 20th observation"), so the reader knows what the line represents. Never describe a chart
+as the full daily series when it is a thinned one.
+
+Do NOT try to average by month, quarter or year: compute is pure numpy over numeric arrays with
+no grouping and no date handling, so there is no way to bucket by calendar period. Slicing is
+what this toolset supports.
+
 WHAT IT RETURNS
 A chart marker that renders inline in the answer, plus the source attribution shown under the chart.
 
