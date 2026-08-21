@@ -97,14 +97,34 @@ the module's own rule that description and resolution must agree on what is addr
 | `plot_data` selected | **0/4 runs** | **2/3 runs** |
 | date reference resolves | `ReferenceError_` | **0 reference errors** |
 | chart rendered | never reached | yes, in the runs that plotted |
-| chart published | — | **0 — NewX down on :9876 (environment, not code)** |
+| chart published | — | **2 real JPEGs, HTTP 200** (re-run with NewX up) |
 
-**NOT verified: that a user SEES a chart.** `publish_chart` POSTs to NewX, which was not running in
-this session, so no marker is minted and the chart pass-rate metric cannot discriminate. Re-run with
-NewX up to close this.
+### Closing the chain — re-run with NewX 1.0.0.182 running on :9876
 
-**Also not fixed:** 1 of 3 runs still looped on `compute` without plotting. SI-084 (invented marker)
-and SI-083 (wrong series plotted) remain the later gates between a rendered chart and a correct one.
+The first pass could not test publication because NewX was down. Re-run, 3 fresh runs:
+
+| gate | result |
+|---|---|
+| `plot_data` selected | **2/3 runs** (1 still looped on `compute`) |
+| date reference resolves | **0 reference errors** — `d[-252::3]`, `d[-365:][::3]` all resolved |
+| chart published | **2 real JPEGs**, `HTTP 200 image/jpeg`, 54,823 and 61,848 bytes |
+| marker in the answer | 3/3 — but only **2 real**; run 3 emitted `[[chart:line`, which `plot_data`
+never minted |
+
+**The images were INSPECTED, not just counted.** Both real charts plot DGS10 correctly (4.0–4.7%,
+right series, sourced). Two defects visible only in the picture, both logged:
+- **SI-091** — the x-axis reads `2025.8, 2026.0, …` under a label saying "Date"
+  (`plot_data_tool.py:205-216` converts dates to fractional years and never formats them back).
+- **SI-090** — one chart titled "Aug 2025–Aug 2026" plots ~17 months, because the model sliced
+  `d[-365:]` treating 365 ROWS as 365 calendar days; DGS10 rows are business days.
+
+**SI-084 reproduced at 1/3** (recorded 2/5 real markers on 2026-08-18): the model still sometimes
+invents a marker instead of relaying the one the tool returned.
+
+**SI-087's label path was NOT exercised.** Every reference this round used an EXPRESSION
+(`d[-252::3]`), never a label — consistent with the zero-occurrence exposure measured for it in the
+3946-reference production corpus. That fix remains unit-verified and monotonicity-proven, not
+end-to-end verified.
 
 ### Tests
 

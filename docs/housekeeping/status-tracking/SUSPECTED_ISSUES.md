@@ -137,6 +137,42 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Still open downstream, unchanged by this fix:** 1 of 3 runs still looped on `compute` without
   plotting; SI-084 (invented marker) and SI-083 (wrong series plotted) remain the later gates.
 
+### SI-091 — `plot_data` renders a DATE axis as decimal years  [P2 — CONFIRMED, opened 2026-08-21]
+- **Found by LOOKING AT THE RENDERED IMAGE**, not the logs — every log line reported success.
+  Two real charts published 2026-08-21 (`/static/images/media/4ed23af0…jpg`, `…f80cae36…jpg`,
+  both HTTP 200 image/jpeg) show an x-axis reading **`2025.8, 2026.0, 2026.2, 2026.4, 2026.6`**
+  beneath an axis labelled **"Date"**.
+- **CAUSE — CONFIRMED, in the code.** `user_tools/plot_data_tool.py:205-216` converts a date to a
+  fractional year for plotting:
+  ```python
+  start  = date(d.year, 1, 1).toordinal()
+  length = date(d.year + 1, 1, 1).toordinal() - start
+  return d.year + (d.toordinal() - start) / length
+  ```
+  The float is correct for POSITIONING, but nothing converts it back into a date TICK LABEL, so
+  matplotlib prints the raw number. The data is right; the axis is unreadable as a date.
+- **Pre-existing, newly VISIBLE.** The same conversion has always applied to dates taken from a CSV
+  table. SI-088 made the `compute` date path reachable, so it now shows up on every charted series.
+- **Evidence needed to clear:** decide whether `plot_data` should format temporal ticks (month/year
+  labels) or keep and label the fractional year explicitly. Then re-render and LOOK at the image.
+- **Priority rationale:** P2 — the chart is correct but reads as wrong to a user, and no log or test
+  currently catches it. Only inspecting the picture does.
+
+### SI-090 — the model slices by ROW COUNT as if rows were calendar days  [P2 — CONFIRMED, opened 2026-08-21]
+- **Found by LOOKING AT THE RENDERED IMAGE.** A chart titled *"Last Year (every 3rd observation,
+  Aug 2025–Aug 2026)"* plots x from ~**2025.2 to 2026.6 — about 17 months**, not 12.
+- **CAUSE — CONFIRMED.** The model computed `d[-365:]` / `y[-365:]` (logged this round, 5× each),
+  treating 365 ROWS as 365 CALENDAR DAYS. DGS10 rows are BUSINESS days (~252/yr), so 365 rows is
+  ~17 months. The other run used `[-252:]` and its chart is correctly one year.
+- **Same class as SI-083** — the pipeline draws faithfully what it is given; the defect is what the
+  model asks for. Invisible to every log check: the slice succeeded, the chart published, and the
+  title is confidently wrong.
+- **Evidence needed to clear:** decide whether this belongs in policy (state that a row is an
+  OBSERVATION, not a day, and that a calendar window must be derived from the date column) or in a
+  chart-level sanity signal (plotted span vs claimed span). Note the date column is now referenceable
+  (SI-088), so a date-based window is finally expressible.
+- **Priority rationale:** P2 — produces a plausible, well-labelled, factually wrong chart.
+
 ### SI-089 — the model references a `compute#N` that does not exist  [P3 — LOGGED, 2026-08-21]
 - **Observed** during the SI-088 E2E, 5 occurrences in one run:
   ```
