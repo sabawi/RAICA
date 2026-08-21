@@ -137,6 +137,59 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Still open downstream, unchanged by this fix:** 1 of 3 runs still looped on `compute` without
   plotting; SI-084 (invented marker) and SI-083 (wrong series plotted) remain the later gates.
 
+### SI-093 — an EMPTY evidence block is handled as "no tools executed", and a reporting bot then fabricates  [P1 — CONFIRMED, opened 2026-08-21]
+- **Confirmed in PRODUCTION, with published consequences.** `@raicaMiddleEast` posted eight
+  fabricated Middle East news items — specific casualty figures, named towns (Kfar Tibnit, Haret
+  Hreik), named officials — dated **2025-07-09/11**, to the live NewX feed on **2026-08-21**, tagged
+  `#BreakingNews`, with **no sources**. `"Kfar Tibnit"` appears **zero** times in any
+  `get_news_summaries` result: the specifics were invented, not retrieved.
+- **The proximate cause was SI-086** (`logs/archive/server_complete_20260821_102123.log`, 04:41:09):
+  ```
+  BEFORE applying corrected results - tools_results length: 21396
+  Corrected results length: 1510
+  preview: ARBITRATOR_ERROR_CORRECTION_FAILED: ... Error analysis: {5: {'error_pattern':
+           'empty_response', 'error_category': 'data_format', ...
+  PARSED RESULTS: Generated 0 tool entries
+  Context: 0 | System: 14728
+  ```
+  21,396 chars of real news discarded for a 1,510-char failure sentinel. **Fixed in v1.0.0.313,
+  deployed to prod 10:21 UTC — 5h40m AFTER this post.** This run is the first production
+  observation of that failure branch, which the v1.0.0.313 changelog recorded as never yet seen.
+- **BUT THE FIX DOES NOT CLOSE THIS ISSUE.** SI-086 preserves results that EXIST when the arbitrator
+  fails. It is one of several routes to an empty context; the trigger here was a tool returning
+  `empty_response` (the rate-limit / block / timeout shape). If retrieval itself returns nothing,
+  there is nothing to preserve and the outcome is identical.
+- **THE REAL DEFECT — an error condition handled as a normal one.** `fastapi_server_complete.py`
+  ~12259:
+  ```python
+  if context_block.strip():
+      in_prompt = f"--CONTEXT START--\n{full_context}\n--CONTEXT END--\n\nPROMPT: {transformed_prompt}"
+  else:
+      # If no tools executed, use original context only
+      in_prompt = f"PROMPT: {transformed_prompt}"        # <- sent anyway, silently
+  ```
+  The code cannot distinguish **"no tools were asked for"** from **"tools ran and their evidence
+  vanished."** Both land in the same silent branch. The model then receives its full reporting
+  mandate ("You are a Middle East news correspondent. Report hard news: what happened, where, when,
+  who is involved") with zero evidence, and fills the vacuum from training data — which is why every
+  fabricated item clusters near the model's knowledge horizon, and why the post truthfully admitted
+  "Specific article URLs were not available."
+- **`Context: 0` IS A DEAD SIGNAL.** It is logged at :12274 and read by NOTHING. The system measures
+  the failure and discards the measurement — the dead-write shape this log has recorded before.
+- **Same class as SI-078/SI-084:** an explicit instruction to produce X, no tool output that can
+  supply X, so the model invents X. There it minted a fake chart marker; here it minted war reporting.
+- **FIX (planned, agreed 2026-08-21):**
+  1. Distinguish the two cases: when `tools_called` is non-empty and `context_block` is empty, that is
+     EVIDENCE LOSS — tell the model plainly that retrieval returned nothing and that it may not
+     assert facts it cannot source.
+  2. Give `Context: 0` a reader — an expected-evidence request that gathers nothing must be logged
+     as a failure, not a number.
+  3. **NewX-side refuse-to-post floor** for citation bots when a reply carries zero sources. This is
+     the only layer that holds regardless of cause; a prompt directive must not be the last line of
+     defence for publishing casualty claims. Tracked separately.
+- **Priority rationale:** P1 — a live public feed published fabricated claims about an active armed
+  conflict, and every log line reported success.
+
 ### SI-092 — `test_digest_has_id_meta_sample_and_discontinuity` fails, outside every reported suite  [P3 — LOGGED, 2026-08-21]
 - **Observed** while running chart tests for SI-091: `tests/utilities/test_data_charts.py::
   test_digest_has_id_meta_sample_and_discontinuity` fails at line 101, `assert "do NOT bridge" in d`.

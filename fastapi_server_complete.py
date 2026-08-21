@@ -3348,6 +3348,42 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
 # which is exactly what happened.
 _ARBITRATOR_CORRECTION_FAILED = "ARBITRATOR_ERROR_CORRECTION_FAILED"
 
+# SI-093 — WHAT THE MODEL IS TOLD WHEN THE EVIDENCE IT ASKED FOR IS GONE.
+# Tools were called and produced NOTHING usable. The old code handled that with the same silent
+# branch as "no tools were asked for", so the model received its full reporting mandate and an
+# empty context, and filled the vacuum from memory. Production, 2026-08-21 04:41: a news bot
+# published EIGHT fabricated Middle East stories — named towns, casualty figures, named officials
+# — dated thirteen months earlier, to a live public feed, because 21,396 chars of real news had
+# been discarded upstream (SI-086) and nothing told the model its evidence was missing.
+# This states the FACT of the loss. It does not try to classify the request or guess intent.
+_EVIDENCE_UNAVAILABLE_NOTICE = (
+    "RETRIEVAL RETURNED NOTHING USABLE.\n"
+    "The tools listed above were called for this request and produced NO evidence — not a partial "
+    "result, none. You are therefore working with ZERO sources.\n"
+    "You MUST NOT state any fact, figure, date, name, quotation, or event as though you had "
+    "retrieved it: you have retrieved nothing, and anything you produce from memory will be "
+    "presented to the reader as current, sourced reporting when it is neither.\n"
+    "Say plainly and briefly that current information could not be retrieved for this request, and "
+    "stop. Do not substitute recalled or illustrative material, and do not soften this into a "
+    "caveat attached to content you generated anyway.")
+
+
+def _evidence_loss_lead(context_block: str, tools_called) -> str:
+    """SI-093 — the notice to prepend, or "" when nothing is wrong.
+
+    Returns the notice ONLY when tools were actually called AND the context block came out
+    empty. That is the difference between "we asked for nothing" (normal) and "we asked for
+    evidence and got none" (an error that used to be handled silently).
+
+    Pure and total, so the condition that published fabricated war reporting can be tested
+    without standing up the streaming path it lives in.
+    """
+    if (context_block or "").strip():
+        return ""
+    if not tools_called:
+        return ""
+    return _EVIDENCE_UNAVAILABLE_NOTICE
+
 
 def _build_structured_context_block(tools_results_summary: str, tools_called: List[str]) -> str:
     """
@@ -12264,9 +12300,31 @@ END OF CONTEXT
                     full_context += context_block
                     in_prompt = f"--CONTEXT START--\n{full_context}\n--CONTEXT END--\n\nPROMPT: {transformed_prompt}"
                 else:
-                    # If no tools executed, use original context only
+                    # SI-093 — TWO DIFFERENT SITUATIONS REACH THIS BRANCH, and only one is normal:
+                    #   (a) no tools were asked for            -> nothing is missing, proceed
+                    #   (b) tools WERE called and returned nothing usable -> the evidence this
+                    #       request depends on is GONE, and proceeding silently is how a reporting
+                    #       mandate turns into fabrication.
+                    # `tools_called` is what distinguishes them. Before this, both took the same
+                    # silent path and the comment below read "If no tools executed" for both.
+                    _notice = _evidence_loss_lead(context_block, tools_called)
+                    _evidence_lost = bool(_notice)
+                    _lead = f"{_notice}\n\n" if _evidence_lost else ""
+                    if _evidence_lost:
+                        # `Context: 0` was logged and read by NOTHING — the system measured this
+                        # failure and discarded the measurement. It is an ERROR, not a metric.
+                        logger.error(
+                            "🚨 EVIDENCE LOST: %d tool(s) executed (%s) but the context block is "
+                            "EMPTY — the model is being told it has NO sources and must not assert "
+                            "facts. This is the SI-093 condition; check upstream for a failed or "
+                            "discarded tool result.",
+                            len(tools_called), ", ".join(tools_called))
                     if prompt_context.strip():
-                        in_prompt = f"--CONTEXT START--\n{prompt_context}\n--CONTEXT END--\n\nPROMPT: {transformed_prompt}"
+                        in_prompt = (f"--CONTEXT START--\n{_lead}{prompt_context}\n--CONTEXT END--"
+                                     f"\n\nPROMPT: {transformed_prompt}")
+                    elif _evidence_lost:
+                        in_prompt = (f"--CONTEXT START--\n{_EVIDENCE_UNAVAILABLE_NOTICE}"
+                                     f"\n--CONTEXT END--\n\nPROMPT: {transformed_prompt}")
                     else:
                         in_prompt = f"PROMPT: {transformed_prompt}"
             
