@@ -3341,6 +3341,14 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
         print(f"Error processing news from {news_url}: {e}", flush=True)
         return ("", 0)
 
+# SI-086 — the arbitrator's "I could not correct these" SIGNAL. It is RAICA's own protocol
+# marker, produced and consumed inside this file, so matching it is not the forbidden
+# keyword-routing anti-pattern (same basis as `_dr_dispatch_failed`). It lives here as ONE
+# constant because a producer and a consumer that disagree about it silently destroy data —
+# which is exactly what happened.
+_ARBITRATOR_CORRECTION_FAILED = "ARBITRATOR_ERROR_CORRECTION_FAILED"
+
+
 def _build_structured_context_block(tools_results_summary: str, tools_called: List[str]) -> str:
     """
     Build structured CONTEXT block from tool outputs for Primary LLM.
@@ -6281,7 +6289,7 @@ Please validate each task result and respond with JSON analysis."""
                 else:
                     logger.error(f"🚨 ARBITRATOR CRITICAL FAILURE: Error correction failed - marking results as incomplete")
                     # Instead of raw error results, return a clear failure marker
-                    failure_marker = f"ARBITRATOR_ERROR_CORRECTION_FAILED: Original tools contained errors that could not be corrected automatically. Error analysis: {error_analysis}"
+                    failure_marker = f"{_ARBITRATOR_CORRECTION_FAILED}: Original tools contained errors that could not be corrected automatically. Error analysis: {error_analysis}"
                     return failure_marker
                 
         except json.JSONDecodeError as e:
@@ -11901,8 +11909,31 @@ Generate the corrected tool calls:"""
                     logger.info(f"🔍 DEBUG: Corrected results length: {len(corrected_tools_results)}")
                     truncated_corrected_results = truncate_base64_for_logging(corrected_tools_results[:200] + "...")
                     logger.info(f"🔍 DEBUG: Corrected results preview: {truncated_corrected_results}")
-                    
-                    tools_results = corrected_tools_results
+
+                    # SI-086 — A FAILURE SIGNAL IS NOT A RESULT. `arbitrator_validate_tasks`
+                    # returns a short sentinel when it cannot correct a tool error, and this
+                    # branch applied ANYTHING non-None. Production 2026-08-18, DGS10 request:
+                    #     BEFORE applying corrected results - tools_results length: 302181
+                    #     Corrected results length: 558
+                    #     AFTER  applying corrected results - tools_results length: 558
+                    # 302,181 characters of real output — a fetched CSV and ten successful
+                    # compute results — were replaced by "could not be corrected", the context
+                    # block came out EMPTY, and the user received a 105-character preamble
+                    # ("I'll fetch the DGS10 series... Let me start by retrieving the data.")
+                    # for a request whose every figure had in fact been computed.
+                    #
+                    # The sentinel's purpose — stop the model citing figures from failed tools —
+                    # is preserved by APPENDING it. The successful results survive, the failure
+                    # is stated, and the model can report both. Two tools failing must never
+                    # discard the twelve that worked.
+                    if corrected_tools_results.startswith(_ARBITRATOR_CORRECTION_FAILED):
+                        logger.error(
+                            "🚨 ARBITRATOR: correction FAILED — keeping the %d chars of original "
+                            "results and appending the notice (was: replaced them with %d chars)",
+                            len(tools_results), len(corrected_tools_results))
+                        tools_results = f"{tools_results}\n\n{corrected_tools_results}"
+                    else:
+                        tools_results = corrected_tools_results
                     
                     logger.info(f"🔍 DEBUG: AFTER applying corrected results - tools_results length: {len(tools_results)}")
                     logger.info(f"🔧 ARBITRATOR FIX: Applied corrected results to primary LLM context ({len(corrected_tools_results)} chars)")

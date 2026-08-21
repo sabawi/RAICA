@@ -53,6 +53,122 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P2 and NOT worth another investigation cycle without a decision on the
   above — the cost of this line of work is already the dominant concern.
 
+### SI-087 — a compute result REJECTED a reference to the name it had just printed  [FIXED v1.0.0.313, 2026-08-21]
+- **Found by the mandatory adversarial audit of v1.0.0.312, before release** — attack hypothesis #3
+  ("punctuation in legitimate plain labels"). Not a production report: no user hit it, because it was
+  caught in the audit that gates the release.
+- **The defect.** SI-085 hardened `extract_column` so an EXPRESSION-SHAPED column name that matches
+  nothing RAISES rather than silently returning a different series. "Expression-shaped" is decided by
+  `_EXPRESSION_CHARS = set("[]().:+-*/,")` — which contains `-`, `.` and `(`, ordinary ENGLISH
+  punctuation. So a plain descriptive label was classified as an expression:
+  ```
+  extract_column(text, "10-Year Treasury")  -> ReferenceError_   # was: resolved
+  extract_column(text, "CPI (index)")       -> ReferenceError_   # was: resolved
+  ```
+- **Why it is worse than a strictness tweak.** `compute_tool._format` (`user_tools/compute_tool.py:419`)
+  prints `f"{label}: "` ahead of a single result, so the output ANNOUNCES that very name:
+  ```
+  10-Year Treasury: [4.3, 4.35, 4.28, 4.41]
+  computed as: y10
+  ```
+  The server would have printed `10-Year Treasury` and then rejected a reference to it. Real Treasury,
+  CPI and GDP labels are exactly this shape.
+- **Measured exposure — ZERO in production.** All 3946 real reference payloads
+  (`{"from": ..., "column": ...}`) were harvested from `logs/server_complete.log` +
+  `logs/archive/*.log`; the harvest is complete for that corpus (3946 of 3946 `"column"` occurrences
+  matched, none in reverse field order). 55 distinct `compute#` column names: 11 plain identifiers
+  (`value`, `y`, `counts`, `diff`, …) which keep resolving, 41 genuine expressions whose new raise is
+  the intended SI-085 catch, and 3 non-references (a syntax-doc placeholder and leaked data). **No
+  real reference regressed.** Every punctuated Treasury label in production (`10 Yr`, `2 Yr`, `30 Yr`)
+  is a TABULAR `lookup_website#N` reference, which never enters the compute branch at all.
+- **FIX (v1.0.0.313).** `computed_entries` now carries the label the output itself printed, and
+  `extract_column` matches it BEFORE raising. This is reading back a string RAICA emitted — the same
+  basis on which `_COMPUTE_MARKER` is matched — not a keyword heuristic, and it only ADDS a
+  resolution path: nothing that resolved before can change.
+- **Verified.** Monotonicity replay over 966 (output-shape x column) pairs, 14 output shapes incl.
+  table/JSON/prose controls: **0 narrowed, 0 altered, 0 crashed, 3 widened** (exactly the intended
+  labelled cases). Truncated series still raise even when the label matches, so the other half of
+  SI-085 is intact. Named tests: `tests/unit/test_labelled_series_reference.py` (21 tests, **9 fail
+  on pre-fix code**) and `tests/unit/test_reference_production_replay.py` (145 tests seeded with the
+  real production column names, **49 fail on pre-SI-085 HEAD**).
+- **Residual risk, stated honestly:** an UNLABELLED single-series output referenced by an invented
+  punctuated label still raises. That is intentional — nothing in the output claims that name — and it
+  has zero occurrences in the harvested corpus.
+
+### SI-086 — the arbitrator DESTROYED the results it failed to correct  [FIXED v1.0.0.312, released in v1.0.0.313]
+- **The user gets a preamble instead of an answer, after all the work succeeded.** Local run,
+  DGS10 testcase: `TOOLS EXECUTED: lookup_website, compute x10` — every figure computed — and the
+  delivered answer was 105 characters:
+  > "I'll fetch the DGS10 series from FRED and perform the full analysis. Let me start by
+  > retrieving the data."
+- **CAUSE — CONFIRMED, in the code, and it is not intermittent at all.** `arbitrator_validate_tasks`
+  returns a short sentinel string when it cannot correct a tool error. The caller applied ANYTHING
+  that was not `None`:
+  ```python
+  if corrected_tools_results is not None:
+      tools_results = corrected_tools_results     # <- a failure SIGNAL, applied as a RESULT
+  ```
+  `logs/archive/server_complete_20260818_163048.log:66164`:
+  ```
+  BEFORE applying corrected results - tools_results length: 302181
+  Corrected results length: 558
+  AFTER  applying corrected results - tools_results length: 558
+  PARSED RESULTS: Generated 0 tool entries
+  📜 Prompt: 986 bytes | Context: 0
+  ```
+  That accounts for the `prompt_len=986` discriminator recorded when this was opened: the context
+  block was empty because the results had been deleted, so the synthesis prompt was the user's
+  question alone. **Two failing tools discarded the twelve that worked.**
+- **SCOPE — measured, not assumed. 6 of 44 arbitrator apply-events across the 2026-08-18 logs
+  destroyed 96.7–99.8% of the gathered results** (293,192→558 · 290,464→987 · 293,033→558 ·
+  110,085→3,640 · 51,635→1,446 · 302,181→558). **1 in 7 arbitrator corrections threw everything
+  away.** It is NOT chart-specific — the 12:32 event was a MENA news + social-media request. The
+  "intermittent" framing in the original entry was wrong: the branch is deterministic, and what
+  varies is only whether the arbitrator fails to correct.
+- **FIX** — a failure signal is not a result. The sentinel is now APPENDED, never substituted, so
+  the successful results survive and the failure is still stated to the model. The marker is ONE
+  shared constant (`_ARBITRATOR_CORRECTION_FAILED`) because a producer and consumer that drift on
+  that string silently destroy data — which is what happened.
+- **Tests:** `test_arbitrator_never_destroys_results.py`, 6 tests, **3 fail on pre-fix** (the other
+  3 are controls: genuine correction still applied, `None` path, sentinel still reported).
+- **NOT YET VERIFIED END-TO-END.** The guard's log line has never fired — the failure path has not
+  recurred since the fix went in, so the repaired path has been exercised only by unit test. Watch
+  for `🚨 ARBITRATOR: correction FAILED — keeping the N chars` and confirm the answer is complete
+  when it appears.
+### SI-085 — a reference that could not be honoured RESOLVED to something else  [FIXED v1.0.0.312, released in v1.0.0.313]
+- **Two production failures, one shape**, both found by verifying the artifact the user receives —
+  every one logged as a successful call.
+- **(1) WRONG SELECTION.** A chart asked `compute#5` for `d[::60]`, correctly naming the thinned
+  DATES for its x-axis. That output held ONE series, and the SI-047 contract ("with one series the
+  output IS the answer, the column name is ignored") returned HOUSING STARTS instead. The chart
+  rendered a y=x diagonal with an axis labelled "Date" showing 600-1800. **Three charts across two
+  datasets failed this way**, each plausible, each wrong.
+  - The fix could not be a whitelist: `test_integer_counts_stay_usable` legitimately passes
+    `"column": "count"`. The discriminator is SHAPE — an expression-shaped name (`d[::60]`,
+    `np.mean(y)`) is a SELECTION and must match; a plain label (`value`, `count`) is the habit
+    SI-047 exists to tolerate. Syntax, not meaning.
+- **(2) A PREFIX IS NOT THE SERIES.** `compute` renders at most 200 values and appends
+  `[TRUNCATED: showing the first 200 of 943 values]`; both parsers dropped that line and returned
+  the 200 as the series. A Phillips-curve answer reported inflation mean 2.00% and max 10.24% "in
+  January 1948" over months 1-200 (Jan 1948 - Aug 1964) of a 943-month series whose true maximum
+  is ~14.8% in March 1980 — while narrating the full 1948-2026 history around those figures.
+- **Measured after the fix** (local, 3 regression testcases through the real path):
+  - The Treasury four-tenor chart is now **CORRECT** — x-axis real decimal years 2026.0-2026.63,
+    157 points at full resolution, all four series in the right order, 30Yr ending at 5.31 exactly
+    as the verified statistics say.
+  - The new errors fire and are actionable: *"this result shows only the first 200 of 843 values,
+    so it cannot be referenced as the series"* (x5) and *"'value' does not name a computed series
+    in this output; it holds 2"* (x5).
+  - **Side effect worth noting:** being refused a truncated reference pushed the model to read the
+    source CSV directly, which is why the dates are right — and it stopped thinning to 53 points.
+- **What it does NOT fix, by construction:** the second Treasury chart still plots the wrong data,
+  because the reference was *valid*: `{"column": "10 Yr"}` labelled "10Y-2Y Spread". The layer
+  honoured exactly what was named. Guarding a name cannot catch naming the wrong real thing —
+  that is SI-083.
+- **Tests:** `test_reference_fails_closed.py`, 12 tests, **6 fail on pre-fix**; the 6 that pass are
+  the controls (plain-label habit, matching expression, index, untruncated). Unit suite **714
+  passed**, same 4 pre-existing failures.
+
 ### SI-084 — a real chart is drawn, then the model INVENTS a marker instead of relaying it  [P1 — OPEN, opened 2026-08-18]
 - **This is now the only thing between a working chart and the user seeing one.** With SI-082
   fixed, `plot_data` renders and publishes reliably — 5 real JPEGs across 5 runs — but the ANSWER

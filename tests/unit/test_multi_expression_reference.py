@@ -142,7 +142,8 @@ dtype: float64
 - `np.std(d)` -> rejected: name 'd' is not defined"""
     with pytest.raises(ReferenceError_) as e:
         extract_column(partial, "np.std(d)")
-    assert "np.std(d)" not in str(e.value).split("available:")[1], \
-        "a rejected expression was offered as referenceable"
+    listed = str(e.value)[str(e.value).index("["):]      # the expressions the error offers
+    assert "np.std(d)" not in listed, "a rejected expression was offered as referenceable"
+    assert "np.nanmean(y)" in listed and "np.nanstd(y)" in listed
     assert extract_column(partial, "np.nanmean(y)") == [5.882]
     assert extract_column(partial, "np.nanstd(y)") == [0.42]

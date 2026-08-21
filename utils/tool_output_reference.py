@@ -198,16 +198,24 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
     # multi-expression result. Description and resolution must agree on what is addressable, or the
     # model is told one thing and the resolver enforces another.
     _entries = computed_entries(text)
-    if _entries and len(_entries) > 1:
+    if _entries and (len(_entries) > 1 or any(e["truncated"] for e in _entries)):
         _lines = []
-        for _i, (_e, _v) in enumerate(_entries):
-            _head = ", ".join(f"{x:g}" for x in _v[:6])
-            _more = f", … ({len(_v)} values)" if len(_v) > 6 else ""
-            _lines.append(f'  [{_i}] `{_e}` -> {_head}{_more}')
+        for _i, _e in enumerate(_entries):
+            _head = ", ".join(f"{x:g}" for x in _e["values"][:6])
+            _more = f", … ({len(_e['values'])} values)" if len(_e["values"]) > 6 else ""
+            # Say plainly which entries cannot be referenced, so the model does not try.
+            _warn = (f"  [TRUNCATED to {len(_e['values'])} of {_e['total'] or 'many'} — "
+                     f"NOT referenceable; compute what you need directly]"
+                     if _e["truncated"] else "")
+            _lines.append(f'  [{_i}] `{_e["expr"]}` -> {_head}{_more}{_warn}')
+        _ok = [e for e in _entries if not e["truncated"]]
+        _syntax = (f'REFERENCE ONE BY ITS EXPRESSION — do not retype the values and do not '
+                   f're-send the source column: {{"from": "{ref_id}", "column": "{_ok[0]["expr"]}"}}'
+                   if _ok else
+                   "NONE of these can be referenced as a series — each was truncated for display. "
+                   "Compute the figure you need inside `compute` instead.")
         return (f"=== {ref_id} === {len(_entries)} computed series\n"
-                + "\n".join(_lines) + "\n"
-                + "REFERENCE ONE BY ITS EXPRESSION — do not retype the values and do not re-send "
-                  f'the source column: {{"from": "{ref_id}", "column": "{_entries[0][0]}"}}')
+                + "\n".join(_lines) + "\n" + _syntax)
     if _looks_tabular(text):
         try:
             header, rows = _parse_table(text)
@@ -287,44 +295,92 @@ def _to_number(raw: Any) -> Optional[float]:
 _COMPUTE_MARKER = "computed as:"
 
 
-def _values_from_compute_block(block: str) -> Optional[List[float]]:
-    """Numbers out of ONE compute entry's value text (array form or scalar form).
+def _values_from_compute_block(block: str):
+    """(values, truncated, total) for ONE compute entry's value text. SI-085.
 
     The value is what immediately PRECEDES "computed as:", so a scalar is read from the LAST
     non-empty line, never the first: `_evaluate_many` puts a batch LABEL above the first entry
     ("DGS10 yield statistics: valid count, mean, ...:") and reading from the top picked up the
     label instead of the number.
+
+    TRUNCATION IS REPORTED, NOT SWALLOWED. `compute` renders at most `_MAX_RETURNED_ELEMENTS`
+    (200) values and appends "[TRUNCATED: showing the first 200 of 943 values]". This parser used
+    to DROP that line and hand back the 200 as if they were the series — so statistics computed
+    over a reference were silently computed over a prefix. Production, 2026-08-18: 943 monthly
+    inflation observations became 200 (Jan 1948 - Aug 1964), and the answer reported a maximum of
+    10.24% "in January 1948" for a series whose true maximum is ~14.8% in March 1980, while
+    narrating the full 1948-2026 history around it. 36 truncation markers in one run.
     """
-    lines = [l for l in (block or "").splitlines()
-             if l.strip() and not l.strip().startswith("[TRUNCATED")]
-    if not lines:
-        return None
+    raw = [l for l in (block or "").splitlines() if l.strip()]
+    truncated, total = False, None
+    kept = []
+    for l in raw:
+        st = l.strip()
+        if st.startswith("[TRUNCATED"):
+            truncated = True
+            m = re.search(r"of\s+([0-9]+)\s+values", st)
+            if m:
+                total = int(m.group(1))
+            continue
+        kept.append(l)
+    if not kept:
+        return None, truncated, total
     # The bullet in `_evaluate_many` is presentation, not part of the value.
-    lines = [l.strip()[2:] if l.strip().startswith("- ") else l for l in lines]
-    joined = "\n".join(lines)
+    kept = [l.strip()[2:] if l.strip().startswith("- ") else l for l in kept]
+    joined = "\n".join(kept)
     start, end = joined.find("["), joined.rfind("]")
     if start != -1 and end > start:
         inner = joined[start + 1:end].replace("\n", " ")
         values = [_to_number(p) for p in (q.strip() for q in inner.split(",")) if p]
         if values and all(v is not None for v in values):
-            return values
-        return None
-    last = lines[-1]
+            return values, truncated, total
+        return None, truncated, total
+    last = kept[-1]
     candidate = last.rsplit(": ", 1)[-1] if ": " in last else last
     value = _to_number(candidate.strip())
-    return [value] if value is not None else None
+    return ([value] if value is not None else None), truncated, total
 
 
-def computed_entries(text: str) -> Optional[List[Tuple[str, List[float]]]]:
-    """Every referenceable series in a `compute` result, as (expression, values). SI-081.
+# An EXPRESSION-SHAPED column name carries operators, calls or slicing — `d[::60]`,
+# `np.mean(y)`, `(y10 - y2)[::3]`. A plain label — `value`, `count`, `y` — does not. The
+# distinction decides whether a mismatched name is a harmless habit or a wrong selection
+# (SI-085); it is syntax, not meaning.
+_EXPRESSION_CHARS = set("[]().:+-*/,")
+
+
+def _label_of_compute_block(block: str) -> str:
+    """The label `compute_tool._format` printed ahead of the values, or "".
+
+    SI-087 — `compute_tool._format` renders `f"{label}: "` ahead of a SINGLE result
+    (`user_tools/compute_tool.py:419`), so the output announces its own human-readable name:
+
+        10-Year Treasury: [4.3, 4.35, 4.28, 4.41]
+        computed as: y10
+
+    Recovering that name is not interpretation — it is reading back a string RAICA itself
+    emitted, the same basis on which `_COMPUTE_MARKER` is matched.
+    """
+    first = next((l for l in block.splitlines() if l.strip()), "")
+    s = first.strip()
+    if s.startswith("- "):
+        s = s[2:].strip()
+    br = s.find("[")
+    head = s[:br] if br != -1 else (s.rsplit(": ", 1)[0] if ": " in s else "")
+    return head.rstrip().rstrip(":").strip()
+
+
+def _is_expression_shaped(name: str) -> bool:
+    return any(c in _EXPRESSION_CHARS for c in (name or ""))
+
+
+def computed_entries(text: str) -> "Optional[List[Dict[str, Any]]]":
+    """Every referenceable series in a `compute` result. SI-081/085.
+
+    Returns [{"expr": str, "values": [float], "truncated": bool, "total": int|None}].
 
     `compute` can evaluate a LIST of expressions in one call (SI-067 `_evaluate_many`, up to 12),
-    rendering one bulleted entry each. `computed_series` splits on the FIRST "computed as:" and so
-    could only ever see the first of them — there was no way to address expression #3, and the
-    model correctly tried both `{"column": "d[::10]"}` (the expression) and `{"column": "0"}` (an
-    index). Neither was supported, and neither was announced.
-
-    Structure, from `compute_tool._format`, matched on RAICA's OWN markers rather than on wording:
+    rendering one bulleted entry each. Structure, from `compute_tool._format`, matched on RAICA's
+    OWN markers rather than on wording:
 
         <value>                       <- collected
         computed as: <expr>           <- closes the entry
@@ -337,15 +393,16 @@ def computed_entries(text: str) -> Optional[List[Tuple[str, List[float]]]]:
     """
     if not text or _COMPUTE_MARKER not in text:
         return None
-    entries: List[Tuple[str, List[float]]] = []
-    buf: List[str] = []
-    collecting = True
+    entries = []
+    buf, collecting = [], True
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith(_COMPUTE_MARKER):
-            values = _values_from_compute_block("\n".join(buf))
+            values, truncated, total = _values_from_compute_block("\n".join(buf))
             if values is not None:
-                entries.append((stripped.split(_COMPUTE_MARKER, 1)[1].strip(), values))
+                entries.append({"expr": stripped.split(_COMPUTE_MARKER, 1)[1].strip(),
+                                "label": _label_of_compute_block("\n".join(buf)),
+                                "values": values, "truncated": truncated, "total": total})
             buf, collecting = [], False        # everything after is provenance
             continue
         if stripped.startswith("- "):          # a bullet opens the next entry
@@ -414,18 +471,43 @@ def extract_column(text: str, column: str, numeric: bool = True):
     _entries = computed_entries(text)
     if _entries:
         _col = str(column or "").strip()
-        if len(_entries) == 1:
-            series = _entries[0][1]          # one series: the output IS the answer (SI-047)
-        else:
-            _match = next((v for e, v in _entries if _col.lower() == e.lower()), None)
-            if _match is None and _col.isdigit() and int(_col) < len(_entries):
-                _match = _entries[int(_col)][1]
-            if _match is None:
-                raise ReferenceError_(
-                    f"{column!r} does not name one of the {len(_entries)} computed series here; "
-                    f"reference one by its expression or its index — available: "
-                    f"{[e for e, _ in _entries]}")
-            series = _match
+        _named = next((e for e in _entries if _col.lower() == e["expr"].lower()), None)
+        if _named is None and _col.isdigit() and int(_col) < len(_entries):
+            _named = _entries[int(_col)]
+        if _named is None:
+            # SI-087 — RESOLVE BY THE NAME RAICA PRINTED. `_EXPRESSION_CHARS` contains `-`, `.`
+            # and `(`, so a plain English label — "10-Year Treasury", "CPI (index)" — is
+            # classified expression-shaped and would fall through to the SI-085 raise below.
+            # The output itself carries that label, so the server would have rejected a
+            # reference to the very name it had just printed. Matching it is exact, not a
+            # heuristic, and it only ADDS a resolution: nothing that resolved before changes.
+            _named = next((e for e in _entries
+                           if e.get("label") and _col.lower() == e["label"].lower()), None)
+        if _named is None and len(_entries) == 1 and not _is_expression_shaped(_col):
+            # SI-047 — with ONE series the output IS the answer, and the model supplies a plain
+            # label ("value", "count") out of habit. That habit stays supported.
+            _named = _entries[0]
+        if _named is None:
+            # SI-085 — an EXPRESSION-SHAPED name that matches nothing here is a WRONG SELECTION,
+            # not a habit, and must never resolve silently. Production, 2026-08-18: a chart asked
+            # `compute#5` for `d[::60]` (the dates); that output held one series and the old
+            # contract ignored the name, so the x-axis was handed HOUSING STARTS and rendered a
+            # y=x diagonal labelled "Date". Three charts across two datasets failed this way, each
+            # looking plausible and each wrong. Naming the real expressions makes it recoverable.
+            raise ReferenceError_(
+                f"{column!r} does not name a computed series in this output; it holds "
+                f"{len(_entries)} — reference one by its expression or index: "
+                f"{[e['expr'] for e in _entries]}")
+        if _named["truncated"]:
+            # SI-085 — a PREFIX IS NOT THE SERIES. Returning it silently made statistics wrong
+            # while looking right; the answer is to recompute what is needed inside `compute`.
+            raise ReferenceError_(
+                f"this result shows only the first {len(_named['values'])} of "
+                f"{_named['total'] or 'many'} values, so it cannot be referenced as the series — "
+                f"a statistic over it would describe only that prefix. Compute what you need "
+                f"directly (e.g. `np.mean({_named['expr']})`), or thin the series inside compute "
+                f"so the whole of it is returned.")
+        series = _named["values"]
         if len(series) > _MAX_CELLS:
             raise ReferenceError_(
                 f"computed series has {len(series)} values, over the {_MAX_CELLS} limit")
