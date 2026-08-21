@@ -53,6 +53,44 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P2 and NOT worth another investigation cycle without a decision on the
   above — the cost of this line of work is already the dominant concern.
 
+### SI-088 — a DATE series computed by `compute` is silently unreferenceable, so a long time-series cannot be charted  [P1 — OPEN, opened 2026-08-21]
+- **Found while E2E-verifying v1.0.0.313.** 4/4 runs of "fetch DGS10 from FRED and plot the yield
+  over the last year" produced a substantive answer and **no chart** (`plot_data` never invoked).
+- **CONFIRMED by direct test, not inferred.** `computed_entries` returns **1** entry for a `compute`
+  output that plainly contains **2** series:
+  ```python
+  # real output from logs/server_complete.log (04:40), both series present
+  entries = computed_entries(text)          # -> 1 entry: y[-252:][::3]
+  extract_column(text, "y[-252:][::3]")     # -> [4.28, 4.1, 4.04]
+  extract_column(text, "d[-252:][::3]")     # -> ReferenceError_ "does not name a computed series"
+  ```
+- **CAUSE, in the code.** `_values_from_compute_block` (`utils/tool_output_reference.py`) builds a
+  series only if EVERY value passes `_to_number`. A date renders as `dtype: <U10` —
+  `'2025-09-02'` is not a number — so the whole entry is DROPPED at parse time. This happens inside
+  `computed_entries`, **before** `extract_column`'s `numeric=False` flag is consulted, so asking for
+  strings does not help either.
+- **Why it blocks charts specifically.** A time-series chart needs a DATE x-axis. The full DGS10
+  series is 16,862 rows, over `plot_data`'s 5,000-point limit, so the dates MUST be thinned through
+  `compute` — which is exactly where they become unreferenceable. Short series that take dates
+  straight from the CSV table (`lookup_website#N`, `observation_date`) are unaffected, which is
+  likely why SI-084 measured charts published 5/5 on 2026-08-18.
+- **Relationship to SI-085 — not a regression from it.** Pre-SI-085 this reference silently returned
+  the YIELDS as the dates: the "perfect y=x diagonal" chart recorded in SI-083 and the housing-starts
+  x-axis in SI-085. SI-085 correctly converted that silent wrong answer into a hard error. The error
+  is the right behaviour; the missing capability underneath it is this issue.
+- **A SECOND, independent gate is also open.** In all 4 runs the model rejected its own compute
+  output as *"garbled — the column headers and row structure are malformed"* and re-issued `compute`
+  instead of calling `plot_data`, burning the gather-gate rounds
+  (`🚪 gather-gate: round=1/2/3 verdict=needs_more missing='Line chart ... has not been produced yet'`).
+  The output is NOT malformed — it renders cleanly. So there are two gates between the user and a
+  chart here: this reference defect, and a presentation/comprehension failure. Do not fix one and
+  assume the chart works.
+- **Evidence needed to clear:** decide where a non-numeric computed series should be representable —
+  `computed_entries` carrying string values with a dtype marker, or `compute` refusing to return a
+  date series for reference. Then re-run the 4-run chart protocol and score PUBLISHED markers.
+- **Priority rationale:** P1 — it is a capability hole directly on the user-visible chart path, and
+  it is invisible in logs (the reference simply raises and the model moves on).
+
 ### SI-087 — a compute result REJECTED a reference to the name it had just printed  [FIXED v1.0.0.313, 2026-08-21]
 - **Found by the mandatory adversarial audit of v1.0.0.312, before release** — attack hypothesis #3
   ("punctuation in legitimate plain labels"). Not a production report: no user hit it, because it was
