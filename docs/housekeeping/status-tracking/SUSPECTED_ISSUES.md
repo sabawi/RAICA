@@ -137,6 +137,39 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Still open downstream, unchanged by this fix:** 1 of 3 runs still looped on `compute` without
   plotting; SI-084 (invented marker) and SI-083 (wrong series plotted) remain the later gates.
 
+### SI-094 — a bot opened its own post by denying it could post  [FIXED v1.0.0.317, 2026-08-21]
+- **Observed live**, `@scibot` on NewX, 2026-08-21 14:04 UTC. Asked to write a post, it replied:
+  > "I can't create or publish a social media post — outbound posting actions aren't available for
+  > this request. However, here is the post content you asked for, written and ready to copy."
+  …followed by a complete, well-sourced JWST black-hole article. **NewX published the whole thing
+  verbatim, so the published post opened by denying it was a post.**
+- **CAUSE — CONFIRMED in the code.** `_NEG_DELIVERY_AWARENESS` (`fastapi_server_complete.py:3441`)
+  is injected whenever `allow_delivery` is false — always for a NewX bot, because they send an
+  `allowed_tools` whitelist and `_dr_delivery_permitted` never auto-trusts those. It listed
+  **"posting"** among the unavailable outbound actions. The model obeyed a prohibition that was
+  never true of THIS platform.
+- **NOTHING ENFORCED IT — traced end to end before touching the wording.** `allow_delivery` gates
+  outbound TOOLS (email, file creation, scheduling). The reply is not an action RAICA takes: NewX's
+  `scheduler.py` does `Post(content=html_content, ...); db.session.commit()` on whatever RAICA
+  returns. There is **no code path in which a bot attempts to post and is refused**, so a prompt fix
+  here cannot be defeated by a code gate — the inverse of the 2026-07-24 trap, where the prompt
+  permitted what the code refused.
+- **NOT caused by the v1.0.0.313–316 work.** That directive was last modified 2026-06-15 (`b15cdad`,
+  v1.0.0.119); none of `7862ec8 / 050c54e / 59c4c47 / ccdcd45` touch it. The SI-093 evidence-loss
+  notice never fired for this request (0 events in the live log).
+- **FIX (v1.0.0.317).** The directive now states the reply IS the delivery — "composing it IS the
+  delivery … NEVER say you are unable to post, publish, or share here, and never present your answer
+  as mere 'content to copy'" — and narrows the prohibition to email, files, scheduling and **other**
+  platforms. The rest is unchanged and load-bearing: the no-false-success clause fixed a real defect
+  (v1.0.0.120, a non-delivery bot reporting "✅ sent"), and the citation requirement is enforced
+  downstream, since NewX discards a sourceless autonomous post outright.
+- **Tests:** `tests/unit/test_delivery_awareness_reply_is_the_post.py`, 10 tests, **4 fail on the
+  pre-fix directive**; 6 are must-not-regress controls. One asserts the positive and negative forms
+  do not contradict each other about posting (one voice).
+- **HONEST LIMIT — this is a prompt change, so it shifts a probability, not a guarantee.** The model
+  may still disclaim. Verified only that no code gate contradicts it and that the specific escape it
+  used ("content to copy") is now foreclosed. The real test is @scibot's next scheduled post.
+
 ### SI-093 — an EMPTY evidence block is handled as "no tools executed", and a reporting bot then fabricates  [P1 — CONFIRMED, opened 2026-08-21]
 - **Confirmed in PRODUCTION, with published consequences.** `@raicaMiddleEast` posted eight
   fabricated Middle East news items — specific casualty figures, named towns (Kfar Tibnit, Haret

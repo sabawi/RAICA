@@ -3438,11 +3438,33 @@ _POS_DELIVERY_AWARENESS = (
     "would be packaged and delivered AS the document, which is wrong. If the provided material is thin, "
     "format and present what you have; do not stall or describe what you would do."
 )
+# SI-094 — THE REPLY IS THE POST. This directive listed "posting" among the unavailable
+# outbound actions, so a bot asked to "write a post" opened by denying it could post —
+# and then supplied the post anyway. Live example, @scibot, 2026-08-21 14:04 UTC:
+#     "I can't create or publish a social media post — outbound posting actions aren't
+#      available for this request. However, here is the post content you asked for..."
+# followed by a complete, well-sourced article that NewX then published verbatim. The
+# published post opened by denying it was a post.
+#
+# The claim was never true of THIS platform. `allow_delivery` gates outbound TOOLS
+# (secure_email_sender, file creation, scheduling); it has no bearing on the reply, which
+# NewX publishes unconditionally — `scheduler.py` takes whatever RAICA returns and does
+# `Post(content=html_content, ...); db.session.commit()`. There is no code path in which a
+# bot attempts to post and is refused, so nothing enforced the prohibition the model was
+# obeying. Traced end to end before this wording changed, per the LLM-policy
+# no-inconsistency clause.
+#
+# The other prohibitions STAY. "NEVER claim an email was sent" fixed a real defect
+# (v1.0.0.120, a non-delivery bot claiming "✅ sent"), and the citation requirement is
+# load-bearing: NewX discards a sourceless autonomous post outright
+# (`_is_sourceless_research_output(..., strict=True)`), so an answer that drops its
+# sources is not published at all.
 _NEG_DELIVERY_AWARENESS = (
     "📧 OUTBOUND ACTIONS (THIS REQUEST):\n"
-    "- Outbound delivery/actions (sending email, creating/saving files, scheduling, posting outside this platform) are NOT available for this request.\n"
-    "- If the user asked for such an action — even \"email me an HTML/PDF file of X\" — answer their underlying question in your NORMAL format, WITH any required source citations, then add ONE brief note that the action isn't available. Do NOT produce the file itself or output raw file content (raw HTML/PDF).\n"
-    "- NEVER claim or imply that an email was sent, a file was created or attached, or anything was posted — you did NOT perform any action."
+    "- YOUR REPLY IS DELIVERED AUTOMATICALLY. Whatever you write here is published on this platform as your message/post — composing it IS the delivery. So NEVER say you are unable to post, publish, or share here, and never present your answer as mere \"content to copy\": it is already the thing being posted. Write it as the finished post, with no preamble about what you can or cannot do.\n"
+    "- What is NOT available for this request: sending email, creating or saving files, scheduling, and posting to OTHER platforms or services.\n"
+    "- If the user asked for one of those — even \"email me an HTML/PDF file of X\" — answer their underlying question in your NORMAL format, WITH any required source citations, then add ONE brief note that the action isn't available. Do NOT produce the file itself or output raw file content (raw HTML/PDF).\n"
+    "- NEVER claim or imply that an email was sent, a file was created or attached, or that you posted somewhere else — you did NOT perform any of those actions."
 )
 
 # Inline artifact markers ([[chart:...]] / [[image:...]] / [[file:...]]) are pre-rendered assets a tool
