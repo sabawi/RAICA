@@ -15,12 +15,15 @@ This module NEVER invents data — it only plots what ``DatasetSeries`` carries 
 """
 import io
 import logging
+import math
+from datetime import date as date_cls
 from typing import List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from utils.dataset_block import DatasetSeries
 
@@ -132,6 +135,68 @@ def _set_fitted_title(fig, ax, title: str, width_px: int,
     ax.set_title(wrapped, color=_TXT, fontsize=min_size, fontweight="bold")
 
 
+def _decimal_year_to_date(value: float) -> "date_cls":
+    """Inverse of `plot_data_tool._to_decimal_year`: 2025.5 -> 2025-07-02."""
+    year = int(math.floor(value))
+    start = date_cls(year, 1, 1).toordinal()
+    length = date_cls(year + 1, 1, 1).toordinal() - start
+    offset = int(round((value - year) * length))
+    return date_cls.fromordinal(start + min(max(offset, 0), length - 1))
+
+
+def _apply_temporal_ticks(ax, x) -> bool:
+    """SI-091 — label a DATE axis with calendar dates, not decimal years.
+
+    `plot_data_tool._to_decimal_year` turns 2025-07-02 into 2025.5 because `DatasetSeries`
+    requires temporal x values to be finite NUMBERS. Positioning was always correct — daily
+    resolution is preserved — but nothing converted the number back for the TICK LABEL, so a
+    chart of daily Treasury yields carried an axis reading `2025.8, 2026.0, 2026.2` beneath a
+    label saying "Date". Correct data that reads as wrong (SI-091, confirmed by inspecting the
+    rendered image; every log line reported success).
+
+    THE CATALOG MUST NOT CHANGE. Its callers plot annual means and pass WHOLE years
+    (`range(2016, 2025)`, "x = union of available years"), for which `2016` is already the right
+    label. So the axis is reformatted only when the values are NOT all whole numbers — which can
+    only be true of values derived from real dates. Content decides, exactly as the reference
+    layer decides a column's type from its content.
+
+    Returns True if date ticks were applied.
+    """
+    nums = [v for v in x if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if len(nums) < 2 or all(float(v).is_integer() for v in nums):
+        return False                      # whole years — the catalog case, left alone
+    span = max(nums) - min(nums)
+    fmt = "%Y" if span > 3 else ("%b %Y" if span > 0.7 else "%d %b")
+
+    def _fmt(value, _pos):
+        try:
+            return _decimal_year_to_date(value).strftime(fmt).lstrip("0")
+        except (ValueError, OverflowError):
+            return ""
+
+    ax.xaxis.set_major_formatter(FuncFormatter(_fmt))
+    # The LOCATOR must match the FORMAT's resolution, or two ticks land inside one labelled
+    # period and the axis repeats itself. Measured on `%Y` before this line existed:
+    #   span 3.2y -> ['2020', '2021', '2021', '2022', '2023']      (duplicate)
+    #   span 4.1y -> ['2020', '2020', '2021', '2022', '2023', …]   (duplicate)
+    #   quarterly -> ['2020', '2021', '2023', '2024', '2026']      (2022 and 2025 skipped)
+    # because evenly-spaced DECIMAL positions do not align to 1 January. `integer=True` puts
+    # them on year boundaries, which is the only spacing `%Y` can label truthfully.
+    # `%b %Y` needs no equivalent: its span floor of 0.7y over 6 bins is >= ~43 days, which
+    # cannot fall twice in one month. `%d %b` is guarded by the day-resolution floor below.
+    if fmt == "%Y":
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=True, prune="both"))
+    else:
+        nbins = 6
+        if fmt == "%d %b":
+            # A span of a few days must not produce sub-day ticks, which repeat the same date.
+            nbins = max(2, min(6, int(span * 365.25)))
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=nbins, prune="both"))
+    for lab in ax.get_xticklabels():
+        lab.set_rotation(0)
+    return True
+
+
 def generate_data_chart(series: DatasetSeries, kind: str = "auto",
                         width_px: int = 760, height_px: int = 430, dpi: int = 110) -> Optional[bytes]:
     """Render ``series`` to PNG bytes. ``kind``: 'auto' | 'line' | 'bar' | 'scatter'. None on any failure."""
@@ -179,6 +244,8 @@ def generate_data_chart(series: DatasetSeries, kind: str = "auto",
 
         # labels / title / source footer
         _set_fitted_title(fig, ax, series.title, width_px)
+        if series.x_type == "temporal":
+            _apply_temporal_ticks(ax, x)
         ax.set_xlabel(series.x_name, color=_TXT, fontsize=9)
         ylab = series.series[0].get("unit") or series.series[0]["name"]
         ax.set_ylabel(ylab, color=_TXT, fontsize=9)

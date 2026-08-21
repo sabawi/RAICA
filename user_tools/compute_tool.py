@@ -181,7 +181,19 @@ class ComputeTool(BaseUserTool):
                         "ONE EXPRESSION ONLY — assignments and `;` are not evaluated. For several "
                         "figures over the same data, pass a LIST and each is computed separately "
                         "in a single call: [\"len(mag)\", \"np.mean(mag)\", \"np.median(mag)\", "
-                        "\"np.std(mag, ddof=1)\"]."
+                        "\"np.std(mag, ddof=1)\"]. "
+                        "A SLICE COUNTS OBSERVATIONS, NOT CALENDAR DAYS. `[-365:]` takes the "
+                        "last 365 ROWS, which in daily market data is about 17 months rather than "
+                        "one year, so a chart built from it contradicts its own title. When the "
+                        "window you want is a period of TIME, select it from the date column "
+                        "instead of guessing a row count — `y[np.array(d) >= \"2025-08-21\"]` — "
+                        "which is exact whatever the sampling frequency. Reference the date column "
+                        "the same way you reference any other. "
+                        "AND A SERIES YOU INTEND TO REFERENCE MUST COME BACK WHOLE: this tool "
+                        f"renders at most {_MAX_RETURNED_ELEMENTS} values and a TRUNCATED result "
+                        "cannot be referenced at all, so thin a long window until it fits — "
+                        "`y[np.array(d) >= \"2025-08-21\"][::2]` — rather than returning a head "
+                        "that will be refused."
                     ),
                 },
                 "data": {

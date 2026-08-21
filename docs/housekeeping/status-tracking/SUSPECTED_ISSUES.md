@@ -137,7 +137,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Still open downstream, unchanged by this fix:** 1 of 3 runs still looped on `compute` without
   plotting; SI-084 (invented marker) and SI-083 (wrong series plotted) remain the later gates.
 
-### SI-091 — `plot_data` renders a DATE axis as decimal years  [P2 — CONFIRMED, opened 2026-08-21]
+### SI-092 — `test_digest_has_id_meta_sample_and_discontinuity` fails, outside every reported suite  [P3 — LOGGED, 2026-08-21]
+- **Observed** while running chart tests for SI-091: `tests/utilities/test_data_charts.py::
+  test_digest_has_id_meta_sample_and_discontinuity` fails at line 101, `assert "do NOT bridge" in d`.
+- **PROVEN pre-existing, not caused by SI-090/091.** Stashed both changed files
+  (`user_tools/compute_tool.py`, `utils/data_chart_generator.py`), re-ran: **fails identically on
+  unmodified code**; byte-identity confirmed after `stash pop`. The test exercises
+  `utils/dataset_block.py` (`register_dataset`, `format_digest`), which neither fix touches.
+- **Why it has been invisible:** every changelog reports `tests/unit` only. `tests/utilities/` is in
+  NEITHER that scope nor SI-062's (`tests/unit` + `tests/integration`), so this file has apparently
+  never been in a reported number. Same shape as SI-062 — a green headline over an unexamined red.
+- **Evidence needed to clear:** read `format_digest` and decide whether the discontinuity note ("do
+  NOT bridge") was deliberately reworded — in which case the test is stale — or genuinely stopped
+  being emitted, in which case the LLM is no longer told not to bridge a discontinuity, which would
+  be a real accuracy defect.
+- **Priority rationale:** P3 pending that read, but it could be P1: if the directive really is gone,
+  charts and answers may silently bridge a methodology break (the SRS→NIBRS case the test uses).
+
+### SI-091 — `plot_data` renders a DATE axis as decimal years  [FIXED v1.0.0.315, 2026-08-21]
 - **Found by LOOKING AT THE RENDERED IMAGE**, not the logs — every log line reported success.
   Two real charts published 2026-08-21 (`/static/images/media/4ed23af0…jpg`, `…f80cae36…jpg`,
   both HTTP 200 image/jpeg) show an x-axis reading **`2025.8, 2026.0, 2026.2, 2026.4, 2026.6`**
@@ -158,7 +175,7 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P2 — the chart is correct but reads as wrong to a user, and no log or test
   currently catches it. Only inspecting the picture does.
 
-### SI-090 — the model slices by ROW COUNT as if rows were calendar days  [P2 — CONFIRMED, opened 2026-08-21]
+### SI-090 — the model slices by ROW COUNT as if rows were calendar days  [FIXED v1.0.0.315, 2026-08-21]
 - **Found by LOOKING AT THE RENDERED IMAGE.** A chart titled *"Last Year (every 3rd observation,
   Aug 2025–Aug 2026)"* plots x from ~**2025.2 to 2026.6 — about 17 months**, not 12.
 - **CAUSE — CONFIRMED.** The model computed `d[-365:]` / `y[-365:]` (logged this round, 5× each),
@@ -171,7 +188,23 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   OBSERVATION, not a day, and that a calendar window must be derived from the date column) or in a
   chart-level sanity signal (plotted span vs claimed span). Note the date column is now referenceable
   (SI-088), so a date-based window is finally expressible.
+- **FIX (v1.0.0.315) — POLICY, and it took two attempts.** Directive in the `compute` `expr` schema:
+  a slice counts OBSERVATIONS, and a time window should be selected from the date column. **The
+  FIRST version named "roughly 252 trading rows" and REGRESSED charts 2/3 -> 0/3**: the model duly
+  produced `d[-252:]` (36x), which exceeds `_MAX_RETURNED_ELEMENTS` (200), came back TRUNCATED, and
+  SI-085 correctly refused it (4 "shows only the first 200 of 252 values"). A directive was verified
+  to EVALUATE but never to be REFERENCEABLE — the prompt-vs-code contradiction the LLM-policy gate
+  exists to prevent. Reconciled: the cap is now stated FROM THE CONSTANT and the model is told to
+  thin. Re-verified over 5 daily runs: **0 truncation refusals, 0 reference refusals of any kind,
+  3/5 charts, all URLs HTTP 200**, plotted counts 121/125 (thinned, under the cap).
+- **Verified on TWO frequencies:** daily -> `[-252:]` thinned with `[::2]`; monthly (CPIAUCSL) ->
+  `d[-12:]`, with no 252 over-applied. Published monthly chart reads "Last 12 Months (Aug 2025 –
+  Jul 2026)" with x-label "Month".
 - **Priority rationale:** P2 — produces a plausible, well-labelled, factually wrong chart.
+- **Residual:** date-mask selections remain 0 — the model uses frequency-aware ROW COUNTS, not the
+  date column the directive asks for. Correct on both frequencies tested, still an inference. If it
+  recurs, the durable fix is a chart-level sanity signal (plotted span vs claimed span), not more
+  prompt text.
 
 ### SI-089 — the model references a `compute#N` that does not exist  [P3 — LOGGED, 2026-08-21]
 - **Observed** during the SI-088 E2E, 5 occurrences in one run:
