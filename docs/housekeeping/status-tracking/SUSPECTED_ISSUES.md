@@ -53,7 +53,7 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Priority rationale:** P2 and NOT worth another investigation cycle without a decision on the
   above — the cost of this line of work is already the dominant concern.
 
-### SI-088 — a DATE series computed by `compute` is silently unreferenceable, so a long time-series cannot be charted  [P1 — OPEN, opened 2026-08-21]
+### SI-088 — a DATE series computed by `compute` is silently unreferenceable, so a long time-series cannot be charted  [FIXED v1.0.0.314, 2026-08-21]
 - **Found while E2E-verifying v1.0.0.313.** 4/4 runs of "fetch DGS10 from FRED and plot the yield
   over the last year" produced a substantive answer and **no chart** (`plot_data` never invoked).
 - **CONFIRMED by direct test, not inferred.** `computed_entries` returns **1** entry for a `compute`
@@ -109,11 +109,50 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   (`extract_column(csv, "observation_date", numeric=False)` works), but 16,862 exceeds
   `plot_data._MAX_POINTS = 5000`, forcing the model onto the `compute` path where the defect lives.
   Predicts a sub-5,000-row dataset charts fine — the likely reason SI-084 measured 5/5 (UNVERIFIED).
-- **Evidence needed to clear:** decide where a non-numeric computed series should be representable —
-  `computed_entries` carrying string values with a dtype marker, or `compute` refusing to return a
-  date series for reference. Then re-run the 4-run chart protocol and score PUBLISHED markers.
-- **Priority rationale:** P1 — it is a capability hole directly on the user-visible chart path, and
-  it is invisible in logs (the reference simply raises and the model moves on).
+- **FIX (v1.0.0.314).** `_values_from_compute_block` now applies THE SAME RULE the tabular path in
+  this module already uses — *"if most cells do not parse as numbers, the column is text"* — instead
+  of dropping the entry. Reuse, not a parallel mechanism. `_unquote` strips numpy's presentation
+  quotes; `describe_reference`'s preview no longer formats a str with `:g` (which raises).
+- **A REGRESSION IN THE FIX ITSELF, caught by differential replay before shipping.** Making dates
+  visible turned a dates+values output from ONE entry into TWO, which silently withdrew the SI-047
+  habit for every plain label that used to resolve — **13 of them in the production corpus**
+  (`value`, `diff`, `count`, …). Every other gate stayed green; only the replay saw it. Resolved by
+  keeping the habit when exactly one NUMERIC series is present (a plain label means "the number I
+  computed"; a date is not a value), withdrawing it only for genuine ambiguity — two or more
+  numeric series. Re-measured over 630 pairs: **0 narrowed, 0 altered-wrongly, 0 crashed, 17 widened.**
+- **One intentional semantic change:** index `"0"` on a dates+values output now returns the DATES,
+  because dates genuinely are series 0 and `describe_reference` now says so (`[0] d[…]`, `[1] y[…]`).
+  Pre-fix no index was ever shown for such an output, so nothing depended on the old numbering. This
+  satisfies the module's own rule that description and resolution must agree.
+- **VERIFIED THROUGH THE REAL ENTRY POINT** (`POST /v1/chat/completions`, same prompt, 3 runs):
+  | gate | before | after |
+  |---|---|---|
+  | `plot_data` selected | **0/4 runs** | **2/3 runs** |
+  | date reference resolves | ReferenceError_ | **0 reference errors** |
+  | chart rendered | never reached | yes, in the runs that plotted |
+  | chart published | — | **0 — NewX not running on :9876 (environment, not code)** |
+- **NOT verified: that a user SEES a chart.** `publish_chart` POSTs to NewX, which was down in this
+  session (`chart_publisher: upload error: HTTPSConnectionPool(host='localhost', port=9876)`), so no
+  marker is minted and the pass-rate metric cannot discriminate. Re-run with NewX up to close this.
+- **Still open downstream, unchanged by this fix:** 1 of 3 runs still looped on `compute` without
+  plotting; SI-084 (invented marker) and SI-083 (wrong series plotted) remain the later gates.
+
+### SI-089 — the model references a `compute#N` that does not exist  [P3 — LOGGED, 2026-08-21]
+- **Observed** during the SI-088 E2E, 5 occurrences in one run:
+  ```
+  plot_data: could not use the referenced data — unknown output reference(s) ['compute#4'];
+  available: ['compute#1', 'compute#2', 'get_the_secret_tool#1', 'lookup_website#1',
+              'plot_data#1', 'plot_data#2']
+  ```
+  Only `compute#1` and `compute#2` existed; the model invented `#4`. It happened on a SECOND
+  `plot_data` attempt, i.e. while retrying.
+- **Not caused by SI-088.** That change alters the entries WITHIN one output, never the numbering of
+  tool outputs. Behaviour is correct — the reference is refused by name and the available ids are
+  listed, so it is recoverable — but the retry then produced no chart.
+- **Evidence needed to clear:** determine whether the model is miscounting outputs across gather
+  rounds, or whether the id list it is shown drifts between rounds. Check what reference index is
+  presented on the retry vs the first attempt.
+- **Priority rationale:** P3 — fails closed and is self-describing, but it costs a chart when it fires.
 
 ### SI-087 — a compute result REJECTED a reference to the name it had just printed  [FIXED v1.0.0.313, 2026-08-21]
 - **Found by the mandatory adversarial audit of v1.0.0.312, before release** — attack hypothesis #3

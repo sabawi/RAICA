@@ -201,7 +201,9 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
     if _entries and (len(_entries) > 1 or any(e["truncated"] for e in _entries)):
         _lines = []
         for _i, _e in enumerate(_entries):
-            _head = ", ".join(f"{x:g}" for x in _e["values"][:6])
+            # SI-088 — a series may now be text (dates); `:g` raises ValueError on a str.
+            _head = ", ".join(f"{x:g}" if isinstance(x, (int, float)) else str(x)
+                              for x in _e["values"][:6])
             _more = f", … ({len(_e['values'])} values)" if len(_e["values"]) > 6 else ""
             # Say plainly which entries cannot be referenced, so the model does not try.
             _warn = (f"  [TRUNCATED to {len(_e['values'])} of {_e['total'] or 'many'} — "
@@ -292,6 +294,15 @@ def _to_number(raw: Any) -> Optional[float]:
         return None
 
 
+def _unquote(part: str) -> str:
+    """numpy renders a string array as `['2025-09-02', '2025-09-05']`; the quotes are its
+    presentation, not part of the value."""
+    p = (part or "").strip()
+    if len(p) >= 2 and p[0] == p[-1] and p[0] in "\'\"":
+        return p[1:-1]
+    return p
+
+
 _COMPUTE_MARKER = "computed as:"
 
 
@@ -331,9 +342,25 @@ def _values_from_compute_block(block: str):
     start, end = joined.find("["), joined.rfind("]")
     if start != -1 and end > start:
         inner = joined[start + 1:end].replace("\n", " ")
-        values = [_to_number(p) for p in (q.strip() for q in inner.split(",")) if p]
+        parts = [q for q in (r.strip() for r in inner.split(",")) if q]
+        values = [_to_number(p) for p in parts]
         if values and all(v is not None for v in values):
             return values, truncated, total
+        # SI-088 — THE CONTENT DECIDES THE TYPE, exactly as the tabular path already decides it
+        # below ("if most cells do not parse as numbers, the column is text"). A computed DATE
+        # series renders as `['2025-09-02', '2025-09-05', …]` (dtype `<U10`) and parses as NO
+        # number at all, so returning None here DROPPED THE ENTRY ENTIRELY. Two consequences,
+        # both seen in production 2026-08-21 on "plot DGS10 over the last year":
+        #   1. the date axis could not be referenced -> `d[-252:][::3]` raised, no chart;
+        #   2. the surviving entries collapsed 2 -> 1, which fails the `len(_entries) > 1` gate
+        #      in `describe_reference`, so the model was shown a bare "text" dump with NO series
+        #      index and NO reference syntax — it then called the output "garbled" and re-issued
+        #      `compute` until the gather-gate rounds ran out. plot_data was never called, 4/4.
+        # A MIXED column (most values numeric, a few unparseable) is deliberately still dropped:
+        # this branch only rescues a series that is plainly text.
+        parsed = sum(1 for v in values if v is not None)
+        if values and parsed < len(values) / 2:
+            return [_unquote(p) for p in parts], truncated, total
         return None, truncated, total
     last = kept[-1]
     candidate = last.rsplit(": ", 1)[-1] if ": " in last else last
@@ -367,6 +394,12 @@ def _label_of_compute_block(block: str) -> str:
     br = s.find("[")
     head = s[:br] if br != -1 else (s.rsplit(": ", 1)[0] if ": " in s else "")
     return head.rstrip().rstrip(":").strip()
+
+
+def _is_text_series(entry: "Dict[str, Any]") -> bool:
+    """SI-088 — does this computed entry hold text (dates) rather than numbers?"""
+    vals = entry.get("values") or []
+    return bool(vals) and isinstance(vals[0], str)
 
 
 def _is_expression_shaped(name: str) -> bool:
@@ -483,10 +516,22 @@ def extract_column(text: str, column: str, numeric: bool = True):
             # heuristic, and it only ADDS a resolution: nothing that resolved before changes.
             _named = next((e for e in _entries
                            if e.get("label") and _col.lower() == e["label"].lower()), None)
-        if _named is None and len(_entries) == 1 and not _is_expression_shaped(_col):
+        if _named is None and not _is_expression_shaped(_col):
             # SI-047 — with ONE series the output IS the answer, and the model supplies a plain
             # label ("value", "count") out of habit. That habit stays supported.
-            _named = _entries[0]
+            #
+            # SI-088 — and it must keep working once a DATE series is visible. Making dates
+            # referenceable turned a dates+values output from ONE entry into TWO, which would
+            # have silently withdrawn the habit for every plain label that used to resolve
+            # ("value", "diff", "count" — 13 of them in the production corpus). A plain label
+            # means "the number I computed", and a date is not a value: so when exactly one
+            # NUMERIC series is present, a plain label still names it. The habit is withdrawn
+            # only where it is genuinely ambiguous — two or more NUMERIC series.
+            _numeric = [e for e in _entries if not _is_text_series(e)]
+            if len(_entries) == 1:
+                _named = _entries[0]
+            elif len(_numeric) == 1:
+                _named = _numeric[0]
         if _named is None:
             # SI-085 — an EXPRESSION-SHAPED name that matches nothing here is a WRONG SELECTION,
             # not a habit, and must never resolve silently. Production, 2026-08-18: a chart asked
