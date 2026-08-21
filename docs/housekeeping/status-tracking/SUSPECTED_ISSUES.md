@@ -78,13 +78,37 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   the YIELDS as the dates: the "perfect y=x diagonal" chart recorded in SI-083 and the housing-starts
   x-axis in SI-085. SI-085 correctly converted that silent wrong answer into a hard error. The error
   is the right behaviour; the missing capability underneath it is this issue.
-- **A SECOND, independent gate is also open.** In all 4 runs the model rejected its own compute
-  output as *"garbled — the column headers and row structure are malformed"* and re-issued `compute`
-  instead of calling `plot_data`, burning the gather-gate rounds
+- **CORRECTION (2026-08-21, same session): the "garbled output" symptom is NOT a second independent
+  gate — it is the SAME root cause.** Recorded initially as a separate presentation/comprehension
+  failure; that was wrong. In all 4 runs the model rejected its own compute output as *"garbled — the
+  column headers and row structure are malformed"* and re-issued `compute` rather than calling
+  `plot_data`, exhausting the gather-gate rounds
   (`🚪 gather-gate: round=1/2/3 verdict=needs_more missing='Line chart ... has not been produced yet'`).
-  The output is NOT malformed — it renders cleanly. So there are two gates between the user and a
-  chart here: this reference defect, and a presentation/comprehension failure. Do not fix one and
-  assume the chart works.
+  The mechanism:
+  ```
+  _values_from_compute_block requires every value numeric
+      -> the date series is dropped from computed_entries
+          -> SYMPTOM 1: the date reference raises  (no x-axis)
+          -> entries collapse 2 -> 1
+              -> fails the `len(_entries) > 1` gate at describe_reference:201
+                  -> falls through to a generic "text" dump: the model is shown the raw
+                     blob with NO series index and NO reference syntax
+  ```
+- **CONTROLLED EXPERIMENT confirming it.** Same output structure, one variable changed:
+  | first series | what `describe_reference` shows |
+  |---|---|
+  | dates (`dtype: <U10`) | `=== compute#1 === text, 444 characters` + raw dump — no index, no syntax |
+  | numeric | `=== compute#1 === 2 computed series` + `[0] \`expr\` -> …` + explicit `{"from":…,"column":…}` |
+  So the model's complaint was SUBSTANTIVELY CORRECT — it was never told what it could reference —
+  even though the text renders fine to a human. **Not established:** that this presentation produced
+  its exact "column headers" wording; it is shown no headers at all, so that phrasing may be
+  confabulation. The absence of an index and syntax IS established.
+- **Size is NOT the cause — proved, not assumed.** A **3-point** date series through `compute` is
+  equally unreferenceable, so the defect is size-independent. What the 16,862 rows do is close the
+  only workaround: dates ARE referenceable straight from the CSV table
+  (`extract_column(csv, "observation_date", numeric=False)` works), but 16,862 exceeds
+  `plot_data._MAX_POINTS = 5000`, forcing the model onto the `compute` path where the defect lives.
+  Predicts a sub-5,000-row dataset charts fine — the likely reason SI-084 measured 5/5 (UNVERIFIED).
 - **Evidence needed to clear:** decide where a non-numeric computed series should be representable —
   `computed_entries` carrying string values with a dtype marker, or `compute` refusing to return a
   date series for reference. Then re-run the 4-run chart protocol and score PUBLISHED markers.
