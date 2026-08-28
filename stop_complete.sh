@@ -3,6 +3,20 @@
 # Stop FastAPI complete server
 cd "$(dirname "$0")"
 
+# ── DEFER TO SYSTEMD ────────────────────────────────────────────────────────
+# When raica.service owns this server, a hand-run script must NOT fight it:
+# stopping by PID would just be undone by `Restart=always` five seconds later,
+# and starting by hand would race systemd for port 5000. Hand control to
+# systemctl and exit. (Guards that disagree with each other were how the NewX
+# systemd rollout produced two 503 outages on 2026-08-27.)
+if command -v systemctl >/dev/null 2>&1 && \
+   systemctl list-unit-files raica.service --no-pager 2>/dev/null | grep -q "^raica.service"; then
+    echo "ℹ️  raica.service is installed — this server is managed by systemd."
+    echo "    stop it with:   sudo systemctl stop raica"
+    echo "    status:  systemctl status raica    |    logs: tail -f logs/server_complete.log"
+    exit 0
+fi
+
 # Check if PID file exists
 if [ ! -f "runtime/server_complete.pid" ]; then
     echo "❌ No PID file found (runtime/server_complete.pid)"

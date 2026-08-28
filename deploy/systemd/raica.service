@@ -1,0 +1,79 @@
+# RAICA — the LLM orchestration server NewX's AI bots depend on.
+#
+# WHY THIS UNIT EXISTS
+# On 2026-08-27 22:10 UTC the host rebooted. RAICA shut down cleanly at 22:09:34
+# ("Finished server process [2688397]") and NOTHING BROUGHT IT BACK: it was started
+# by `start_complete.sh` as a bare `nohup ... &`, with no unit and no @reboot cron.
+# NewX's four services returned automatically because they are supervised; RAICA,
+# which five bots hard-depend on, did not. Every autonomous post for the next
+# ~11 hours failed with `Connection refused` to 127.0.0.1:5000 — and the Celery task
+# still reported "succeeded", so nothing alarmed and the owner had to notice himself.
+#
+# This unit reproduces EXACTLY what start_complete.sh does today, plus supervision.
+# Sandboxing (ProtectSystem/ProtectHome/PrivateTmp) is deliberately NOT enabled here:
+# the repo lives under /home, and PrivateTmp would sever any /tmp handoff. Hardening
+# is a separate change that must be tested on its own.
+#
+# Install with scripts/install_raica_service.sh (needs sudo).
+
+[Unit]
+Description=RAICA LLM orchestration server (FastAPI, :5000)
+Documentation=file://__ROOT__/README.md
+After=network-online.target ollama.service
+# Wants, not Requires: if Ollama is briefly down RAICA should still start and keep
+# serving what it can, rather than being refused and left stopped.
+Wants=network-online.target ollama.service
+
+# Never stop retrying. These are UNIT-level directives: in [Service] systemd
+# silently ignores them and the default 5-restarts-in-10s limit applies, after
+# which the unit is left DEAD — the exact state this file exists to prevent.
+# (Confirmed on prod 2026-08-27: StartLimitIntervalUSec read back as 10s until
+# they were moved here. RAICA's old install_service.sh had them in [Service],
+# with Burst=3 — three crashes and it would have stayed down.)
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__ROOT__
+
+# Byte-for-byte the environment start_complete.sh exports. Dropping any of these
+# silently changes behaviour: the first four are the performance path, the last two
+# keep the log readable. PYTHONPATH points at site-packages exactly as the script
+# does — NOT at the repo root, which is what the old installer used.
+Environment="PYTHONPATH=__ROOT__/venv/lib/python__PYVER__/site-packages"
+Environment="USE_DIRECT_FUNCTION_CALLS=true"
+Environment="PARALLEL_TOOL_EXECUTION=true"
+Environment="STRING_OPTIMIZATION=true"
+Environment="META_TASK_BYPASS=true"
+Environment="CONCISE_LOGGING=true"
+Environment="BUFFER_SIZE_LOGGING=true"
+EnvironmentFile=-__ROOT__/.env
+
+# Preserve the previous run's log before starting, exactly as start_complete.sh
+# does — that archive is how this outage was diagnosed. Keep the newest 20.
+ExecStartPre=/bin/bash -c 'mkdir -p __ROOT__/logs/archive __ROOT__/runtime __ROOT__/document_store; if [ -s __ROOT__/logs/server_complete.log ]; then mv __ROOT__/logs/server_complete.log "__ROOT__/logs/archive/server_complete_$(date +%%Y%%m%%d_%%H%%M%%S).log"; ls -1t __ROOT__/logs/archive/server_complete_*.log 2>/dev/null | tail -n +21 | xargs -r rm -f; fi'
+
+ExecStart=__ROOT__/venv/bin/python3 fastapi_server_complete.py
+
+# Same log file start_complete.sh used, so logs.sh, the archive rotation and every
+# existing habit keep working. Sending this to the journal instead would have made
+# today's diagnosis harder, not easier.
+StandardOutput=append:__ROOT__/logs/server_complete.log
+StandardError=append:__ROOT__/logs/server_complete.log
+
+Restart=always
+RestartSec=5
+
+# uvicorn treats SIGINT as a graceful shutdown and drains in-flight requests.
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
