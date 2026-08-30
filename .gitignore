@@ -184,3 +184,5 @@ tests/data/intent_eval_results.jsonl
 # Generated deliverables dropped in the repo ROOT by tool runs (report PDFs etc.).
 # Scoped to the root on purpose so real documentation under docs/ stays tracked.
 /*.pdf
+.deploy_previous_sha
+logs/deploy.log

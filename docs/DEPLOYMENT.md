@@ -1,13 +1,39 @@
 # RAICA Deployment
 
-**Command — the only supported way to deploy:**
+**Commands:**
 
 ```bash
-ssh -i <key> ubuntu@sabawi.net 'cd ~/RAICA && ./scripts/deploy.sh'
+ssh <host> 'cd ~/RAICA && ./scripts/deploy.sh --dry-run'   # preview; changes nothing
+ssh <host> 'cd ~/RAICA && ./scripts/deploy.sh'             # deploy
+ssh <host> 'cd ~/RAICA && ./scripts/deploy.sh --rollback'  # back to the previous commit
+ssh <host> 'cd ~/RAICA && ./scripts/deploy.sh --to <sha>'  # deploy a specific commit
 ```
 
-It pulls, restarts, waits for readiness, and **proves the running process is the new
-code**. It exits non-zero and says why if it is not. No sudo required.
+**systemd is the controller.** `raica.service` (`Restart=always`) owns the process and
+the deploy restarts *through* it — `sudo systemctl restart raica` where passwordless
+sudo is available, otherwise a SIGTERM that systemd itself answers. Either way the
+script never hand-starts: that races the unit for port 5000 and caused two 503 outages
+during the NewX rollout.
+
+### Fail-proof
+Every step is verified, and **a failed deploy rolls itself back and re-verifies**, so
+the service is never left down or running broken code. A deploy that cannot verify
+itself is treated as failed. If the rollback also fails, it says so explicitly rather
+than exiting quietly.
+
+### Transparent
+Prints the commits being shipped *before* shipping them, and appends every attempt —
+success, refusal, failure, rollback — to `logs/deploy.log`.
+
+### Reversible
+The pre-deploy commit is written to `.deploy_previous_sha` **before anything changes**,
+so `--rollback` never has to reconstruct it.
+
+### Refuses to run when
+- the working tree is dirty (a deploy must not discard or collide with local edits) —
+  `--dry-run` still works, since it changes nothing
+- the target ref cannot be resolved
+- `git checkout`/merge fails — the service is left untouched
 
 ---
 
