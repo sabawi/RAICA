@@ -29,6 +29,7 @@ cd "$(dirname "$0")/.." || exit 2
 
 HEALTH_URL="http://localhost:5000/documents/stats"
 READY_DEADLINE=120          # seconds to wait for the service to answer
+CYCLE_DEADLINE=90           # seconds to wait for the PID to actually change
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
@@ -79,6 +80,25 @@ else
     sleep 10
     nohup ./start_complete.sh >/dev/null 2>&1 &
 fi
+
+echo "── wait for the process to actually cycle ───────────────────"
+# Poll for the PID to CHANGE before touching the health endpoint. The old process
+# keeps answering for the moment between SIGTERM and systemd's RestartUSec, so a
+# health check here passes against the DYING process and proves nothing — the first
+# real run of this script hit exactly that and (correctly) failed its own PID check.
+cycle_deadline=$(( $(date +%s) + CYCLE_DEADLINE ))
+while :; do
+    CUR=$(main_pid)
+    [ -n "$CUR" ] && [ "$CUR" != "0" ] && [ "$CUR" != "$OLD_PID" ] && break
+    if [ "$(date +%s)" -ge "$cycle_deadline" ]; then
+        red "✗ process did not cycle within ${CYCLE_DEADLINE}s (still pid ${CUR:-none})."
+        red "  Service state: $(systemctl is-active raica.service 2>/dev/null || echo n/a)"
+        red "  Last log lines:"; tail -15 logs/server_complete.log 2>/dev/null | sed 's/^/    /'
+        exit 1
+    fi
+    sleep 2
+done
+info "process cycled: $OLD_PID -> $CUR"
 
 echo "── wait for ready ───────────────────────────────────────────"
 deadline=$(( $(date +%s) + READY_DEADLINE ))
