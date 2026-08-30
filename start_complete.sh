@@ -17,6 +17,8 @@ if command -v systemctl >/dev/null 2>&1 && \
    systemctl list-unit-files raica.service --no-pager 2>/dev/null | grep -q "^raica.service"; then
     echo "ℹ️  raica.service is installed — this server is managed by systemd."
     echo "    start it with:  sudo systemctl start raica"
+    echo "    TO DEPLOY NEW CODE, use:  ./scripts/deploy.sh   (no sudo; verifies the"
+    echo "                              running process is actually the new code)"
     echo "    status:  systemctl status raica    |    logs: tail -f logs/server_complete.log"
     exit 0
 fi
