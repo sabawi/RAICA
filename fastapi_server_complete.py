@@ -31,6 +31,69 @@ _artifact_baseline_ctx: "contextvars.ContextVar" = contextvars.ContextVar(
 _last_user_tool_ok: "contextvars.ContextVar" = contextvars.ContextVar(
     "raica_last_user_tool_ok", default=None)
 
+# Tools the MODEL is permitted to call on this request. None = unrestricted, which
+# is the correct default for auto-trusted internal clients that send no whitelist.
+#
+# WHY THIS EXISTS (2026-08-30): `allowed_tools` filtered the tools_array we OFFER the
+# model, and logged "Tool whitelist enforced". It did not check the tool names the
+# model actually returned. Ollama's enhanced tool-calling system prompt (~64k chars)
+# describes tools beyond the offered array, so a model handed only
+# ['document_search'] cheerfully emitted search_web + wikipedia_query — and both ran.
+# A NewX help bot meant to answer strictly from indexed docs answered from the open
+# web instead. A whitelist that filters the menu but not the order is not a whitelist.
+#
+# SCOPE — deliberately narrow: this is checked ONLY where a MODEL-CHOSEN tool call is
+# dispatched. It is NOT checked inside safe_function_call, because RAICA itself calls
+# that for system-initiated work (secure_email_sender on the delivery path), and those
+# calls are trusted by construction. Blocking them would break delivery for every bot.
+_model_allowed_tools: "contextvars.ContextVar" = contextvars.ContextVar(
+    "raica_model_allowed_tools", default=None)
+
+# Injected by RAICA on every request rather than chosen by the model (it is just the
+# clock). It appears in no plugin whitelist, so enforcing against it would break every
+# existing bot — verified in the historical logs before this guard was written.
+_SYSTEM_INJECTED_TOOLS = frozenset({"get_the_secret_tool"})
+
+
+def _filter_model_tool_calls(tool_calls, where=""):
+    """Drop model-chosen tool calls this request's whitelist does not permit.
+
+    Applied where the model's tool_calls ENTER the system, upstream of every
+    dispatcher — and there are several, including two different nested functions
+    both named execute_single_tool. Guarding dispatchers individually missed a
+    path on the first attempt; filtering at entry cannot.
+
+    Unrestricted clients (allowed is None) get the list back untouched.
+    """
+    allowed = _model_allowed_tools.get()
+    if allowed is None or not tool_calls:
+        return tool_calls
+    kept, dropped = [], []
+    for tc in tool_calls:
+        try:
+            name = tc['function']['name']
+        except Exception:
+            kept.append(tc)          # odd shape — leave it to the existing handling
+            continue
+        if name in allowed or name in _SYSTEM_INJECTED_TOOLS:
+            kept.append(tc)
+        else:
+            dropped.append(name)
+    if dropped:
+        logger.warning("🔒 BLOCKED off-whitelist tool call(s)%s: %s (allowed: %s)",
+                       where, dropped, sorted(allowed))
+    return kept
+
+
+def _model_tool_permitted(func_name: str):
+    """(permitted, allowed_set) for a MODEL-CHOSEN tool call."""
+    allowed = _model_allowed_tools.get()
+    if allowed is None:
+        return True, None                      # unrestricted client — unchanged behaviour
+    if func_name in _SYSTEM_INJECTED_TOOLS:
+        return True, allowed
+    return func_name in allowed, allowed
+
 # The delivery/action tool surface exposed to the LLM ONLY when the per-request delivery gate permits it
 # (authorize_delivery(data).permitted). This is a CAPABILITY REGISTRY (which tools provide outbound
 # delivery), not intent routing — the LLM still decides whether/how to use them. Safety for restricted
@@ -365,10 +428,44 @@ else:
 # SYSTEM PROMPT MANAGEMENT
 # ==============================================================================
 
-def load_tool_model_system_prompt(user_additional_instructions: str = "") -> str:
-    """Load the pre-tool model system prompt from external file"""
+def _is_rag_only_request() -> bool:
+    """True when this request's whitelist permits corpus retrieval and nothing else.
+
+    Read from the same ContextVar the dispatch guard uses, so it cannot disagree
+    with what is actually enforced.
+    """
+    allowed = _model_allowed_tools.get()
+    if not allowed:
+        return False
+    return (set(allowed) - _SYSTEM_INJECTED_TOOLS) == {"document_search"}
+
+
+def load_tool_model_system_prompt(user_additional_instructions: str = "",
+                                  RAGONLY: bool = False) -> str:
+    """Load the pre-tool model system prompt from external file.
+
+    RAGONLY swaps in a small corpus-only prompt instead of the full catalogue.
+
+    WHY (2026-08-30): the standard prompt is ~72KB and names search_web 38 times
+    against document_search 15, so a request whitelisted to document_search ALONE
+    still had its tool-selecting model reaching for web search — measured at 6
+    search_web / 6 wikipedia_query / 0 document_search across one test run. The
+    whitelist then blocked those calls, leaving no evidence at all, and the
+    answering model filled the gap from general knowledge. Restricting the tools
+    without restricting the prompt that advertises them does not work.
+
+    Default False, so every existing caller gets byte-identical output.
+
+    NOTE on user_additional_instructions: pre_tool_model_system_prompt.txt has no
+    {USER_ADDITIONAL_INSTRUCTIONS} token, so for that file the replace below is a
+    no-op and the argument has never had any effect. Left as-is deliberately —
+    adding the token would change behaviour for every existing bot at once. The
+    RAG-only prompt DOES carry the token, so instructions work on that path.
+    """
+    prompt_file = ('rag_only_tool_model_system_prompt.txt' if RAGONLY
+                   else 'pre_tool_model_system_prompt.txt')
     try:
-        with open('pre_tool_model_system_prompt.txt', 'r', encoding='utf-8') as f:
+        with open(prompt_file, 'r', encoding='utf-8') as f:
             prompt = f.read()
         
         # Replace placeholder with user instructions
@@ -380,7 +477,7 @@ def load_tool_model_system_prompt(user_additional_instructions: str = "") -> str
         
         return prompt
     except FileNotFoundError:
-        logger.error("pre_tool_model_system_prompt.txt not found, using fallback prompt")
+        logger.error("%s not found, using fallback prompt", prompt_file)
         return "You are a tool-calling AI assistant. Call the appropriate tools based on the user's request."
 
 def load_primary_model_system_prompt() -> str:
@@ -5429,7 +5526,7 @@ The purpose is to drop the new code in place of the failed code."""
         # Tool regeneration: Response received
         logger.info(f"🔧 Tool regeneration - response: {len(str(result))} chars, {len(result.get('tool_calls', []))} tool calls")
         
-        tool_calls = result.get("tool_calls", [])
+        tool_calls = _filter_model_tool_calls(result.get("tool_calls", []), ' [regenerated]')
         logger.info(f"🔧 LLM returned {len(tool_calls)} regenerated tool calls")
         
         return tool_calls
@@ -8468,7 +8565,8 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
     try:
         response = await generate_tools(
             prompt=prompt, tools=tools_array, model=tools_model,
-            system_prompt=load_tool_model_system_prompt(), temperature=0,
+            system_prompt=load_tool_model_system_prompt(
+                RAGONLY=_is_rag_only_request()), temperature=0,
             max_tokens=cfg['selector_max_tokens'])
     except Exception as e:  # noqa: BLE001
         logger.warning(f"🔁 SECOND ROUND: selection call failed ({e}) → continuing with round-1 results")
@@ -10502,7 +10600,8 @@ The above image analysis was automatically performed on newly uploaded images. T
                 # ENFORCE: Tool calling model ONLY uses pre_tool_model_system_prompt.txt
                 # No user system prompts allowed for tool calling - they can conflict with core instructions
                 user_system_prompt = ""  # Force empty - only use file instructions
-                system_content = load_tool_model_system_prompt(user_system_prompt)
+                system_content = load_tool_model_system_prompt(
+                    user_system_prompt, RAGONLY=_is_rag_only_request())
                 
                 # 🖼️ Build user message with image presence indicator
                 user_message_content = f"""Examine the intent of the user's prompt and apply the system directives to make the appropriate calls to the tools' functions."""
@@ -10606,6 +10705,10 @@ The above image analysis was automatically performed on newly uploaded images. T
                             if _tool_auth.recipient_locked and _LLM_DRIVEN_DELIVERY:
                                 # untrusted-input client → no shell: narrow sandboxed_executor to create_file
                                 tools_array = [_restrict_sandboxed_executor_def(t) for t in tools_array]
+                            # Publish it for the model-dispatch guard (see
+                            # _model_tool_permitted). Filtering the offered array is
+                            # not enough: the model can name a tool it was never shown.
+                            _model_allowed_tools.set(frozenset(_effective_allowed))
                             logger.info(
                                 f"🔒 Tool whitelist enforced: {sorted(_effective_allowed)} "
                                 f"(delivery={'PERMITTED' if _tool_auth.permitted else 'off'}, "
@@ -10623,7 +10726,8 @@ The above image analysis was automatically performed on newly uploaded images. T
                         
                         # Convert messages to prompt for LLM Manager
                         user_message = messages[-1]['content'] if messages else data.get('prompt', '')
-                        system_prompt = load_tool_model_system_prompt()
+                        system_prompt = load_tool_model_system_prompt(
+                            RAGONLY=_is_rag_only_request())
                         
                         logger.info("--- CALLING TOOL-CALLING MODEL ---")
                         # max_tokens deliberately NOT passed: a literal here outranks
@@ -10652,7 +10756,7 @@ The above image analysis was automatically performed on newly uploaded images. T
                             
                             # STAGE 2: Process tool calls if present - LLM Manager format
                             if 'tool_calls' in response_data and response_data['tool_calls']:
-                                tool_calls = response_data['tool_calls']
+                                tool_calls = _filter_model_tool_calls(response_data['tool_calls'], ' [structured]')
                                 logger.info(f"🎯 TOOL CALLS DETECTED: {len(tool_calls)} tools to execute")
                                 
                                 # Process each tool call - PARALLEL EXECUTION OPTIMIZATION
@@ -11473,6 +11577,22 @@ The above image analysis was automatically performed on newly uploaded images. T
                                             logger.error(f"❌ Invalid JSON in function arguments for {function_name}: {function_args}")
                                             function_args = {}
                                     
+                                    # 🔒 WHITELIST AT DISPATCH. The offered tools_array was already
+                                    # filtered, but the model can still NAME a tool it was never shown
+                                    # (Ollama's tool-calling preamble describes others). Refuse by
+                                    # RETURNING a message rather than silently dropping the call, so the
+                                    # model learns what it may use and can retry with an allowed tool.
+                                    _ok, _allowed = _model_tool_permitted(function_name)
+                                    if not _ok:
+                                        logger.warning(
+                                            "🔒 BLOCKED off-whitelist tool call: %s (allowed: %s)",
+                                            function_name, sorted(_allowed))
+                                        return (function_name,
+                                                f"Tool '{function_name}' is not available for this request. "
+                                                f"Available tools: {', '.join(sorted(_allowed))}. "
+                                                f"Answer using only those.",
+                                                time.time(), False, None)
+
                                     # Add image if applicable (use images_available to survive forced processing reset)
                                     if "image" in function_args and (image_exists or images_available):
                                         function_args["image"] = data.get("images", [None])[0]
@@ -11601,7 +11721,7 @@ The above image analysis was automatically performed on newly uploaded images. T
 
                                 if parsed_from_content:
                                     # Re-enter the tool execution path with parsed tool calls
-                                    tool_calls = response_data['tool_calls']
+                                    tool_calls = _filter_model_tool_calls(response_data['tool_calls'], ' [content-parsed]')
                                     logger.info(f"🎯 TOOL CALLS DETECTED (from content): {len(tool_calls)} tools to execute")
 
                                     for i, tool_call in enumerate(tool_calls):
@@ -11630,6 +11750,17 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                 fn_args = {}
                                         
                                         # Convert args back to string for safe_function_call
+                                        # 🔒 Same dispatch guard as the structured path above.
+                                        _ok2, _allowed2 = _model_tool_permitted(fn_name)
+                                        if not _ok2:
+                                            logger.warning(
+                                                "🔒 BLOCKED off-whitelist tool call (content-parsed): %s (allowed: %s)",
+                                                fn_name, sorted(_allowed2))
+                                            return (idx, fn_name, fn_args,
+                                                    f"Tool '{fn_name}' is not available for this request. "
+                                                    f"Available tools: {', '.join(sorted(_allowed2))}. "
+                                                    f"Answer using only those.")
+
                                         args_str = json.dumps(fn_args) if isinstance(fn_args, dict) else str(fn_args)
                                         result = await tool_manager.safe_function_call(fn_name, args_str)
                                         return idx, fn_name, fn_args, result

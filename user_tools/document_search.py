@@ -17,6 +17,31 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+def _citation_title(content: str, doc_name: str) -> str:
+    """Human-readable citation title for a retrieved chunk.
+
+    Prefers the document's own first Markdown heading, because that is what a
+    READER can act on. The previous title was the filename plus the raw
+    similarity score — e.g. "tip-001.md (Score: 0.537)" — which the answering
+    model then rendered verbatim into user-facing prose. Internal identifiers and
+    debug numbers are not citations.
+
+    Falls back to a tidied filename when the chunk carries no heading (the second
+    and later chunks of a long document).
+    """
+    for line in (content or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            title = line.lstrip("#").strip()
+            if title:
+                return title
+        break                      # only the FIRST non-empty line may be a heading
+    stem = doc_name[:-3] if doc_name.lower().endswith(".md") else doc_name
+    return stem.replace("_", " ").replace("-", " ").strip() or doc_name
+
+
 class DocumentSearchTool(BaseUserTool):
     """
     Document search tool that integrates FAISS document interrogation
@@ -146,7 +171,7 @@ class DocumentSearchTool(BaseUserTool):
                 
                 sources_data.append({
                     "url": file_url,
-                    "title": f"{doc_name} (Score: {similarity_score:.3f})",
+                    "title": _citation_title(content, doc_name),
                     "content": content
                 })
             
