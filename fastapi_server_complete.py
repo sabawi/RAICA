@@ -5526,7 +5526,15 @@ The purpose is to drop the new code in place of the failed code."""
         # Tool regeneration: Response received
         logger.info(f"🔧 Tool regeneration - response: {len(str(result))} chars, {len(result.get('tool_calls', []))} tool calls")
         
-        tool_calls = _filter_model_tool_calls(result.get("tool_calls", []), ' [regenerated]')
+        # NOT filtered. This path REGENERATES calls that already failed, so the
+        # whitelist question was settled when they were first dispatched — some
+        # legitimately originate outside the request whitelist (deferred POST-LLM
+        # plugins, classifier-selected delivery actions). Filtering here blocked a
+        # real retry of social_media_wordpress, caught by the Tier-1 benchmark.
+        # The vulnerability this guard exists for is a model naming a tool it was
+        # never OFFERED, which happens at the structured / content-parsed entry
+        # points below — both still filtered.
+        tool_calls = result.get("tool_calls", [])
         logger.info(f"🔧 LLM returned {len(tool_calls)} regenerated tool calls")
         
         return tool_calls
