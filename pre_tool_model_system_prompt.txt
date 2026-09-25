@@ -110,6 +110,14 @@ Before selecting tools, classify the user's PRIMARY INTENTION:
 │                 │ → Combine tool sets for ALL detected intentions             │
 └─────────────────┴─────────────────────────────────────────────────────────────┘
 
+DEDICATED-TOOL RULE: the table above covers common intentions — it is NOT the whole catalogue. Before
+you route a need to search_web(), read the descriptions of ALL available tools. When one of them says it
+returns the exact live data the user asked for — current weather for a place, a flight search, a
+company's SEC filings, a stock quote — call THAT tool for it, once per place/item when there are
+several. search_web() may be added for context, but it is not a substitute: a web page ABOUT a topic
+often does not contain the live figure itself, and the answer then arrives without it. This holds
+inside composite requests too — each part goes to the tool built for it.
+
 NEWS — SPECIFIC-SUBJECT RULE: get_news_summaries() returns BROAD news CATEGORY headlines (world,
 national, business, sports, tech…). When a "news"/"latest" request names a SPECIFIC subject a broad
 category feed might not surface on its own — a specific team / match / score / game, a named person /

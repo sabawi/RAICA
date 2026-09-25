@@ -11,7 +11,26 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-101 — search_web weather results often carry no temperature  [P3 — OBSERVED, 2026-09-25]
+### SI-102 — Ollama provider double-wrapped every tool: the tool model never saw a schema  [FIXED v1.0.0.328, 2026-09-25]
+- **Since v1.0.0.1**, `llm_providers/ollama.py generate_tools` wrapped each tool as {"type":"function","function":tool}
+  although callers already send that shape. Ollama cannot read a name one level too deep, so on every Ollama-served
+  tool lane the model worked only from tool names the 72 KB system prompt mentions in prose; unmentioned tools
+  (weather_info, and plausibly others) were invisible and got invented names (`get_weather`). The OpenAI provider
+  always handled the pre-wrapped shape — so the DeepInfra period had real schemas.
+- **Proof:** same weather tool on the live endpoint — single-wrapped → called; double-wrapped → "I don't have access to
+  a real-time weather tool". Guard: `tests/unit/test_ollama_tool_wrapping.py` (2 fail pre-fix, control passes).
+- **Cost:** tool-call input rose ~17k → ~26–29k tokens/call (schemas now actually sent); fewer calls per request
+  observed (weather 1 tool, 14 s). Net per-request effect NOT yet measured.
+- **Regression NOT run (owner chose to deploy):** the 14-case tool evaluation was proposed (14 requests) and deferred
+  for quota. Every tool family's selection may shift now that schemas are visible — run
+  `tests/integration/run_tool_model_eval_live.py --arms deepseek-v4-pro:cloud --runs 1` when quota allows and
+  compare with the 2026-09-25 rows.
+
+### SI-101 — search_web weather results often carry no temperature  [FIXED v1.0.0.328, 2026-09-25 — root cause SI-102]
+- **Resolution:** the models never picked `weather_info` because they could not SEE it (SI-102). With schemas visible,
+  Paris weather → `weather_info` 27°C; multi-part → `weather_info` 25°C + stock + `compute`, complete. Handler also
+  fixed: URL-encoded city (New York / São Paulo failed), `units` honoured (was ignored → °F), source link returned,
+  unknown place = failure via HTTP status (was "location not found" returned as weather).
 - **Observed:** "current weather in Tokyo" → the AccuWeather result's extracted text was an unrelated headline; 3/3
   answers named Tokyo but gave no temperature. Both glm-5.3 and deepseek-v4-pro hit it (source, not model).
 - **Evidence to gather:** does `weather_info` (never chosen for this phrasing) return a temperature for Tokyo, and why

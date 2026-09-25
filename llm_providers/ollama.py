@@ -184,13 +184,22 @@ class OllamaProvider(LLMProvider):
         """
         session = await self._get_session()
         
-        # Format tools for Ollama
+        # Format tools for Ollama. Callers send tools ALREADY in the {"type": "function",
+        # "function": {...}} shape (get_tools_definitions builds them that way), and this used
+        # to wrap them a second time. Ollama cannot read a double-wrapped definition — the name
+        # sits one level too deep — so the tool model saw NO schema at all and could call only
+        # tools the system prompt happened to name in prose. Measured 2026-09-25: the same
+        # weather tool, single-wrapped -> called; double-wrapped -> "I don't have access to a
+        # real-time weather tool". Same check the OpenAI provider already makes.
         formatted_tools = []
         for tool in tools:
-            formatted_tools.append({
-                "type": "function",
-                "function": tool
-            })
+            if isinstance(tool, dict) and tool.get("type") == "function" and "function" in tool:
+                formatted_tools.append(tool)
+            else:
+                formatted_tools.append({
+                    "type": "function",
+                    "function": tool
+                })
         
         # Build messages array with system prompt if available
         messages = []

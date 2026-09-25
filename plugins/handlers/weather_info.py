@@ -8,6 +8,7 @@ import sys
 import json
 import asyncio
 import subprocess
+import urllib.parse
 from typing import Dict, Any
 
 
@@ -39,18 +40,26 @@ async def execute(parameters: Dict[str, Any]) -> Dict[str, Any]:
         # Format: 1 = current weather, 2 = today + tomorrow, 3 = 3 days
         wttr_format = '1' if output_format == 'brief' else '2'
 
-        # Build URL
-        # wttr.in accepts: ?format=... for custom output
-        # Using curl to fetch data
-        url = f"wttr.in/{city}?format=%l:+%C+%t+%h+%w"
+        # The city goes into a URL PATH: "New York" / "São Paulo" must be percent-encoded, or
+        # curl is handed a URL with a raw space or non-ASCII byte and every multi-word or
+        # accented city fails with an empty error.
+        place = urllib.parse.quote(city.strip())
+        # wttr.in picks units from the CALLER'S location unless told (`m` metric, `u` USCS), so
+        # the `units` parameter used to be accepted and ignored: "metric" came back in °F.
+        unit_flag = 'u' if units == 'imperial' else 'm'
+        page_url = f"https://wttr.in/{place}"
+
+        url = f"{page_url}?{unit_flag}&format=%l:+%C,+temperature+%t+(feels+like+%f),+humidity+%h,+wind+%w"
 
         if output_format == 'detailed':
             # Get more detailed ASCII art format
-            url = f"wttr.in/{city}?{wttr_format}"
+            url = f"{page_url}?{unit_flag}&{wttr_format}"
 
         # Use curl to fetch weather data
         result = subprocess.run(
-            ['curl', '-s', '-m', '10', url],
+            # -w appends the HTTP status on its own last line: wttr.in answers an unknown place
+            # with HTTP 500 and a prose body, which used to be returned as the "weather".
+            ['curl', '-s', '-m', '10', '-w', '\n%{http_code}', url],
             capture_output=True,
             text=True,
             timeout=12
@@ -67,13 +76,15 @@ async def execute(parameters: Dict[str, Any]) -> Dict[str, Any]:
                 }
             }
 
-        weather_data = result.stdout.strip()
+        body, _, status = result.stdout.rstrip().rpartition('\n')
+        weather_data = body.strip()
 
-        if not weather_data or "Unknown location" in weather_data:
+        if status != '200' or not weather_data:
             return {
                 "success": False,
                 "result": None,
-                "error": f"City '{city}' not found. Please check the spelling.",
+                "error": (f"No weather for '{city}' (weather service HTTP {status or 'no response'}): "
+                          f"{weather_data[:160] or 'empty reply'}"),
                 "metadata": {
                     "city": city,
                     "units": units
@@ -83,7 +94,11 @@ async def execute(parameters: Dict[str, Any]) -> Dict[str, Any]:
         # Parse brief format: "Location: Conditions Temperature Humidity Wind"
         if output_format == 'brief':
             # Format the output nicely
-            formatted = f"🌤️  Weather for {city}:\n\n{weather_data}"
+            # The source link makes the reading CITABLE: answers are expected to cite what they
+            # state, and a weather figure with no URL was a reason to reach for web search instead.
+            formatted = (f"🌤️  Current weather for {city} "
+                         f"({'°C, metric' if units != 'imperial' else '°F, imperial'}):\n\n"
+                         f"{weather_data}\n\nSource: [wttr.in — {city}]({page_url})")
         else:
             # Detailed format includes ASCII art
             formatted = weather_data
