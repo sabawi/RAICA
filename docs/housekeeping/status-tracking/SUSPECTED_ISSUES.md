@@ -11,6 +11,21 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-101 — search_web weather results often carry no temperature  [P3 — OBSERVED, 2026-09-25]
+- **Observed:** "current weather in Tokyo" → the AccuWeather result's extracted text was an unrelated headline; 3/3
+  answers named Tokyo but gave no temperature. Both glm-5.3 and deepseek-v4-pro hit it (source, not model).
+- **Evidence to gather:** does `weather_info` (never chosen for this phrasing) return a temperature for Tokyo, and why
+  do tool models prefer `search_web` for weather?
+
+### SI-100 — compute fence: unbounded `**` and sequence repetition  [FIXED v1.0.0.327, 2026-09-25]
+- **Found while fixing SI-096**, both reachable with ANY data (not new with the empty-data change):
+  `9**9**9` is a Python bignum that hung >20 s (the tool's timeout returns but the thread keeps burning CPU in the
+  server); `[1]*300000000` allocated ~2.3 GB in a second (a list has no `.size`, so the result cap never saw it).
+- **Fix (`utils/restricted_numpy_eval.py`):** after validation every `a ** b` becomes `np.float_power(a, b)` (float64:
+  bounded, same values); a non-finite result is an error, never a figure; `*` with a list/tuple/string literal is
+  rejected. Tests in `TestConstantsPowersRepetition` — the 4 behaviour tests fail on the pre-fix code (the power bomb
+  in a subprocess with a deadline), the 3 controls pass on both.
+
 ### SI-099 — tool lane on glm-5.3 is ~+28 s slower per tool-heavy request than glm-5.2  [RESOLVED 2026-09-25 v1.0.0.326 — tool lane → deepseek-v4-pro (owner)]
 - **Resolution:** 14-case evaluation (`tests/integration/run_tool_model_eval_live.py`): deepseek-v4.1-flash REJECTED —
   skipped the calculator and got compound interest wrong 2/3 ($6,804.22 vs $6,847.26). deepseek-v4-pro on the 4
@@ -78,6 +93,10 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   kimi-k2.6 / minimax-m3 on a `convert --to ollama`). B1 (2026-09-24, after): the `glm-5.3` preset is served by glm-5.3 itself, 9/9. Clear on deploy.
 
 ### SI-096 — glm-5.3-flash's first `compute` call references a non-tabular tool output → TypeError, one wasted round  [P3 — SUSPECTED, 2026-09-24; owner decision: tool lane → `glm-5.3:cloud` (non-flash); combo compute-error lines 6/6/6 → 1/1/6 after the switch]
+- **v1.0.0.327 (2026-09-25): the constant-expression half is FIXED.** `compute` with no `data` now evaluates
+  (`np.sqrt(7921)` → 89); it had been refused and the fail-closed notice then forbade the answer to state the figure.
+  Multi-part request (weather + stock + √7921), configured tool model, 3 runs: square root present 0/3 → **3/3**.
+  The reference-to-a-non-tabular-output half is still open.
 - **Observed:** combo prompt (image "Ticker: KO" → price → shares), tool lane glm-5.3-flash: compute errors on
   **3/3** runs; same input with glm-5.2 (per-request `tools_calling_model`, only variable): **1/3**.
 - **Mechanism (log):** glm-5.3-flash first sends `data={"price":{"column":"price","from":"get_stock_and_company_data#1"}}`

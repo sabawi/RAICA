@@ -271,3 +271,18 @@ def test_a_plain_single_expression_is_unaffected():
     """CONTROL: the common case must not be disturbed."""
     out = _run(expr="np.mean(mag)", data={"mag": MAGS})
     assert out["success"] is True and "6.15" in out["result"]
+
+
+# ───────────────────────────────────── constant arithmetic (2026-09-25)
+def test_constant_arithmetic_without_data_succeeds():
+    """FAILS PRE-FIX: `np.sqrt(7921)` with no `data` was rejected, and the fail-closed notice then
+    FORBADE the answer to state the figure — a multi-part request came back without its square root."""
+    out = _run(expr="np.sqrt(7921)")
+    assert out["success"] is True, out.get("error")
+    assert out["result"].startswith("89") and "constants only" in out["result"], out["result"][:120]
+
+
+def test_the_schema_no_longer_demands_data():
+    """FAILS PRE-FIX: `data` was REQUIRED in the schema the model sees, steering it to invent one."""
+    from user_tools.compute_tool import ComputeTool
+    assert ComputeTool().parameters["required"] == ["expr"]

@@ -217,10 +217,47 @@ def _check_subscript_slice(node: ast.AST):
             _reject("`np.newaxis` is not permitted (it would insert a broadcast axis)")
 
 
+_SEQUENCE_LITERALS = (ast.List, ast.Tuple)
+
+
+def _is_sequence_literal(node) -> bool:
+    return isinstance(node, _SEQUENCE_LITERALS) or (
+        isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)))
+
+
+class _PowToFloatPower(ast.NodeTransformer):
+    """`a ** b` -> `np.float_power(a, b)`, applied AFTER validation.
+
+    Python's `**` on two integers is an unbounded bignum: `9**9**9` is a 370-million-digit number
+    that pins a CPU for minutes and cannot be stopped — the caller's wall-clock timeout returns
+    control, but the evaluating thread keeps running inside the server. float_power computes in
+    float64 for scalars and arrays alike, so an absurd power is `inf` at once and an ordinary one
+    (`(1 + r/12)**84`, `y**2`) gives the same value. The only visible change is that an integer
+    power is reported as a float (2**10 -> 1024.0).
+    """
+
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Pow):
+            return ast.copy_location(ast.Call(
+                func=ast.Attribute(value=ast.Name(id="np", ctx=ast.Load()), attr="float_power",
+                                   ctx=ast.Load()),
+                args=[node.left, node.right], keywords=[]), node)
+        return node
+
+
 def _validate(tree: ast.AST, data_names: Iterable[str]):
     allowed_names = set(data_names) | {"np"}
 
     for node in ast.walk(tree):
+        # Sequence repetition: `[1] * 300000000` allocated 2.3 GB in about a second, and a list
+        # has no `.size`, so the result-size check never sees it. A numpy ARRAY times a number is
+        # elementwise and bounded; a list, tuple or string literal times a number is a
+        # memory bomb with no statistical use.
+        if (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult)
+                and (_is_sequence_literal(node.left) or _is_sequence_literal(node.right))):
+            _reject("repeating a list, tuple or string with `*` is not permitted — use a numpy "
+                    "array (e.g. `np.array([...]) * 3` multiplies each element)")
         for bad, label in _NAMED_REJECTIONS.items():
             if isinstance(node, bad):
                 # Name the idiom that replaces it. Production: the model wrote
@@ -291,8 +328,16 @@ def _validate(tree: ast.AST, data_names: Iterable[str]):
 
 
 def _prepare_data(data: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    if not isinstance(data, dict) or not data:
-        raise RestrictedEvalError("`data` must be a non-empty object mapping names to arrays")
+    # An expression over constants alone — `np.sqrt(7921)`, `5000 * (1 + 0.045/12)**84` — needs no
+    # series. Refusing it granted no protection (any caller could pass a dummy `{"x": [0]}` and
+    # evaluate the same literals) but it did make `compute` refuse plain arithmetic, after which the
+    # answer is forbidden to state the figure: a request for a square root came back without one.
+    # Every other layer applies unchanged; only the "at least one series" demand is gone.
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise RestrictedEvalError("`data` must be a non-empty object mapping names to arrays "
+                                  "(or omitted entirely for an expression over constants only)")
 
     total = 0
     prepared: Dict[str, np.ndarray] = {}
@@ -344,6 +389,7 @@ def evaluate(expr: str, data: Dict[str, Any]) -> Any:
         raise RestrictedEvalError(f"could not parse expression: {e}") from e
 
     _validate(tree, prepared.keys())
+    tree = ast.fix_missing_locations(_PowToFloatPower().visit(tree))
 
     # Layer 4 — no builtins. `np` is the only non-data binding.
     env = {"__builtins__": {}}
@@ -351,7 +397,19 @@ def evaluate(expr: str, data: Dict[str, Any]) -> Any:
     env["np"] = np
 
     try:
-        result = eval(compile(tree, "<compute>", "eval"), env)  # noqa: S307 — validated above
+        with np.errstate(over="ignore"):
+            result = eval(compile(tree, "<compute>", "eval"), env)  # noqa: S307 — validated above
+        # An overflow is not a figure. With `**` computed in float64 an absurd power comes back as
+        # `inf` instantly — and a model handed `inf` with success would report "infinity" as the
+        # answer. Say what happened instead.
+        # (RestrictedEvalError IS a ValueError, so only the conversion may sit inside the try.)
+        try:
+            overflowed = bool(np.isinf(np.asarray(result, dtype=np.float64)).any())
+        except (TypeError, ValueError):
+            overflowed = False                    # text / mixed results have no overflow to report
+        if overflowed:
+            raise RestrictedEvalError("the result overflowed (infinite) — the expression is "
+                                      "outside the range of 64-bit floating point")
         # Defence in depth: a computed size argument can evade the literal check above.
         size = getattr(result, "size", None)
         if isinstance(size, int) and size > MAX_ELEMENTS_PER_ARRAY:

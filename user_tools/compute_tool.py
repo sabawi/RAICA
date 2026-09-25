@@ -164,7 +164,11 @@ class ComputeTool(BaseUserTool):
             "unreliable, and this returns the exact result together with the expression that "
             "produced it, so the calculation can be cited. Supply the series as `data` and a numpy "
             "expression as `expr` (e.g. \"np.min(y30 - y10)\" or "
-            "\"np.corrcoef(revenue, spend)[0][1]\"). Only pure-maths numpy functions are available."
+            "\"np.corrcoef(revenue, spend)[0][1]\"). It also does plain arithmetic on numbers you "
+            "already have — a square root, compound interest, a percentage change — with `data` "
+            "omitted (e.g. \"np.sqrt(7921)\", \"5000 * (1 + 0.045/12)**84\"); use it for those "
+            "rather than working the arithmetic out yourself. Only pure-maths numpy functions are "
+            "available."
         )
 
     @property
@@ -208,7 +212,8 @@ class ComputeTool(BaseUserTool):
                         "you cover a period split across files. "
                         "PREFER THE REFERENCE for anything longer than a few points: retyping a "
                         "table does not fit in one reply and risks transcription errors. Keys must "
-                        "be valid identifiers and are the names usable in `expr`."
+                        "be valid identifiers and are the names usable in `expr`. OMIT `data` "
+                        "entirely when the expression uses only numbers."
                     ),
                 },
                 "label": {
@@ -219,7 +224,7 @@ class ComputeTool(BaseUserTool):
                     ),
                 },
             },
-            "required": ["expr", "data"],
+            "required": ["expr"],
         }
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
@@ -445,9 +450,11 @@ class ComputeTool(BaseUserTool):
             else:
                 body = f"{head}{np.array2string(flat, precision=6, separator=', ', threshold=flat.size + 1)}"
 
+        basis = (f"over n={n} data point(s); inputs: {', '.join(sorted(data))}" if data
+                 else "from constants only (no data series)")
         return (f"{body}\n"
                 f"computed as: {expr}\n"
-                f"over n={n} data point(s); inputs: {', '.join(sorted(data))}\n"
+                f"{basis}\n"
                 f"dtype: {arr.dtype}\n"
                 f"STATE THE EXPRESSION AND n ALONGSIDE THIS VALUE when you use it, and give an "
                 f"extremum its date/label. The figure must be arithmetically consistent with any "

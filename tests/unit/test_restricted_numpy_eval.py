@@ -500,3 +500,64 @@ class TestConstantsAndDistributionHelpers:
                      "__import__('os').system('id')", "np.array.__class__"):
             with pytest.raises(RestrictedEvalError):
                 evaluate(expr, d)
+
+
+# ============================================================ constants, powers and repetition (2026-09-25)
+
+class TestConstantsPowersRepetition:
+    """Found while evaluating tool models: a model that wrote `np.sqrt(7921)` was refused ("`data`
+    must be a non-empty object"), so the answer was forbidden to state 89. Auditing that rule
+    exposed two resource holes it never covered: Python's unbounded `**` and sequence repetition."""
+
+    def test_a_constant_expression_needs_no_data(self):
+        """FAILS PRE-FIX: rejected for an empty `data`, though a dummy series would have let the
+        very same literals through — the rule protected nothing and refused real arithmetic."""
+        assert evaluate("np.sqrt(7921)", {}) == 89
+        assert evaluate("np.sqrt(7921)", None) == 89
+        assert round(float(evaluate("5000 * (1 + 0.045/12)**84", {})), 2) == 6847.26
+
+    def test_the_fence_is_intact_without_data(self):
+        """Empty data must not loosen anything: unknown names, dunders and bare calls still fail."""
+        blocked("np.mean(mag)", {})
+        blocked("().__class__.__bases__[0]", {})
+        blocked("open('/etc/passwd')", {})
+        blocked("np.load('x.npy')", {})
+        assert "non-empty object" in blocked("np.mean(mag)", "prose, not a mapping")
+
+    def test_an_integer_power_bomb_returns_at_once(self):
+        """FAILS PRE-FIX (hangs): `9**9**9` is a 370-million-digit bignum. The tool's timeout
+        returns control but the thread keeps burning CPU inside the server. Run in a subprocess
+        with a deadline so the pre-fix code FAILS this test instead of hanging the suite."""
+        import subprocess
+        code = ("import sys; sys.path.insert(0, %r)\n"
+                "from utils.restricted_numpy_eval import evaluate, RestrictedEvalError\n"
+                "try:\n    evaluate('9**9**9', {})\n    print('NO-ERROR')\n"
+                "except RestrictedEvalError as e:\n    print('REJECTED', e)\n"
+                % str(Path(__file__).resolve().parents[2]))
+        try:
+            out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                 timeout=10).stdout
+        except subprocess.TimeoutExpired:
+            pytest.fail("9**9**9 was still computing after 10s — the power is unbounded")
+        assert out.startswith("REJECTED") and "overflow" in out, out
+
+    def test_an_overflow_is_an_error_not_a_figure(self):
+        """A model handed `inf` with success would report "infinity" as the answer."""
+        assert "overflow" in blocked("10.0**400", {})
+
+    def test_power_values_are_unchanged(self):
+        """CONTROL (passes before and after): `**` now runs as float_power — same numbers."""
+        assert evaluate("2**10", DATA) == 1024
+        assert abs(float(evaluate("np.mean(y**2)", {"y": [1, 2, 3]})) - 14 / 3) < 1e-12
+        assert np.allclose(evaluate("y30**0.5", DATA), np.sqrt(DATA["y30"]))
+
+    def test_sequence_repetition_is_rejected(self):
+        """FAILS PRE-FIX: `[1] * 300000000` allocated ~2.3 GB in a second; a list has no `.size`,
+        so the result-size cap never saw it. Every literal shape, on either side of `*`."""
+        for expr in ("[1] * 300000000", "300000000 * [1]", "(1,) * 300000000", "'x' * 300000000"):
+            assert "repeating" in blocked(expr, {}), expr
+
+    def test_an_array_times_a_number_is_still_elementwise(self):
+        """CONTROL (passes before and after): the repetition rule must not touch numpy arithmetic."""
+        assert list(evaluate("np.array([1, 2]) * 3", DATA)) == [3, 6]
+        assert np.allclose(evaluate("y30 * 2", DATA), np.array(DATA["y30"]) * 2)
