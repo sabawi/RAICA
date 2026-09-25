@@ -25,6 +25,22 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from research.engine import extract_json_object
+
+# Shape of every vision reply (the OUTPUT CONTRACT in config/image_to_text_system_prompt.txt).
+# `image_received` is the MODEL's own statement of whether it could see the image: a model can
+# answer HTTP 200 with "I can't see an image" (deepseek-v4.1-flash:cloud did, 12/12, SI-098), and
+# without this field that reply was a "success" and the fallback never ran.
+_VISION_REPLY_SCHEMA = {
+    "type": "object",
+    "properties": {"image_received": {"type": "boolean"}, "report": {"type": "string"}},
+    "required": ["image_received", "report"],
+}
+
+
+class VisionReplyRejected(RuntimeError):
+    """The vision model did not deliver a usable reading of the image."""
+
 
 class ImageToTextTool(BaseUserTool):
     """Tool for converting images to text descriptions using qwen2.5vl:3b model."""
@@ -141,13 +157,10 @@ class ImageToTextTool(BaseUserTool):
         else:
             logger.info(f"🖼️ processed_img type: {type(processed_img)}, value: {processed_img}")
         
-        # Use system prompt from file (fallback to simple if loading fails)
-        try:
-            system_prompt_text = self.system_prompt if len(self.system_prompt) < 500 else "Analyze this image thoroughly and describe what you see in detail. Extract any visible text accurately."
-        except:
-            system_prompt_text = "Analyze this image thoroughly and describe what you see in detail. Extract any visible text accurately."
-        
-        imgPrompt = f"{system_prompt_text}\n\nUSER PROMPT: {imgPrompt}"
+        # The configured system prompt is used AS WRITTEN. A length cap here used to swap any
+        # prompt >= 500 chars for a generic one-liner, silently dropping the SCOPE policy that
+        # stops the vision model inventing figures the image does not show (SI-097).
+        imgPrompt = f"{self.system_prompt}\n\nUSER PROMPT: {imgPrompt}"
         
         # print(f"Prompt Parameter : {imgPrompt}",flush=True)
         # print(f"Image Blob : {img}",flush=True)
@@ -172,8 +185,14 @@ class ImageToTextTool(BaseUserTool):
 
         def _run(model):
             if vision_type == 'ollama':
-                return self._process_with_ollama(model, imgPrompt, processed_img, todayStr)
-            return self._process_with_openai_compatible_api(model, imgPrompt, processed_img, todayStr)
+                result = self._process_with_ollama(model, imgPrompt, processed_img, todayStr)
+            else:
+                result = self._process_with_openai_compatible_api(model, imgPrompt, processed_img, todayStr)
+            # A transport may REPORT failure instead of raising it (the OpenAI-compatible path always
+            # does). Either way the model failed, so it must reach the fallback below.
+            if not result.get('success'):
+                raise VisionReplyRejected(result.get('error') or f"'{model}' returned no result")
+            return result
 
         try:
             return _run(image_processing_model)
@@ -314,6 +333,24 @@ class ImageToTextTool(BaseUserTool):
                 'fallback_model': 'bakllava:latest'
             }
 
+    @staticmethod
+    def _report_from_reply(raw: str, model: str) -> str:
+        """Return the report from a vision reply, or raise if the model did not see the image.
+
+        Structural only: reads the JSON fields the model was asked to emit (OUTPUT CONTRACT), never
+        interprets its prose. Raising sends the request to the configured fallback model.
+        """
+        try:
+            reply = extract_json_object(raw)
+        except (ValueError, TypeError) as e:
+            raise VisionReplyRejected(f"'{model}' broke the output contract (no JSON object): {str(raw)[:120]!r}") from e
+        if not isinstance(reply, dict) or not isinstance(reply.get('image_received'), bool):
+            raise VisionReplyRejected(f"'{model}' broke the output contract (no boolean image_received): {str(raw)[:120]!r}")
+        report = str(reply.get('report', ''))
+        if not reply['image_received']:
+            raise VisionReplyRejected(f"'{model}' reports it could not see the image: {report[:160]!r}")
+        return report
+
     def _process_with_ollama(self, model: str, prompt: str, image_data: str, timestamp: str) -> Dict[str, Any]:
         """Process vision request using Ollama.
 
@@ -359,6 +396,7 @@ class ImageToTextTool(BaseUserTool):
                     'content': prompt,
                     'images': [image_data]  # Pass image data directly in message
                 }],
+                format=_VISION_REPLY_SCHEMA,
                 stream=False  # Turn off streaming so results return to primary LLM
             )
         finally:
@@ -366,7 +404,7 @@ class ImageToTextTool(BaseUserTool):
             signal.alarm(0)
 
         # Get complete response from chat API
-        res = response['message']['content']
+        res = self._report_from_reply(response['message']['content'], model)
         logger.info(f"🖼️ Vision processing complete, total response: {len(res)} chars")
 
         res = f"\n\nHere is the image recognition and analysis report you requested as of [Current Date and Time: {timestamp}], use it to compose your response to the user's prompt:  {res}"
@@ -432,7 +470,7 @@ class ImageToTextTool(BaseUserTool):
             if response.status_code == 200:
                 data = response.json()
                 if "choices" in data and len(data["choices"]) > 0:
-                    res = data["choices"][0]["message"]["content"]
+                    res = self._report_from_reply(data["choices"][0]["message"]["content"], model)
                     logger.info(f"🖼️ OpenAI-compatible API generation complete, total response: {len(res)} chars")
 
                     res = f"\n\nHere is the image recognition and analysis report you requested as of [Current Date and Time: {timestamp}], use it to compose your response to the user's prompt:  {res}"

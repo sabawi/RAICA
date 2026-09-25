@@ -75,7 +75,7 @@ llm:
   tool_calling:
     type: ollama
     config:
-      model: glm-5.2:cloud
+      model: glm-5.3:cloud
       timeout: 600
       temperature: 0.1
       max_tokens: 8192
@@ -187,7 +187,7 @@ arbitrator:
   enabled: true
   type: ollama
   config:
-    model: glm-5.2:cloud
+    model: glm-5.3-flash:cloud
     timeout: 600
     temperature: 0.1
     max_tokens: 4096
@@ -506,7 +506,7 @@ deep_research:
       min_corroborating_sources: 2
       evidence_token_budget: 87000
       verify_model: null
-    model: deepseek-v4-flash:cloud
+    model: deepseek-v4.1-flash:cloud
     heavy_model: deepseek-v4-pro:cloud
     heavy_threshold_chars: 20000
     normalize_request: true
@@ -603,14 +603,14 @@ convergence:
   shadow_classifier:
     enabled: false
     sample_rate: 1.0
-    model: deepseek-v4-flash:cloud
+    model: deepseek-v4.1-flash:cloud
     max_prompt_chars: 8000
     max_tokens: 800
     timeout_seconds: 60
     divergence_log: logs/shadow_classifier_divergence.jsonl
   intent_classifier:
     mode: llm
-    model: deepseek-v4-flash:cloud
+    model: deepseek-v4.1-flash:cloud
     max_tokens: 800
     timeout_seconds: 30
     max_prompt_chars: 12000
@@ -639,9 +639,9 @@ code_generation:
     gemini-pro:
       provider: gemini
       model: gemini-2.5-pro
-    Kimi-k2.5:
+    glm-5.3:
       provider: ollama
-      model: Kimi-k2.5:cloud
+      model: glm-5.3:cloud
     gpt-oss-20b:
       provider: ollama
       model: gpt-oss:20b-cloud
@@ -650,23 +650,23 @@ code_generation:
       model: gpt-oss:120b-cloud
     glm-4.7:
       provider: ollama
-      model: glm-5.2:cloud
+      model: glm-5.3-flash:cloud
     deepseek-v3:
       provider: ollama
-      model: deepseek-v4-flash:cloud
+      model: deepseek-v4.1-flash:cloud
     qwen-coder:
       provider: ollama
-      model: qwen3.5:397b-cloud
+      model: deepseek-v4.1-flash:cloud
     qwen3-coder-next:
       provider: ollama
-      model: qwen3.5:397b-cloud
+      model: deepseek-v4.1-flash:cloud
   fallback:
     enabled: true
     order:
     - provider: ollama
       model: gpt-oss:120b-cloud
     - provider: ollama
-      model: qwen3.5:397b-cloud
+      model: deepseek-v4.1-flash:cloud
     - provider: openai
       model: gpt-4o
     - provider: anthropic
@@ -675,10 +675,6 @@ code_generation:
       model: gpt-4o-mini
     - provider: gemini
       model: gemini-flash-latest
-    - provider: ollama
-      model: deepseek-v4-flash:cloud
-    - provider: ollama
-      model: qwen3.5:397b-cloud
   providers:
     openai:
       model: gpt-4o
@@ -707,7 +703,7 @@ code_generation:
       retry_attempts: 3
       retry_delay: 2
     ollama:
-      model: kimi-k2.6:cloud
+      model: glm-5.3:cloud
       base_url: http://127.0.0.1:11434
       timeout: 1200
       temperature: 0.7
@@ -719,13 +715,13 @@ code_generation:
 vision:
   type: ollama
   config:
-    model: minimax-m3:cloud
+    model: glm-5.3-flash:cloud
     timeout: 1800
     temperature: 0.7
     max_tokens: 16384
     base_url: http://127.0.0.1:11434
     api_key: "ollama"   # CONVERTED -> ollama (was ${DEEPINFRA_API_KEY})
-    fallback_model: kimi-k2.6:cloud
+    fallback_model: minimax-m3:cloud
   image_processing:
     max_size_mb: 1.0
     resize_enabled: true

@@ -11,6 +11,73 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-098 — deepseek-v4.1-flash:cloud went BLIND to images mid-day; a blind reply is a "success", so vision fallback never fires  [P1 — CONFIRMED; detection FIX VERIFIED LOCALLY 2026-09-24, awaiting owner confirmation + deploy]
+- **Observed:** read images 27/27 at ~20:00–22:10 (direct, tool path, server). From ~22:45: **12/12 "I can't see an
+  image attached"**, via raw HTTP AND the `ollama` library, while glm-5.3-flash read the SAME bytes 12/12 at the same
+  moments. `/api/show` still lists `vision` (a listing is evidence in neither direction).
+- **Cause:** provider/model side (Ollama cloud) — not RAICA: identical payload, a different model sees it.
+- **Mitigation applied (owner decision):** vision primary → glm-5.3-flash, fallback → deepseek-v4.1-flash.
+- **Still open (code gap):** `image_to_text.py` retries the fallback ONLY on an exception. A blind model returns
+  HTTP 200 with a polite "no image" answer → reported as success, fallback never tried, and the answer model is told
+  there was no image. Detecting that must NOT be a phrase list (LLM-policy gate); options: have the vision prompt
+  require a structured "image_received" field, or a cheap LLM judgement. Also: the current fallback is itself blind.
+- **Fix (2026-09-24):** OUTPUT CONTRACT in `config/image_to_text_system_prompt.txt` — the vision model returns
+  `{"image_received": bool, "report": str}`; `image_to_text.py::_report_from_reply` parses it (structural only, reuses
+  `research.engine.extract_json_object`), and `image_received:false` or a reply without that field raises →
+  the configured fallback runs ONCE (no loop: the fallback branch is a single retry). `_run` also treats a
+  RETURNED `{"success": False}` (the OpenAI-compatible transport never raises) as a failure — same bug, second shape.
+- **Evidence:** pre-probe — blind deepseek reported `image_received:false` 3/3 under the contract; sighted models `true`.
+  5 new tests in `tests/integration/test_vision_fallback.py` fail on the old code, pass on the new. Real tool path,
+  blind deepseek primary + glm-5.3-flash fallback: primary rejected + fallback used + text read **3/3**; dead primary +
+  blind fallback: honest `success:false` **3/3** (was a blind "success").
+- **Fallback (owner decision 2026-09-25):** minimax-m3:cloud — sanity A1 9/9, fallback branch A3 3/3.
+
+### SI-095 — `code_generation.model_presets.Kimi-k2.5` points at a RETIRED model; every use silently falls back  [P2 — CONFIRMED, 2026-09-24; owner decision: preset → `glm-5.3:cloud`, code_generation Ollama default kimi-k2.6 → `glm-5.3:cloud`; no Kimi models in this repo]
+- **Observed:** `run_model_sanity_live.py` B1: Kimi-k2.5 preset 0/9, every call `served by ollama/gpt-oss:120b-cloud (fell back)`.
+- **Evidence (invoked, not listed):** `Kimi-k2.5:cloud` → `model 'Kimi-k2.5' not found`; `kimi-k2.5:cloud` →
+  `kimi-k2.5 was retired at 2026-07-31 00:00:00 -0700 PDT`. Pre-existing; not touched by the 2026-09-24 model swap.
+- **Impact:** anyone selecting the preset gets gpt-oss:120b with no visible notice. Not the `selected_model`, so
+  the default coding path is unaffected.
+- **Owner decision (2026-09-24):** no Kimi models; coding uses `glm-5.3:cloud`. Applied to the preset, the code_generation
+  Ollama provider default, and the configurator's `_MODEL_MAP` Ollama vision entries (which would have re-introduced
+  kimi-k2.6 / minimax-m3 on a `convert --to ollama`). B1 (2026-09-24, after): the `glm-5.3` preset is served by glm-5.3 itself, 9/9. Clear on deploy.
+
+### SI-096 — glm-5.3-flash's first `compute` call references a non-tabular tool output → TypeError, one wasted round  [P3 — SUSPECTED, 2026-09-24; owner decision: tool lane → `glm-5.3:cloud` (non-flash); combo compute-error lines 6/6/6 → 1/1/6 after the switch]
+- **Observed:** combo prompt (image "Ticker: KO" → price → shares), tool lane glm-5.3-flash: compute errors on
+  **3/3** runs; same input with glm-5.2 (per-request `tools_calling_model`, only variable): **1/3**.
+- **Mechanism (log):** glm-5.3-flash first sends `data={"price":{"column":"price","from":"get_stock_and_company_data#1"}}`
+  → `TypeError: ufunc 'divide' not supported`. The stock tool's result is prose, not a table with a `price` column.
+  Next round it sends `{"price": 88.1}` (verified to work when invoked directly) and succeeds.
+- **User impact measured:** none on the answer — final shares correct 3/3 in both arms. Cost is an extra tool
+  round, and the arbitrator skips its LLM on pre-detected errors, so arbitration of that request is pattern-only.
+- **Unverified:** that the reference resolver is what produced the non-numeric input (vs. the stock tool's shape).
+  Evidence to gather: log the resolved `data` value compute receives on the reference path.
+- **Also seen:** `compute` with `data={}` and a literal expr (`np.floor(10000 / 88.10)`) is REJECTED ("`data` must be a
+  non-empty object") — glm-5.2 emits that form; a constant-only expression arguably should evaluate.
+
+### SI-097 — the vision tool answers the WHOLE user question and invents figures (a "hypothetical price")  [P2 — CONFIRMED CODE/PROMPT issue; FIX VERIFIED LOCALLY 2026-09-24, awaiting owner confirmation + deploy]
+- **Observed:** image containing only "Ticker: KO" + "look up its current price and how many shares $10,000 buys" →
+  the image_to_text result contains an invented price ($60–$68) and a share count.
+- **Control group (real tool path, same image+prompt, 3 runs each):** minimax-m3 (previous vision model) 3/3,
+  deepseek-v4.1-flash 3/3, glm-5.3-flash 3/3 → **not caused by the model swap**; the vision tool is handed the full
+  user prompt and completes it.
+- **Impact:** the downstream tool/primary models currently override it with the fetched live price (combo answers
+  correct 3/3), but a fabricated number is injected into the evidence context on every such request.
+- **Cause (confirmed by falsification):** SI-016 (v1.0.0.245) forwards the full user question to the vision model
+  (`fastapi_server_complete.py` FORCED IMAGE PROCESSING); `config/image_to_text_system_prompt.txt` has no scope
+  limit; `image_to_text.py` then frames the result as "use it to compose your response to the user's prompt".
+  Same models, prompt the ONLY variable (+ a SCOPE directive: report only what is visible, never estimate figures
+  the image does not show), 3 runs each: glm-5.3-flash fabricated 3/3 → **0/3** with reading still 9/9;
+  minimax-m3 3/3 → 1/3. (deepseek-v4.1-flash arm invalid — blind during the run, see SI-098.)
+- **Trap for the fix:** `image_to_text.py` (~line 146) silently REPLACES any system prompt >= 500 chars with a generic
+  one-liner; the current file is 393 chars, so lengthening it alone would be a no-op. The cap must go (or rise).
+- **Fix (2026-09-24):** SCOPE policy added to the prompt file (report only what is visible; never estimate or
+  illustrate figures the image does not show; say when the request needs data not in the image); the 500-char cap
+  removed so the configured prompt is sent as written (guard: `tests/unit/test_image_to_text_prompt.py`, fails on old).
+- **Evidence (after):** real tool path, glm-5.3-flash, ticker prompt: fabricated **0/3** (was 3/3), still reads "KO" 3/3.
+  Server end-to-end combo: vision report fabricated **0/3**, "hypothetical|illustrative" 0 hits in the log since the
+  restart, final answers correct 3/3 ($88.10 → 113 shares).
+
 ### SI-062 — 59 integration tests fail under a full pytest run, and no report has ever covered them  [P3 — LOGGED, 2026-08-17]
 - **Observed:** `pytest tests/unit tests/integration` gives **63 failed / 707 passed**. Verified
   identical (63, same test IDs) on a clean `HEAD` worktree, so this is pre-existing, not a regression.

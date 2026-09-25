@@ -43,7 +43,7 @@
   },
   "deepseek_ollama_cloud": {
     "provider": "ollama",
-    "model": "deepseek-v4-flash:cloud",
+    "model": "deepseek-v4.1-flash:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.7,
@@ -163,7 +163,7 @@
   },
   "flash_toolcall_ollama": {
     "provider": "ollama",
-    "model": "deepseek-v4-flash:cloud",
+    "model": "deepseek-v4.1-flash:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.1,
@@ -175,7 +175,7 @@
   },
   "flash_arbitrator_ollama": {
     "provider": "ollama",
-    "model": "deepseek-v4-flash:cloud",
+    "model": "deepseek-v4.1-flash:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.1,
@@ -187,7 +187,7 @@
   },
   "glm_toolcall_ollama": {
     "provider": "ollama",
-    "model": "glm-5.2:cloud",
+    "model": "glm-5.3:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.1,
@@ -199,7 +199,7 @@
   },
   "glm_arbitrator_ollama": {
     "provider": "ollama",
-    "model": "glm-5.2:cloud",
+    "model": "glm-5.3-flash:cloud",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 600,
     "temperature": 0.1,

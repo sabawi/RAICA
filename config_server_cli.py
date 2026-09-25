@@ -1038,13 +1038,13 @@ class ModelAliasManager:
         # DIFFERENT family from the Qwen3-VL primary, which preserves the reason the vision
         # fallback exists: one vendor retiring a model must not take out both lanes.
         ('llama3290bvisioninstruct', 'openrouter'): 'google/gemini-2.5-flash',
-        # Ollama serves no Llama-3.2-90B-Vision either; kimi-k2.6 is the vision fallback this
-        # repo previously verified on a real test image, and is a different family from the
-        # minimax/qwen primaries.
-        ('llama3290bvisioninstruct', 'ollama'): 'kimi-k2.6:cloud',
-        # Qwen3-VL-235B is not served by Ollama; minimax-m3 is the vision primary this repo
-        # verified there (2026-07-31) by sending an image and confirming genuine OCR.
-        ('qwen3vl235ba22binstruct', 'ollama'): 'minimax-m3:cloud',
+        # Ollama serves no Llama-3.2-90B-Vision either; minimax-m3 is the Ollama vision fallback
+        # (owner decision 2026-09-25), verified on real images and a different family from the
+        # glm primary. deepseek-v4.1-flash was tried first and went blind on images (SI-098).
+        ('llama3290bvisioninstruct', 'ollama'): 'minimax-m3:cloud',
+        # Qwen3-VL-235B is not served by Ollama; glm-5.3-flash is the Ollama vision primary
+        # (owner decision 2026-09-24), verified by sending images: OCR + shapes + chart, 12/12.
+        ('qwen3vl235ba22binstruct', 'ollama'): 'glm-5.3-flash:cloud',
         # Ollama publishes the DATE-PINNED DeepSeek releases only as a rolling tag, so the
         # -0813 pin has no exact counterpart. This is the same model family and generation,
         # differing in pinning, which is precisely the kind of difference that must be
