@@ -11,6 +11,35 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-099 — tool lane on glm-5.3 is ~+28 s slower per tool-heavy request than glm-5.2  [P2 — CONFIRMED PERF trade-off, 2026-09-25; owner decision pending]
+- **Found by:** Tier-1 benchmark after the v1.0.0.324 deploy — S1_news_citation latency 75.3 s (baseline 25 s;
+  prior medians 17–49 s on glm-5.2). CODE metrics all PASS.
+- **Controlled A/B (only variable = per-request `tools_calling_model`, arms alternated, same prompt/tools,
+  no other load, 4 rounds):** glm-5.3 69.6/60.9/71.7/91.7 s (median ~71) vs glm-5.2 53.6/63.0/32.2/26.5 s (median ~43).
+  glm-5.3 slower in 3/4 paired rounds; it took 3 tool rounds in 2/4 runs (glm-5.2 always 2). Citations
+  comparable (14/15/8/13 vs 14/13/16/12). Rate-limit lines similar in both arms.
+- **Trade-off:** glm-5.3 was chosen (SI-096) because glm-5.3-flash's compute calls failed 3/3; glm-5.3 cut that
+  (combo error lines 6/6/6 → 1/1/6). The price is latency on every tool-heavy request.
+- **Owner decision (2026-09-25):** keep glm-5.3; keep glm-5.2 as the alternative (alias `glm52_toolcall_alt`,
+  switch with `config_server_cli.py set --alias glm52_toolcall_alt --as tool_calling`); look for a third option.
+- **Three-way cost A/B (S1 prompt, per-request `tools_calling_model`, arms rotated, 3 runs each; tokens from the
+  tool model's own `prompt_eval_count`/`eval_count`):**
+  | tool model | latency (median) | requests | input tok | output tok | citations |
+  |---|---|---|---|---|---|
+  | glm-5.3 | 59 s | 3/2/3 | 50k/33k/50k | 3246/1552/2390 | 15/16/16 |
+  | glm-5.2 | 55 s | 2/2/2 | 33k | 110–134 | 15/16/15 |
+  | deepseek-v4.1-flash | 35 s | 2/2/2 | 34k | 177–192 | 14/11/12 |
+  glm-5.3 emits 12–25× the output tokens of glm-5.2 (reasoning) and takes an extra round in 2/3 runs (+50% requests
+  and input tokens) — any per-token price advantage is at risk of being consumed by volume, and Ollama's quota has
+  run out by REQUEST count before. deepseek-v4.1-flash: fastest and lean, citations somewhat lower; NOT yet checked on
+  the full 33-tool selection payload or the compute combo — required before it could replace anything.
+- **Side observation (P3):** one glm-5.2-arm request also logged a glm-5.3 call (16.8k in) — some path uses the
+  configured tool model instead of the per-request `tools_calling_model`. Evidence to gather: which log line
+  precedes that call.
+- **DR latency (dr_latency_s 386 s vs baseline 141 s):** within the historical range on the OLD models
+  (197–700 s, usually 260–400 s across 12 archived runs) — NOT attributed; no control arm exists because
+  deepseek-v4-flash is retired. The run overlapped live testing on the same Ollama account (171 rate-limit events).
+
 ### SI-098 — deepseek-v4.1-flash:cloud went BLIND to images mid-day; a blind reply is a "success", so vision fallback never fires  [P1 — CONFIRMED; detection FIX VERIFIED LOCALLY 2026-09-24, awaiting owner confirmation + deploy]
 - **Observed:** read images 27/27 at ~20:00–22:10 (direct, tool path, server). From ~22:45: **12/12 "I can't see an
   image attached"**, via raw HTTP AND the `ollama` library, while glm-5.3-flash read the SAME bytes 12/12 at the same
