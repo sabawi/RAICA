@@ -11,6 +11,39 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-104 — Deep Research stopped producing stock/sector charts  [FIX SHIPPED v1.0.0.329, 2026-09-25 — awaiting a real NewX run]
+- **Reported by the owner:** the 20:43 UTC @Ask ("chart some selected sectors") got ONE chart (S&P 500 from FRED) and
+  no sector charts, though chart tooling exists.
+- **Measured regression:** benchmark S4 (8 tickers, DR) — 20 chart markers / 8 tickers charted on every archived run
+  2026-08-17..08-30; the v1.0.0.324 run: 0 / 0. Missed at the time because those metrics had NO baseline and printed
+  as INFO. On live, "chart marker EMITTED" last appears 2026-09-11.
+- **Cause (planner output captured, not inferred):** DR's charts of anything that trades come ONLY from
+  `comprehensive_stock_analyzer` with `detailed=true` (chart built inside `if detailed:`). The planner prompt described
+  detailed=true as "for fundamentals/DCF/ratios/projections" and never as the chart source; deepseek-v4.1-flash (planner
+  since v324) followed that literally — S4: `detailed:false` on every ticker; sectors: no stock tool at all, only the
+  dataset tools, which cannot chart sectors. Nothing was dropped by `_normalize`.
+- **Fix (policy, not routing code):** planner prompt — detailed=true is also the PRICE CHART source; to chart stocks,
+  sectors, indexes or the market route each item to the analyzer with detailed=true (a sector/index via a representative
+  traded fund, e.g. its ETF). The analyzer's `detailed` description now says the same (one voice).
+- **Evidence after:** planner probe, deepseek-v4.1-flash, 3 runs each: S4 detailed=true on 16/16, 24/24, 16/16 calls;
+  sector request → XLK/XLF/XLE/XLV/XLY/XLU + indexes, all detailed=true, 3/3. Analyzer on XLK / ^GSPC / ^VIX with
+  detailed=true completes (11–13 s). Benchmark: S4 chart metrics are now GATES (0 → REGRESSION, verified).
+- **Open:** end-to-end chart rendering in a real NewX post not yet observed on this build; the S4 planner also repeats
+  tickers across sub-questions (16–24 analyzer calls for 8 tickers).
+
+### SI-103 — Ollama 429 "too many concurrent requests" during Deep Research fan-out  [P2 — OBSERVED on live, 2026-09-25]
+- **Observed:** first ever occurrence — 0 in 12 archived live logs back to 09-14, 36 in the v1.0.0.328 log. Both hits
+  were the two @Ask Deep Research runs at 20:34 and 20:43 UTC; several side calls in the same second got 429
+  (paper-domain judge, news-category selection, primary streaming with fallback).
+- **User impact measured:** none visible — both runs completed (40 and 26 evidence items, 67 and 291 claims checked)
+  and NewX posted both replies (posts 7424, 7425). Degradation is limited to side calls that fell back (the domain
+  judge falls back SAFELY to all corpora — `fastapi_server_complete.py:8016`).
+- **Cause NOT determined — three variables moved together:** DR engine model deepseek-v4-flash (retired) →
+  deepseek-v4.1-flash (v1.0.0.324); round-1 fan-out 28 sources (prior runs 6–15); account weekly usage >80%
+  (Ollama may cap concurrency harder near the limit). Not the v1.0.0.328 tool fix — DR does not use tool calling.
+- **Evidence to gather (quota-free first):** does the 429 recur on a small-fan-out DR run; does it appear once the
+  weekly usage resets. If it persists: cap DR's parallel model calls (a concurrency limit in config), not retries.
+
 ### SI-102 — Ollama provider double-wrapped every tool: the tool model never saw a schema  [FIXED v1.0.0.328, 2026-09-25]
 - **Since v1.0.0.1**, `llm_providers/ollama.py generate_tools` wrapped each tool as {"type":"function","function":tool}
   although callers already send that shape. Ollama cannot read a name one level too deep, so on every Ollama-served

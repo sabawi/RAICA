@@ -143,6 +143,24 @@
     "unit": "bool",
     "value": true
   },
+  "S4_multi_ticker_8.chart_markers_in_answer": {
+    "cls": "CODE",
+    "direction": "higher_better",
+    "measured_at": "2026-09-25T22:17:49.434335+00:00",
+    "reason": "Added 2026-09-25 (v1.0.0.329) as a GATE: these metrics had NO baseline, so they printed INFO and could never flag a regression — which is how 20 markers / 8 tickers -> 0 / 0 on the v1.0.0.324 run went unreported. Values from the archived runs 2026-08-17..08-30: tickers_with_chart_emitted = 8 in 10 of 12 runs, chart_markers_in_answer = 20 (one run 32) in all 12. Tolerances allow planner variance, not a collapse.",
+    "tolerance": 8,
+    "unit": "count",
+    "value": 20
+  },
+  "S4_multi_ticker_8.tickers_with_chart_emitted": {
+    "cls": "CODE",
+    "direction": "higher_better",
+    "measured_at": "2026-09-25T22:17:49.434335+00:00",
+    "reason": "Added 2026-09-25 (v1.0.0.329) as a GATE: these metrics had NO baseline, so they printed INFO and could never flag a regression — which is how 20 markers / 8 tickers -> 0 / 0 on the v1.0.0.324 run went unreported. Values from the archived runs 2026-08-17..08-30: tickers_with_chart_emitted = 8 in 10 of 12 runs, chart_markers_in_answer = 20 (one run 32) in all 12. Tolerances allow planner variance, not a collapse.",
+    "tolerance": 2,
+    "unit": "count",
+    "value": 8
+  },
   "_meta": {
     "measured_at": "2026-07-23T22:40:48.974505+00:00",
     "reason": "Stage-split shifted, not a quality regression: DR gather now ~32s (was ~220s) while synthesize/verify absorb that work on larger evidence+answer (200K-char prompt -> 36K-char draft). Total dr_latency_s improved 265s -> 145s (-45%) and ALL quality/CODE gates pass (citations 12 vs base 10, DR completed, 2 attachments, PDF valid, HTML self-contained). Old per-stage baselines (synthesize 23.2s / verify 20.8s) predate this redistribution and were flagging a faster pipeline as a regression. Re-baselined on an idle box at v1.0.0.218 (data-charts: World Bank + FBI CDE + FRED, compare_datasets cross-source charts)."

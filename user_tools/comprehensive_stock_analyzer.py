@@ -79,7 +79,7 @@ class ComprehensiveStockAnalyzerTool(BaseUserTool):
                 },
                 "detailed": {
                     "type": "boolean",
-                    "description": "Set to true to include comprehensive financial statements, 20+ financial ratios, DCF intrinsic valuation, and 3-year projections. Use detailed=true when user asks for fundamental analysis, valuation, or financial metrics.",
+                    "description": "Set to true to include comprehensive financial statements, 20+ financial ratios, DCF intrinsic valuation, and 3-year projections. Use detailed=true when user asks for fundamental analysis, valuation, or financial metrics. detailed=true also produces the ticker's price-history chart, so set it whenever a chart or graph of this ticker is wanted — including when the ticker stands for a sector or index (e.g. a sector ETF).",
                     "default": False
                 },
                 "analysis_horizon": {
