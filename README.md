@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.325
+# RAICA - RAG AI Context Agency v1.0.0.326
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.325-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.325)
+[![Version](https://img.shields.io/badge/version-1.0.0.326-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.326)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -98,7 +98,7 @@ pip install -r requirements.txt
 python fastapi_server_complete.py
 ```
 
-## ⭐ About RAICA v1.0.0.325
+## ⭐ About RAICA v1.0.0.326
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -384,15 +384,19 @@ Shipped defaults, all served through Ollama cloud (`config/llm_config.yaml` is t
 change lanes with `./config_server_cli.py`, and verify with `python tests/integration/test_all_lanes_live.py`):
 
 - **Primary Model**: `deepseek-v4-pro:cloud` (conversation, reasoning, synthesis)
-- **Tool Calling**: `glm-5.3:cloud` (tool selection and arguments)
+- **Tool Calling**: `deepseek-v4-pro:cloud` (tool selection and arguments; alternatives kept as aliases:
+  `glm_toolcall_ollama` = glm-5.3, `glm52_toolcall_alt` = glm-5.2)
 - **Arbitrator**: `glm-5.3-flash:cloud` (validates tool results, JSON)
 - **Vision Model**: `glm-5.3-flash:cloud`, fallback `minimax-m3:cloud` — the vision model states whether it
   actually saw the image; a model that did not is rejected and the fallback runs
 - **Deep Research / intent classification**: `deepseek-v4.1-flash:cloud` (heavy synthesis: `deepseek-v4-pro:cloud`)
-- **Code generation presets**: include `glm-5.3:cloud`, `glm-5.3-flash:cloud`, `deepseek-v4.1-flash:cloud`, `gpt-oss:120b-cloud`
+- **Code generation presets**: include `deepseek-v4-pro:cloud` (Ollama default), `glm-5.3-flash:cloud`, `deepseek-v4.1-flash:cloud`, `gpt-oss:120b-cloud`
 
 Model sanity check (vision, coding, multi-model combo, each repeated):
 `python tests/integration/run_model_sanity_live.py --runs 3`
+Tool-model evaluation (accuracy + completeness + tokens, one candidate vs another):
+`python tests/integration/run_tool_model_eval_live.py --arms <model>,<model> --runs 3` — **these spend the
+shared model account's quota (production's too): estimate requests first; they abort on a usage-limit error.**
 
 ### Available Models
 - **RAICA-Model1**: Primary agentic model with full tool access
@@ -732,7 +736,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.325 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.326 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

@@ -11,7 +11,13 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-099 — tool lane on glm-5.3 is ~+28 s slower per tool-heavy request than glm-5.2  [P2 — CONFIRMED PERF trade-off, 2026-09-25; owner decision pending]
+### SI-099 — tool lane on glm-5.3 is ~+28 s slower per tool-heavy request than glm-5.2  [RESOLVED 2026-09-25 v1.0.0.326 — tool lane → deepseek-v4-pro (owner)]
+- **Resolution:** 14-case evaluation (`tests/integration/run_tool_model_eval_live.py`): deepseek-v4.1-flash REJECTED —
+  skipped the calculator and got compound interest wrong 2/3 ($6,804.22 vs $6,847.26). deepseek-v4-pro on the 4
+  discriminating cases × 3: answers 9/12 and tools 9/12, same as glm-5.3; compound interest 3/3 (glm-5.3 2/3); median
+  38 s vs 96 s; ~620 vs ~8,300 output tokens/request. Owner switched every glm-5.3 use (tool_calling, the code-gen
+  preset, code_generation's Ollama default) to deepseek-v4-pro; glm-5.3-flash lanes unchanged. Remaining multi-part
+  failures are RAICA-side: `compute` rejects a constant expression with empty `data` (see SI-096).
 - **Found by:** Tier-1 benchmark after the v1.0.0.324 deploy — S1_news_citation latency 75.3 s (baseline 25 s;
   prior medians 17–49 s on glm-5.2). CODE metrics all PASS.
 - **Controlled A/B (only variable = per-request `tools_calling_model`, arms alternated, same prompt/tools,
