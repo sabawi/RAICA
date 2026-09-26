@@ -29,7 +29,13 @@ from intent_eval_corpus import CASES            # noqa: E402
 from intent_eval_scoring import delivery_kinds as _delivery_kinds  # noqa: E402
 
 RESULTS_PATH = os.path.join(_ROOT, "tests", "data", "intent_eval_results.jsonl")
-SHADOW_MODEL = "deepseek-v4-flash:cloud"
+# The classifier model comes from config — the SAME lane the server uses. It was a hardcoded
+# "deepseek-v4-flash:cloud", which Ollama retired on 2026-09-25: every call then failed and the eval
+# reported the classifier "wrong" on every delivery case while measuring nothing.
+SHADOW_MODEL = (F.config_loader.load_config().get("convergence", {})
+                .get("shadow_classifier", {}).get("model"))
+if not SHADOW_MODEL:
+    raise SystemExit("convergence.shadow_classifier.model is not set in config/llm_config.yaml")
 CONCURRENCY = 5
 RUNS = int(os.environ.get("EVAL_RUNS", "1"))   # run the LLM N times per case to measure stability
 

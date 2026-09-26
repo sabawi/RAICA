@@ -16,7 +16,8 @@ _KIND = {
     "social_media_wordpress": "publish", "social_media_twitter": "publish",
     "social_media_medium": "publish", "social_media_substack": "publish",
     "analytical_visualizer": "image", "generate_infographic": "image",
-    "create_chart": "image", "make_flowchart": "image",
+    "create_chart": "image", "plot_data": "image",   # plot_data is the chart tool since v1.0.0.305
+    "make_flowchart": "image",
 }
 
 

@@ -11,7 +11,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-104 — Deep Research stopped producing stock/sector charts  [FIX SHIPPED v1.0.0.329, 2026-09-25 — awaiting a real NewX run]
+### SI-105 — delivery classifier asked to publish every NewX bot post to Twitter  [FIXED v1.0.0.330, 2026-09-26]
+- **Observed on live:** after the 03:00–03:18 UTC bot run, 6/6 requests got `missing_tools: ['social_media_twitter_test']`
+  from the LLM intent classifier (Phase 3c); the per-bot whitelist blocked it every time. Long-standing: 29 on 09-18,
+  19 on 09-25 — not caused by the 09-24/25 changes. Only the whitelist kept a test plugin from being triggered.
+- **Cause:** NewX's scheduler asks "Create a new social media post about: … Output ONLY the joke text". The classifier's
+  policy listed "posting/publishing to a platform" as delivery and said to list the tool whenever the user asks to
+  post — with no distinction between WRITING a post (NewX publishes the returned text) and SENDING content out.
+- **Fix (policy, orchestration/intent.py):** writing a post is the answer; sending it out (to followers, an account,
+  a blog, a named service) is a publishing delivery. A first version that exempted "tweet" wholesale broke two eval
+  cases ("Tweet this summary to my followers", "Now also tweet a summary") — refined before shipping.
+- **Evidence:** real 03:00 bot prompt, live classifier model, 3 runs: Twitter tool 3/3 → none 3/3. Live eval
+  `tests/utilities/run_intent_eval.py` (34 cases, 1 run each): 34/34 delivery decision and tool kinds. That harness
+  had been hardcoded to deepseek-v4-flash, retired 2026-09-25 — it now reads `convergence.shadow_classifier.model`
+  from config; `intent_eval_scoring.py` now counts `plot_data` (the chart tool since v1.0.0.305) as an image tool.
+- **Deterministic tests:** `test_intent_classifier_characterization.py` fails 21 cases with or without this change
+  (identical set; they exercise the legacy keyword classifier — SI-062).
+
+### SI-104 — Deep Research stopped producing stock/sector charts  [FIXED v1.0.0.329 — owner-verified 2026-09-25]
 - **Reported by the owner:** the 20:43 UTC @Ask ("chart some selected sectors") got ONE chart (S&P 500 from FRED) and
   no sector charts, though chart tooling exists.
 - **Measured regression:** benchmark S4 (8 tickers, DR) — 20 chart markers / 8 tickers charted on every archived run
@@ -28,8 +45,13 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 - **Evidence after:** planner probe, deepseek-v4.1-flash, 3 runs each: S4 detailed=true on 16/16, 24/24, 16/16 calls;
   sector request → XLK/XLF/XLE/XLV/XLY/XLU + indexes, all detailed=true, 3/3. Analyzer on XLK / ^GSPC / ^VIX with
   detailed=true completes (11–13 s). Benchmark: S4 chart metrics are now GATES (0 → REGRESSION, verified).
-- **Open:** end-to-end chart rendering in a real NewX post not yet observed on this build; the S4 planner also repeats
-  tickers across sub-questions (16–24 analyzer calls for 8 tickers).
+- **Verified on live (owner's @Ask, 22:35 UTC):** 11 tickers charted (SPY, QQQ, TLT, AGG, HYG, LQD, UUP, DX-Y.NYB,
+  ^FVX, ^TNX, ^TYX); 28 chart markers reached the final draft and the NewX reply (792 on post 7426) as 28 figures,
+  images served 200 from sabawi.net. Owner: "the charts look good".
+- **Correction:** the planner repeats identical ticker calls across sub-questions, but they do NOT execute twice —
+  `_dispatch_round` skips an exact (source, query) repeat (measured with the real dispatch code: 6 planned → 3 run).
+  Side effect only: the shared result is attributed to the first sub-question. Left as is (owner decision) — no
+  measured cost.
 
 ### SI-103 — Ollama 429 "too many concurrent requests" during Deep Research fan-out  [P2 — OBSERVED on live, 2026-09-25]
 - **Observed:** first ever occurrence — 0 in 12 archived live logs back to 09-14, 36 in the v1.0.0.328 log. Both hits
