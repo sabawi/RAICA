@@ -896,7 +896,7 @@ curl -X POST "http://localhost:5000/v1/chat/completions" \
 13. `sandboxed_executor` - Code execution & file operations
 14. `published_papers_search` - Academic paper search
 15. `flight_search` - Flight information and booking links
-16. `analytical_visualizer` - Data visualization and chart generation
+16. `analytical_visualizer` - Charts of numbers the user typed, and data-free diagrams (flowcharts, concept illustrations); runs on the arbitrator lane and publishes a real chart marker. Charts of fetched data use `plot_data`, stocks `comprehensive_stock_analyzer`, public statistics `search_datasets`
 17. `image_to_text` - OCR and image text extraction
 18. `document_search` - FAISS-based semantic document search
 19. `pdf_generator` - PDF document creation

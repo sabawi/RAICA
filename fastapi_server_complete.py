@@ -491,7 +491,10 @@ def load_primary_model_system_prompt() -> str:
             else:
                 logger.warning("⚠️ PRIMARY SYSTEM PROMPT: Anti-hallucination rules MISSING")
             
-            if "🔗 MANDATORY CITATION URL:" in content:
+            # The prompt's citation rules refer to each source block's "🔗 CITATION URL" line. This check
+            # used to look for an older phrase ("🔗 MANDATORY CITATION URL:") the prompt no longer uses, so it
+            # warned "MISSING" on EVERY request since at least 2026-09-22 while the rules were present.
+            if "🔗 CITATION URL" in content:
                 logger.info("✅ PRIMARY SYSTEM PROMPT: Enhanced source block format FOUND")
             else:
                 logger.warning("⚠️ PRIMARY SYSTEM PROMPT: Enhanced source block format MISSING")

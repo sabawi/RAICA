@@ -133,7 +133,7 @@ Your AI assistant has access to these specialized tools:
 16. **process_executor** - Advanced system process execution
 
 #### Content Creation & Processing Tools
-17. **analytical_visualizer** - Create charts, graphs, and data visualizations
+17. **analytical_visualizer** - Chart numbers you type into your message, or draw a diagram with no data (flowcharts, concept illustrations)
 18. **image_to_text** - Extract text from images using OCR
 19. **pdf_generator** - Create and generate PDF documents
 20. **[Additional tools may be available - check /v1/models endpoint]**

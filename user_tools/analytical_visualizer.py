@@ -26,6 +26,23 @@ try:
     from .base_user_tool import BaseUserTool
 except ImportError:
     from base_user_tool import BaseUserTool
+try:
+    from .sandboxed_executor import load_config as _sandbox_config
+except ImportError:
+    from sandboxed_executor import load_config as _sandbox_config
+
+# This repo's config — found relative to this file, like sandboxed_executor's loader.
+_PROJECT_CONFIG = Path(__file__).resolve().parent.parent / "config" / "llm_config.yaml"
+
+
+def _workspace_dir() -> Path:
+    """The sandbox workspace, resolved from user_tools.sandboxed_executor exactly as that tool does.
+
+    Used to be hardcoded to /home/<user>/Development/flaskserver/sandbox_workspace — another project's
+    folder on one laptop."""
+    cfg = _sandbox_config()
+    base = Path(cfg["base_directory"]) if cfg.get("base_directory") else Path.home()
+    return base / cfg.get("sandbox_workspace_name", "sandbox_workspace")
 
 class AnalyticalVisualizerTool(BaseUserTool):
     """
@@ -36,8 +53,9 @@ class AnalyticalVisualizerTool(BaseUserTool):
     def __init__(self):
         super().__init__()
         self._name = "analytical_visualizer"
-        self._description = "Generate and automatically save analytical visualizations (plots, charts, tables) as PNG files from data YOU ALREADY HAVE. Creates publication-quality charts using LLM-driven code generation and saves them to sandbox_workspace. DO NOT use sandboxed_executor to save - files are saved automatically. Use this ONLY for one-off/bespoke visuals of data the user supplied or data already gathered in-context (you must pass the `data`). For charting a REAL-WORLD public numeric dataset by name — population, GDP, GDP per capita, inflation, unemployment, life expectancy, CO2 emissions, crime rates, and similar official statistics over time or across places — do NOT use this tool; use `search_datasets`, which FETCHES the authentic data from an authoritative source (you must never supply or transcribe those numbers yourself)."
-        self.working_dir = "/home/sabawi/Development/flaskserver/sandbox_workspace"
+        self._description = "Draw a chart or diagram for exactly two cases: (1) numbers the USER typed into their own message (e.g. 'chart these quarterly figures: 12, 15, 11, 18'), and (2) a diagram with no real data — a flowchart, a process or concept illustration, a schematic. It writes and runs matplotlib code and saves a PNG. Do NOT use it for anything with a real data source: a stock, ETF or index -> comprehensive_stock_analyzer (detailed=true renders the real price chart); a public statistic (GDP, population, inflation...) -> search_datasets / compare_datasets; a table another tool fetched this turn -> plot_data. Never pass it numbers you wrote yourself for real-world data."
+        self.working_dir = str(_workspace_dir())
+        os.makedirs(self.working_dir, exist_ok=True)
         self.visualization_llm_config = self._load_visualization_llm_config()
 
     @property
@@ -74,7 +92,10 @@ class AnalyticalVisualizerTool(BaseUserTool):
         try:
             prompt = kwargs.get('prompt', '')
             data = kwargs.get('data', '')
-            filename = kwargs.get('filename', 'visualization_output.png')
+            # A distinct default per call: a shared 'visualization_output.png' let concurrent requests —
+            # or two charts in one answer — overwrite each other before the image was published.
+            import uuid as _uuid
+            filename = kwargs.get('filename') or f"visualization_{_uuid.uuid4().hex[:10]}.png"
 
             # Validate filename
             if not filename.endswith('.png'):
@@ -108,7 +129,7 @@ class AnalyticalVisualizerTool(BaseUserTool):
                         result["base64_image"] = base64_image
                 
                 # Get the full output path for attachment reference
-                full_output_path = result.get('output_path', '/home/sabawi/Development/flaskserver/sandbox_workspace/visualization_output.png')
+                full_output_path = result.get('output_path', str(_workspace_dir() / 'visualization_output.png'))
                 filename = os.path.basename(full_output_path)
 
                 # Create formatted response with EXPLICIT attachment instructions
@@ -125,13 +146,29 @@ class AnalyticalVisualizerTool(BaseUserTool):
 📎 **ATTACHMENT INSTRUCTION FOR EMAIL**: To attach this file to an email, use exactly: attachments: "{filename}"
 """
 
-                # Include base64 image data in response for server extraction
-                if base64_image:
-                    logger.info(f"✅ DEBUG: Base64 image generated (length: {len(base64_image[:100])}...)")
-                    response += f"\n**📊 Chart successfully generated and will be displayed to the user. Reference this chart in your analysis.**\n\n<img src=\"{base64_image}\" alt=\"Generated Chart\" style=\"max-width: 100%; height: auto;\">"
+                # PUBLISH the PNG and hand back a REAL chart marker — the same path plot_data uses
+                # (publish_chart -> _marker). This used to paste the whole image as base64 into the text
+                # with "will be displayed to the user"; nothing downstream renders that, so the answer
+                # model invented a marker from the filename ([[chart:quarterly_revenue_chart.png]]) — a
+                # broken chart in the post. No URL means no marker, and the result says so.
+                marker = None
+                try:
+                    from utils.chart_publisher import publish_chart
+                    from datasources.data_chart_builder import _marker
+                    with open(full_output_path, 'rb') as _f:
+                        _url = publish_chart(_f.read(), filename_hint=os.path.splitext(filename)[0][:40])
+                    if _url:
+                        marker = _marker(_url, (prompt or "chart")[:80])
+                except Exception as _pub_err:  # noqa: BLE001 — reported below as "no marker"
+                    logger.warning(f"🎨 analytical_visualizer: publishing failed: {_pub_err}")
+                if marker:
+                    logger.info(f"🎨 analytical_visualizer: chart published → {marker[:120]}")
+                    response += ("\nINLINE CHART — place this marker, exactly as written, where the chart "
+                                 f"belongs in the answer:\n{marker}\n")
                 else:
-                    logger.warning(f"⚠️ DEBUG: No base64 image available for response")
-                    response += f"\n**Integration Note**: This visualization is saved and ready for attachment."
+                    response += ("\nThe chart was drawn but could NOT be published, so there is NO marker to "
+                                 "show. Do NOT write a chart marker yourself — describe the figure in words "
+                                 "(it is still available as an email attachment, above).\n")
                 
                 logger.info(f"🔧 DEBUG: Final response length: {len(response)}")
                 
@@ -182,76 +219,36 @@ class AnalyticalVisualizerTool(BaseUserTool):
             }
     
     def _load_visualization_llm_config(self) -> Dict[str, Any]:
+        """The visualizer's model = RAICA's ARBITRATOR lane, read from this repo's llm_config.yaml.
+
+        Used to read another project's config by an absolute path that never existed on live, and then
+        fall back SILENTLY to a hardcoded OpenAI gpt-4o-mini (spending OPENAI_API_KEY outside any config)
+        or a local qwen2.5:14b. No fallbacks now: a missing lane disables the tool with the reason, and
+        execute reports it instead of quietly using a different provider.
         """
-        Load visualization LLM configuration using the same pattern as arbitrator
-        """
-        config_path = Path("/home/sabawi/Development/flaskserver/config/llm_config.yaml")
-        
         try:
-            if config_path.exists():
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = yaml.safe_load(f)
-                
-                # Check if arbitrator config exists - use it as template for visualization
-                if 'arbitrator' in config and config['arbitrator'].get('enabled', False):
-                    arbitrator_config = config['arbitrator']
-                    
-                    # Create visualization config based on arbitrator settings
-                    return {
-                        'enabled': True,
-                        'type': arbitrator_config['type'],
-                        'config': arbitrator_config['config'].copy()
-                    }
-                else:
-                    # Fallback to default OpenAI GPT-4o-mini config
-                    return {
-                        'enabled': True,
-                        'type': 'openai',
-                        'config': {
-                            'model': 'gpt-4o-mini',
-                            'timeout': 60,
-                            'context_window_size': 4096,
-                            'temperature': 0.1,
-                            'max_tokens': 1024,
-                            'stream': False,
-                            'api_key': '${OPENAI_API_KEY}',
-                            'base_url': 'https://api.openai.com/v1'
-                        }
-                    }
-            else:
-                logger.warning("⚠️ Configuration file not found, using default OpenAI setup")
-                return {
-                    'enabled': True,
-                    'type': 'openai',
-                    'config': {
-                        'model': 'gpt-4o-mini',
-                        'timeout': 60,
-                        'context_window_size': 4096,
-                        'temperature': 0.1,
-                        'max_tokens': 1024,
-                        'stream': False,
-                        'api_key': '${OPENAI_API_KEY}',
-                        'base_url': 'https://api.openai.com/v1'
-                    }
-                }
-        except Exception as e:
-            logger.error(f"❌ Error loading visualization LLM config: {e}")
-            # Return safe fallback config
-            return {
-                'enabled': False,
-                'type': 'ollama',
-                'config': {
-                    'model': 'qwen2.5:14b',
-                    'base_url': 'http://127.0.0.1:11434'
-                }
-            }
+            with open(_PROJECT_CONFIG, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+            arb = config.get('arbitrator') or {}
+            if not arb.get('enabled') or not (arb.get('config') or {}).get('model'):
+                raise ValueError("arbitrator lane is missing or disabled in config/llm_config.yaml")
+            lane = {'enabled': True, 'type': arb['type'], 'config': dict(arb['config'])}
+            if lane['type'] == 'ollama' and not lane['config'].get('base_url'):
+                base = ((config.get('llm') or {}).get('providers') or {}).get('ollama', {}).get('base_url')
+                if not base:
+                    raise ValueError("llm.providers.ollama.base_url is not set in config/llm_config.yaml")
+                lane['config']['base_url'] = base
+            return lane
+        except Exception as e:  # noqa: BLE001 — reported at execute time, never swapped for a default
+            logger.error(f"❌ analytical_visualizer disabled: {e}")
+            return {'enabled': False, 'error': str(e), 'type': None, 'config': {}}
 
     async def _generate_visualization_code_with_llm(self, prompt: str, filename: str = 'visualization_output.png') -> Dict[str, Any]:
         """
         Use LLM to generate complete Python matplotlib code for any visualization request
         """
         # Construct the full output path
-        full_output_path = f"/home/sabawi/Development/flaskserver/sandbox_workspace/{filename}"
+        full_output_path = f"{self.working_dir}/{filename}"
 
         system_prompt = f"""You are an expert Python data visualization specialist using matplotlib.
 
@@ -292,8 +289,9 @@ Respond with ONLY the Python code following this exact format."""
         llm_config = self.visualization_llm_config
         
         if not llm_config.get('enabled', False):
-            logger.error("❌ Visualization LLM is disabled")
-            return {"success": False, "error": "Visualization LLM is disabled"}
+            reason = llm_config.get('error') or "no model configured"
+            logger.error(f"❌ Visualization LLM is disabled: {reason}")
+            return {"success": False, "error": f"Visualization LLM is disabled: {reason}"}
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -470,12 +468,18 @@ Respond with ONLY the Python code following this exact format."""
                 temp_file_path = temp_file.name
             
             # Execute the code
+            # RAICA's OWN interpreter, not whatever "python3" is on PATH: on live the system python3 has
+            # no matplotlib (only the venv does), so the result depended on how the service was started.
+            # MPLBACKEND=Agg: the code runs headless — an interactive default (QtAgg) crashes with
+            # "could not load the Qt platform plugin" and no chart is produced.
+            import sys as _sys
             result = subprocess.run(
-                ["python3", temp_file_path],
+                [_sys.executable, temp_file_path],
                 capture_output=True,
                 text=True,
                 timeout=30,  # 30 second timeout
-                cwd=self.working_dir
+                cwd=self.working_dir,
+                env={**os.environ, "MPLBACKEND": "Agg"},
             )
             
             # Clean up temp file
@@ -618,7 +622,7 @@ async def analytical_visualizer(prompt: str) -> str:
             base64_image = tool_instance._image_to_base64(result['output_path'])
         
         # Get the full output path for attachment reference
-        full_output_path = result.get('output_path', '/home/sabawi/Development/flaskserver/sandbox_workspace/visualization_output.png')
+        full_output_path = result.get('output_path', str(_workspace_dir() / 'visualization_output.png'))
         filename = os.path.basename(full_output_path)
 
         response = f"""✅ **Analytical Visualization Generated with LLM**

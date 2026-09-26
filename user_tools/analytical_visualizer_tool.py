@@ -31,27 +31,9 @@ class AnalyticalVisualizerUserTool(BaseUserTool):
     
     @property
     def description(self) -> str:
-        return """🎯 PRIORITY: Generate and modify analytical visualizations to enhance explanations with professional charts and graphs.
-        
-        ⚡ WHEN TO USE: Use this tool for ALL visualization needs including:
-        - **NEW PLOTS**: Economics, statistics, mathematics, science, business charts
-        - **PLOT MODIFICATIONS**: Changing scales, adding curves, updating parameters, refinements
-        - **PLOT VARIATIONS**: Superimposing curves, comparing scenarios, showing alternatives
-        - **PLOT IMPROVEMENTS**: Better annotations, different styles, enhanced clarity
-        
-        📊 EXAMPLES OF MODIFICATION REQUESTS:
-        - "Make the plot go up to 6% yield" 
-        - "Superimpose an inverted yield curve"
-        - "Add error bars to the data points"
-        - "Change the scale to logarithmic"
-        - "Show both linear and exponential trends"
-        
-        🎨 OUTPUT: Creates high-quality PNG visualizations with professional annotations, equilibrium points, 
-        surplus areas, statistical markers, and mathematical notation. Files saved to sandbox for reference.
-        
-        🚨 CRITICAL: ALWAYS use this tool for plot modifications - NEVER generate code directly in responses!
-        
-        💡 TIP: Even when gathering information about analytical topics, consider generating supporting visuals."""
+        # Scoped to the two jobs no other tool covers (owner decision 2026-09-26). It used to claim
+        # "ALL visualization needs", competing with plot_data once tool descriptions became visible (v1.0.0.328).
+        return "Draw a chart or diagram for exactly two cases: (1) numbers the USER typed into their own message (e.g. 'chart these quarterly figures: 12, 15, 11, 18'), and (2) a diagram with no real data — a flowchart, a process or concept illustration, a schematic. It writes and runs matplotlib code and saves a PNG. Do NOT use it for anything with a real data source: a stock, ETF or index -> comprehensive_stock_analyzer (detailed=true renders the real price chart); a public statistic (GDP, population, inflation...) -> search_datasets / compare_datasets; a table another tool fetched this turn -> plot_data. Never pass it numbers you wrote yourself for real-world data."
     
     @property 
     def parameters(self) -> Dict[str, Any]:

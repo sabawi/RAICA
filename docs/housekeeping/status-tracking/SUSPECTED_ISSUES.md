@@ -11,7 +11,32 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-105 — delivery classifier asked to publish every NewX bot post to Twitter  [FIXED v1.0.0.330, 2026-09-26]
+### SI-106 — analytical_visualizer: another project's config, a hidden OpenAI fallback, and fabricated markers  [FIXED v1.0.0.331, 2026-09-26]
+- **Found** by reading two warnings present on every live log since at least 09-22:
+  `⚠️ Configuration file not found, using default OpenAI setup` (this tool, at startup).
+- **What was wrong:** config read from `/home/<user>/Development/flaskserver/config/llm_config.yaml` (another project, a
+  laptop path) → never found on live → silent fallback to a hardcoded OpenAI gpt-4o-mini (its one live call, 09-03,
+  spent OPENAI_API_KEY) or a local qwen2.5:14b; working/output dir hardcoded to the same foreign path; generated code
+  run with PATH `python3` (live: no matplotlib) and the default Qt backend (headless crash); the image pasted as base64
+  into the tool text and never published — the answer model then INVENTED `[[chart:quarterly_revenue_chart.png]]`;
+  a shared default filename let concurrent charts overwrite each other; its description claimed "ALL visualization
+  needs", competing with plot_data once schemas became visible (v1.0.0.328).
+- **Owner decision:** keep it for the two jobs nothing else covers — charts of numbers the USER typed (plot_data requires
+  a source URL) and data-free diagrams.
+- **Fix:** arbitrator lane from this repo's config (glm-5.3-flash on Ollama), no fallbacks (missing lane → disabled
+  with the reason); sandbox dir from `user_tools.sandboxed_executor` (reusing that tool's loader); `sys.executable` +
+  `MPLBACKEND=Agg`; PNG published via `publish_chart` → real marker (the plot_data path), or an explicit "NO marker —
+  do not write one"; unique default filename; description scoped to the two jobs in both modules.
+- **Evidence:** 6 tests in `tests/unit/test_analytical_visualizer.py` — all 6 fail on the pre-fix file, pass now. Tool
+  direct: typed-numbers chart + flowchart rendered (flowchart image inspected). Real path (local server): tool model
+  chose analytical_visualizer for typed-in figures; glm-5.3-flash, no OpenAI; answer carries the REAL published marker.
+- **Also:** the "Enhanced source block format MISSING" warning on every request was a stale debug check looking for an
+  old phrase; the prompt's citation rules are present. Check updated (FOUND on the real prompt, MISSING with the rule
+  removed).
+
+### SI-105 — delivery classifier asked to publish every NewX bot post to Twitter  [FIXED v1.0.0.330 — verified on live 2026-09-26]
+- **Live verification:** first bot run on v1.0.0.330 (11:08–11:22 UTC) and the rest of the day to 16:15 UTC — 7 of 7
+  intent decisions `complete=True, missing_tools=[]`; 0 whitelist blocks, 0 auto-execution skips (was 6 of 6).
 - **Observed on live:** after the 03:00–03:18 UTC bot run, 6/6 requests got `missing_tools: ['social_media_twitter_test']`
   from the LLM intent classifier (Phase 3c); the per-bot whitelist blocked it every time. Long-standing: 29 on 09-18,
   19 on 09-25 — not caused by the 09-24/25 changes. Only the whitelist kept a test plugin from being triggered.
