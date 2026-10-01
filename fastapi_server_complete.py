@@ -13786,6 +13786,48 @@ async def emergency_rollback(reason: str = "Manual emergency rollback"):
 # OPENAI COMPATIBILITY ENDPOINT
 # ==============================================================================
 
+@app.post("/v1/embeddings")
+async def openai_embeddings(request: Request):
+    """OpenAI-compatible embeddings (utils/embeddings_api.py) for other services (NewX P1).
+
+    Body: {"input": str | [str]}. Uses the provider/model configured under
+    document_interrogator.embedding — never a fallback model. Errors are explicit:
+    400 bad input, 503 not configured/disabled, 502 provider failure. Logs counts only, never text.
+    """
+    from utils.embeddings_api import (load_embeddings_api_config, validate_inputs, embed_texts,
+                                      EmbeddingsConfigError, EmbeddingsProviderError)
+    try:
+        cfg = load_embeddings_api_config()
+    except EmbeddingsConfigError as e:
+        logger.error(f"🚨 /v1/embeddings not configured: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    if not cfg['enabled']:
+        raise HTTPException(status_code=503, detail='embeddings_api.enabled is false')
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail='request body must be JSON')
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail='request body must be a JSON object')
+    try:
+        texts = validate_inputs(body.get('input'), cfg)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        vectors, tokens = await embed_texts(texts, cfg)
+    except EmbeddingsProviderError as e:
+        logger.error(f"🚨 /v1/embeddings provider failure ({len(texts)} input(s)): {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+    logger.info(f"📐 /v1/embeddings: {len(texts)} input(s) -> {cfg['model']} ({cfg['dimension']}d), "
+                f"{tokens} token(s)")
+    return {
+        "object": "list",
+        "model": cfg['model'],
+        "data": [{"object": "embedding", "index": i, "embedding": v} for i, v in enumerate(vectors)],
+        "usage": {"prompt_tokens": tokens, "total_tokens": tokens},
+    }
+
+
 @app.get("/v1/models")
 async def openai_models():
     """OpenAI compatible models endpoint"""

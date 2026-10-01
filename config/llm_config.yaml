@@ -50,6 +50,13 @@ document_interrogator:
     \  - Batch size 25 \xD7 250 tokens/chunk = 6250 tokens/batch \u2192 OOM after\
     \ 1650 vectors\n  - Batch size 10 \xD7 250 tokens/chunk = 2500 tokens/batch \u2192\
     \ Sustainable at scale\n  - Time: 27-30 min for 1961 chunks with batch_size=10\n"
+embeddings_api:
+  # POST /v1/embeddings (utils/embeddings_api.py) — vectors for other services (NewX P1).
+  # Uses the provider/model/dimension under document_interrogator.embedding; these are only the
+  # request limits, so a misbehaving caller cannot run up the provider bill.
+  enabled: true
+  max_inputs: 64
+  max_chars_per_input: 8000
 llm:
   fallback:
     auto_switch: true

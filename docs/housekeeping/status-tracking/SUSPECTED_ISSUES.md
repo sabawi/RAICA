@@ -11,6 +11,16 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-107 — Four unit tests fail on master (found running the suite for v1.0.0.332) — **P2**
+`./venv/bin/python -m pytest tests/unit` → 4 failed / 1012 passed, IDENTICAL on 1.0.0.331 (checked by
+stashing the v1.0.0.332 edits): `test_html_entities.py::test_html_entities_are_escaped`,
+`test_phase5_integration.py::test_apply_unit_fix_detects_modifications` and
+`::test_apply_unit_fix_uses_tool_client`, `test_title_escaping.py::test_title_escaping` ("async def
+functions are not natively supported" — a pytest-asyncio marker/plugin issue, by the message). Not
+caused by v1.0.0.332. **Evidence to gather:** for each, stale test or real regression — read the
+asserted behaviour against the code. Do not clear on a hunch.
+
+
 ### SI-106 — analytical_visualizer: another project's config, a hidden OpenAI fallback, and fabricated markers  [FIXED v1.0.0.331, 2026-09-26]
 - **Found** by reading two warnings present on every live log since at least 09-22:
   `⚠️ Configuration file not found, using default OpenAI setup` (this tool, at startup).
