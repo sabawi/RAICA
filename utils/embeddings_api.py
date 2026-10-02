@@ -120,17 +120,22 @@ async def embed_texts(texts: List[str], cfg: Dict[str, Any]) -> Tuple[List[List[
     vectors: List[List[float]] = []
     tokens = 0
     if cfg['provider'] == 'ollama':
-        for t in texts:
-            r = await pooled_post(cfg['base_url'] + '/api/embeddings',
-                                  json={'model': cfg['model'], 'prompt': t},
-                                  timeout=cfg['timeout'])
-            if r.get('status_code') != 200:
-                raise EmbeddingsProviderError('provider HTTP %s: %s'
-                                              % (r.get('status_code'), str(r.get('text'))[:200]))
-            try:
-                vectors.append([float(x) for x in json.loads(r['text'])['embedding']])
-            except Exception as e:                       # noqa: BLE001
-                raise EmbeddingsProviderError('unreadable provider response: %s' % type(e).__name__)
+        # /api/embed (not the legacy /api/embeddings): one call for the whole batch, and it
+        # TRUNCATES input longer than the model's context — the legacy endpoint refuses it with
+        # HTTP 500 ("input length exceeds the context length"), which failed every batch holding
+        # one long post (all-minilm reads 256 tokens). Same vectors either way (measured cos 1.0).
+        r = await pooled_post(cfg['base_url'] + '/api/embed',
+                              json={'model': cfg['model'], 'input': texts, 'truncate': True},
+                              timeout=cfg['timeout'])
+        if r.get('status_code') != 200:
+            raise EmbeddingsProviderError('provider HTTP %s: %s'
+                                          % (r.get('status_code'), str(r.get('text'))[:200]))
+        try:
+            body = json.loads(r['text'])
+            vectors = [[float(x) for x in v] for v in body['embeddings']]
+            tokens = int(body.get('prompt_eval_count') or 0)
+        except Exception as e:                           # noqa: BLE001
+            raise EmbeddingsProviderError('unreadable provider response: %s' % type(e).__name__)
     else:
         r = await pooled_post(cfg['base_url'] + '/embeddings',
                               json={'model': cfg['model'], 'input': texts,

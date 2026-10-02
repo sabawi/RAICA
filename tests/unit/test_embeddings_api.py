@@ -112,13 +112,26 @@ def test_provider_problems_raise_instead_of_returning_bad_vectors(resp, needle):
     assert needle in str(ei.value), str(ei.value)
 
 
-def test_ollama_path_one_call_per_text():
+def test_ollama_path_one_batched_call_that_truncates():
+    """/api/embed with truncate: the legacy endpoint refused any text longer than the model's
+    context (HTTP 500), failing the whole batch — found by the first real NewX index run."""
     c = _cfg(lambda c: c['document_interrogator']['embedding'].__setitem__('provider', 'ollama'))
-    r = {'status_code': 200, 'text': json.dumps({'embedding': [0.5, 0.5, 0.5, 0.5]})}
+    r = {'status_code': 200, 'text': json.dumps({'embeddings': [[0.5] * 4, [0.25] * 4],
+                                                 'prompt_eval_count': 7})}
     with mock.patch('http_helpers.pooled_post', new=mock.AsyncMock(return_value=r)) as p:
         vecs, tokens = _run(E.embed_texts(['a', 'b'], c))
-    assert len(vecs) == 2 and p.call_count == 2 and tokens == 0
-    assert p.call_args.kwargs['json'] == {'model': 'text-embedding-3-small', 'prompt': 'b'}
+    assert vecs == [[0.5] * 4, [0.25] * 4] and p.call_count == 1 and tokens == 7
+    assert p.call_args.args[0].endswith('/api/embed')
+    assert p.call_args.kwargs['json'] == {'model': 'text-embedding-3-small', 'input': ['a', 'b'],
+                                          'truncate': True}
+
+
+def test_ollama_count_mismatch_is_an_error():
+    c = _cfg(lambda c: c['document_interrogator']['embedding'].__setitem__('provider', 'ollama'))
+    r = {'status_code': 200, 'text': json.dumps({'embeddings': [[0.5] * 4]})}
+    with mock.patch('http_helpers.pooled_post', new=mock.AsyncMock(return_value=r)):
+        with pytest.raises(E.EmbeddingsProviderError):
+            _run(E.embed_texts(['a', 'b'], c))
 
 
 # ── the on-box profile (NewX semantic search: the member's query never leaves the machine) ──
@@ -151,9 +164,9 @@ def test_unknown_model_is_refused_never_substituted(requested):
 
 def test_local_profile_calls_the_on_box_daemon():
     c = _cfg(profile='local')
-    r = {'status_code': 200, 'text': json.dumps({'embedding': [0.1, 0.2, 0.3, 0.4]})}
+    r = {'status_code': 200, 'text': json.dumps({'embeddings': [[0.1, 0.2, 0.3, 0.4]]})}
     with mock.patch('http_helpers.pooled_post', new=mock.AsyncMock(return_value=r)) as p:
         vecs, _ = _run(E.embed_texts(['a query'], c))
     assert vecs == [[0.1, 0.2, 0.3, 0.4]]
-    assert p.call_args.args[0] == 'http://127.0.0.1:11434/api/embeddings'
-    assert p.call_args.kwargs['json'] == {'model': 'all-minilm', 'prompt': 'a query'}
+    assert p.call_args.args[0] == 'http://127.0.0.1:11434/api/embed'
+    assert p.call_args.kwargs['json'] == {'model': 'all-minilm', 'input': ['a query'], 'truncate': True}
