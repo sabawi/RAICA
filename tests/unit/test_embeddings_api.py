@@ -18,7 +18,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from utils import embeddings_api as E  # noqa: E402
 
 BASE_CFG = {
-    'embeddings_api': {'enabled': True, 'max_inputs': 3, 'max_chars_per_input': 20},
+    'embeddings_api': {'enabled': True, 'max_inputs': 3, 'max_chars_per_input': 20,
+                       'local': {'provider': 'ollama', 'model_name': 'all-minilm', 'dimension': 4,
+                                 'service': {'base_url': 'http://127.0.0.1:11434'},
+                                 'timeout': {'embedding_request': 5}}},
     'document_interrogator': {'embedding': {
         'provider': 'openai', 'model_name': 'text-embedding-3-small', 'dimension': 4,
         'service': {'base_url': 'https://provider.invalid/v1', 'api_key': 'k-123'},
@@ -26,12 +29,12 @@ BASE_CFG = {
 }
 
 
-def _cfg(mutate=None):
+def _cfg(mutate=None, profile=None):
     c = copy.deepcopy(BASE_CFG)
     if mutate:
         mutate(c)
     with mock.patch('utils.config_loader.config_loader.load_config', return_value=c):
-        return E.load_embeddings_api_config()
+        return E.load_embeddings_api_config(profile)
 
 
 def _resp(vectors, status=200, tokens=7):
@@ -116,3 +119,41 @@ def test_ollama_path_one_call_per_text():
         vecs, tokens = _run(E.embed_texts(['a', 'b'], c))
     assert len(vecs) == 2 and p.call_count == 2 and tokens == 0
     assert p.call_args.kwargs['json'] == {'model': 'text-embedding-3-small', 'prompt': 'b'}
+
+
+# ── the on-box profile (NewX semantic search: the member's query never leaves the machine) ──
+def test_local_profile_reads_its_own_section_and_needs_no_key():
+    c = _cfg(profile='local')
+    assert c['provider'] == 'ollama' and c['model'] == 'all-minilm' and c['dimension'] == 4
+    assert c['base_url'] == 'http://127.0.0.1:11434' and 'api_key' not in c
+    assert c['max_inputs'] == 3, 'request limits are shared'
+
+
+def test_local_profile_missing_fails_fast():
+    """No silent fallback to the default provider: that would send the query OFF the box."""
+    with pytest.raises(E.EmbeddingsConfigError):
+        _cfg(lambda c: c['embeddings_api'].pop('local'), profile='local')
+
+
+@pytest.mark.parametrize('requested,expected', [(None, None), ('', None), ('local', 'local'),
+                                                ('all-minilm', 'local')])
+def test_model_field_selects_the_profile(requested, expected):
+    with mock.patch('utils.config_loader.config_loader.load_config', return_value=copy.deepcopy(BASE_CFG)):
+        assert E.resolve_profile(requested) == expected
+
+
+@pytest.mark.parametrize('requested', ['text-embedding-3-large', 'gpt-4', 'LOCAL', 123])
+def test_unknown_model_is_refused_never_substituted(requested):
+    with mock.patch('utils.config_loader.config_loader.load_config', return_value=copy.deepcopy(BASE_CFG)):
+        with pytest.raises(ValueError):
+            E.resolve_profile(requested)
+
+
+def test_local_profile_calls_the_on_box_daemon():
+    c = _cfg(profile='local')
+    r = {'status_code': 200, 'text': json.dumps({'embedding': [0.1, 0.2, 0.3, 0.4]})}
+    with mock.patch('http_helpers.pooled_post', new=mock.AsyncMock(return_value=r)) as p:
+        vecs, _ = _run(E.embed_texts(['a query'], c))
+    assert vecs == [[0.1, 0.2, 0.3, 0.4]]
+    assert p.call_args.args[0] == 'http://127.0.0.1:11434/api/embeddings'
+    assert p.call_args.kwargs['json'] == {'model': 'all-minilm', 'prompt': 'a query'}

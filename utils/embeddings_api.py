@@ -39,14 +39,26 @@ def _req(d: Dict[str, Any], path: str) -> Any:
     return cur
 
 
-def load_embeddings_api_config() -> Dict[str, Any]:
-    """Everything the endpoint needs, read strictly from llm_config.yaml."""
+LOCAL_PROFILE = 'local'
+
+
+def load_embeddings_api_config(profile: str = None) -> Dict[str, Any]:
+    """Everything the endpoint needs, read strictly from llm_config.yaml.
+
+    `profile` None = the default provider (document_interrogator.embedding). 'local' = the on-box
+    model under embeddings_api.local (NewX semantic search: a member's query never leaves the box).
+    Each profile is its own vector space; a caller selects one explicitly and never gets the other."""
     from utils.config_loader import config_loader
     cfg = config_loader.load_config() or {}
     api = _req(cfg, 'embeddings_api')
     if not isinstance(api, dict):
         raise EmbeddingsConfigError('llm_config.yaml: embeddings_api must be a mapping')
-    emb = _req(cfg, 'document_interrogator.embedding')
+    if profile == LOCAL_PROFILE:
+        emb = _req(cfg, 'embeddings_api.local')
+    elif profile is None:
+        emb = _req(cfg, 'document_interrogator.embedding')
+    else:
+        raise EmbeddingsConfigError('unknown embeddings profile %r' % profile)
     out = {
         'enabled': bool(_req(api, 'enabled')),
         'max_inputs': int(_req(api, 'max_inputs')),
@@ -65,6 +77,24 @@ def load_embeddings_api_config() -> Dict[str, Any]:
     if out['max_inputs'] < 1 or out['max_chars_per_input'] < 1 or out['dimension'] < 1:
         raise EmbeddingsConfigError('llm_config.yaml: embeddings_api limits must be positive')
     return out
+
+
+def resolve_profile(requested: Any) -> str:
+    """The profile a request's `model` field selects: absent = default (None); 'local' or the
+    configured local model name = 'local'. Anything else is refused (ValueError) — never a silent
+    substitution, since vectors from another model would sit in another space."""
+    if requested in (None, ''):
+        return None
+    if requested == LOCAL_PROFILE:
+        return LOCAL_PROFILE
+    try:
+        local = load_embeddings_api_config(LOCAL_PROFILE)['model']
+    except EmbeddingsConfigError:
+        local = None
+    if local and requested == local:
+        return LOCAL_PROFILE
+    raise ValueError('unknown model %r (use "%s" for the on-box model, or omit for the default)'
+                     % (requested, LOCAL_PROFILE))
 
 
 def validate_inputs(raw: Any, cfg: Dict[str, Any]) -> List[str]:

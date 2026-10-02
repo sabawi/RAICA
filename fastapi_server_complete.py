@@ -13788,27 +13788,33 @@ async def emergency_rollback(reason: str = "Manual emergency rollback"):
 
 @app.post("/v1/embeddings")
 async def openai_embeddings(request: Request):
-    """OpenAI-compatible embeddings (utils/embeddings_api.py) for other services (NewX P1).
+    """OpenAI-compatible embeddings (utils/embeddings_api.py) for other services (NewX).
 
-    Body: {"input": str | [str]}. Uses the provider/model configured under
-    document_interrogator.embedding — never a fallback model. Errors are explicit:
-    400 bad input, 503 not configured/disabled, 502 provider failure. Logs counts only, never text.
+    Body: {"input": str | [str], "model": optional}. No model = the provider configured under
+    document_interrogator.embedding; "local" = the on-box model under embeddings_api.local (NewX
+    semantic search — nothing leaves the machine). Never a fallback model. Errors are explicit:
+    400 bad input / unknown model, 503 not configured/disabled, 502 provider failure. Logs counts
+    only — never the text, never anything identifying the caller's users.
     """
     from utils.embeddings_api import (load_embeddings_api_config, validate_inputs, embed_texts,
-                                      EmbeddingsConfigError, EmbeddingsProviderError)
-    try:
-        cfg = load_embeddings_api_config()
-    except EmbeddingsConfigError as e:
-        logger.error(f"🚨 /v1/embeddings not configured: {e}")
-        raise HTTPException(status_code=503, detail=str(e))
-    if not cfg['enabled']:
-        raise HTTPException(status_code=503, detail='embeddings_api.enabled is false')
+                                      resolve_profile, EmbeddingsConfigError, EmbeddingsProviderError)
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail='request body must be JSON')
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail='request body must be a JSON object')
+    try:
+        profile = resolve_profile(body.get('model'))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        cfg = load_embeddings_api_config(profile)
+    except EmbeddingsConfigError as e:
+        logger.error(f"🚨 /v1/embeddings not configured: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    if not cfg['enabled']:
+        raise HTTPException(status_code=503, detail='embeddings_api.enabled is false')
     try:
         texts = validate_inputs(body.get('input'), cfg)
     except ValueError as e:

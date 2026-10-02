@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.332
+# RAICA - RAG AI Context Agency v1.0.0.333
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.332-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.332)
+[![Version](https://img.shields.io/badge/version-1.0.0.333-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.333)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -98,7 +98,7 @@ pip install -r requirements.txt
 python fastapi_server_complete.py
 ```
 
-## ⭐ About RAICA v1.0.0.332
+## ⭐ About RAICA v1.0.0.333
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -262,6 +262,12 @@ OpenAI-compatible. Uses the provider/model configured under `document_interrogat
 (currently OpenAI `text-embedding-3-small`, 1024 dims) — never a fallback model; the response names
 the model used. Limits in `config/llm_config.yaml` → `embeddings_api`. Errors: 400 bad input, 503 not
 configured/disabled, 502 provider failure. Used by NewX to understand public posts (profiling P1).
+
+**On-box embeddings (`"model": "local"`, v1.0.0.333):** a request with `"model": "local"` (or the local
+model's name) is embedded by the model under `embeddings_api.local` — Ollama `all-minilm` (384 dims) on
+this machine's own daemon, not its cloud: the text never leaves the box and costs no tokens. Used by
+NewX semantic search for members' queries. Its own vector space: never mixed with the default provider;
+an unknown `model` is refused (400), never substituted.
 
 ```bash
 curl -X POST http://localhost:5000/v1/embeddings \
@@ -750,7 +756,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.332 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.333 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

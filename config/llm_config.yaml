@@ -57,6 +57,17 @@ embeddings_api:
   enabled: true
   max_inputs: 64
   max_chars_per_input: 8000
+  # The ON-BOX model (Ollama daemon on this machine, not its cloud): NewX semantic search embeds a
+  # member's query here so it never leaves the box. Its own vector space — never mixed with the
+  # default provider's. Selected by a request's "model": "local".
+  local:
+    provider: ollama
+    model_name: all-minilm
+    dimension: 384
+    service:
+      base_url: http://127.0.0.1:11434
+    timeout:
+      embedding_request: 15
 llm:
   fallback:
     auto_switch: true

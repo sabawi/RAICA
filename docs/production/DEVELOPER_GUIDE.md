@@ -35,7 +35,7 @@ The Agentic RAG System is a sophisticated 2-stage LLM processing architecture th
 - **POST-LLM Execution System**: 🆕 [Deferred tool execution for multi-step workflows](../POST_LLM_EXECUTION_ARCHITECTURE.md) - Critical for file creation and email workflows
 - **20-Tool Agentic System**: Web search, stock analysis, email retrieval/sending, file creation, calendar integration, flight search, document processing, image analysis, PDF generation, and more
 - **OpenAI API Compatibility**: Full `/v1/chat/completions` and `/v1/models` support
-- **Embeddings** (v1.0.0.332): `POST /v1/embeddings` (OpenAI-compatible) — vectors from the provider configured under `document_interrogator.embedding`; strict config, no fallback model; limits in `embeddings_api` (`utils/embeddings_api.py`)
+- **Embeddings** (v1.0.0.332): `POST /v1/embeddings` (OpenAI-compatible) — vectors from the provider configured under `document_interrogator.embedding`; strict config, no fallback model; limits in `embeddings_api` (`utils/embeddings_api.py`). v1.0.0.333: `"model": "local"` selects the on-box model under `embeddings_api.local` (Ollama `all-minilm`, 384d; nothing leaves the machine); an unknown model is a 400
 - **Document Processing**: FAISS-based RAG with embedding search and interrogation
 - **Conversational Memory**: Multi-turn dialogue persistence with smart compression
 - **Advanced Email System**: Multi-provider retrieval (Gmail, Outlook, Yahoo, iCloud, custom SMTP) + HTML-to-text optimization (84% context reduction) + secure sending with SMTP fallback + auto-cleanup attachments
