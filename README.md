@@ -36,6 +36,7 @@ An advanced AI-powered server with multi-LLM orchestration, tool calling, docume
 - **[POST-LLM Execution Architecture](docs/POST_LLM_EXECUTION_ARCHITECTURE.md)** - 🆕 Critical: Multi-step workflow execution system
 - **[Email Workflow Best Practices](docs/production/EMAIL_WORKFLOW_GUIDE.md)** - 🆕 Smart email routing patterns and limitations
 - **[CLI Model Management](docs/CLI_MODEL_MANAGEMENT.md)** - 🆕 Easy model switching and configuration
+- **[LLM Model Selection Study](docs/LLM_MODEL_SELECTION_STUDY.md)** - Why each lane runs on its model: measured accuracy, tokens and cost of the cheaper candidates
 - **[News Sources Configuration](docs/NEWS_SOURCES_CONFIGURATION.md)** - Customize news sources without code changes
 
 ## 🤖 Pre-Built Intelligent Agents
