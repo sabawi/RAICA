@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.334
+# RAICA - RAG AI Context Agency v1.0.0.335
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.334-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.334)
+[![Version](https://img.shields.io/badge/version-1.0.0.335-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.335)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -17,7 +17,7 @@ An advanced AI-powered server with multi-LLM orchestration, tool calling, docume
 - **Multi-LLM Architecture**: Primary, tool-calling, arbitration, and vision models working together
 - **OpenAI-Compatible API**: Full compatibility with OpenAI client libraries
 - **Vision Processing**: Image analysis and OCR capabilities with qwen2.5vl:3b
-- **Document Intelligence**: FAISS-powered document store with EasyOCR integration
+- **Document Intelligence**: FAISS-powered document store with OCR (tesseract on servers; EasyOCR in the development set, `requirements-dev.txt`)
 - **Tool Calling System**: Extensible user tools for calendar, email, web scraping, and more
 - **Real-time Streaming**: Support for streaming responses
 - **Auto-fallback**: Automatic failover between LLM providers
@@ -95,11 +95,12 @@ cd RAICA
 ### Manual Installation
 ```bash
 # See docs/production/INSTALLATION_GUIDE.md for complete setup
-pip install -r requirements.txt
+pip install -r requirements.txt -c requirements.lock   # a SERVER: production's exact versions, no EasyOCR/torch
+pip install -r requirements-dev.txt                    # a DEVELOPMENT machine: + EasyOCR (pulls torch, ~1.1 GB)
 python fastapi_server_complete.py
 ```
 
-## ⭐ About RAICA v1.0.0.334
+## ⭐ About RAICA v1.0.0.335
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -758,7 +759,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.334 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.335 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

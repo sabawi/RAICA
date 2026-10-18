@@ -2806,8 +2806,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files for image serving
-app.mount("/images", StaticFiles(directory="/home/sabawi/Development/flaskserver/sandbox_workspace"), name="images")
 
 # Initialize tool manager
 tool_manager = AsyncToolManager()
@@ -8962,6 +8960,14 @@ def _delivery_sandbox_dir() -> str:
     except Exception:
         _base, _name = _os.path.expanduser("~"), "sandbox_workspace"
     return _os.path.join(_base, _name)
+
+
+# Mount static files for image serving — the SAME sandbox folder the delivery code writes to (config-driven via
+# _delivery_sandbox_dir, user_tools.sandboxed_executor in llm_config.yaml). Until v1.0.0.335 this was a hardcoded
+# developer path: production satisfied it only through a symlink to this very folder, a developer machine served an
+# unrelated old project folder, and on a clean machine StaticFiles refused to start (NewX installer test, 2026-10-18).
+os.makedirs(_delivery_sandbox_dir(), exist_ok=True)
+app.mount("/images", StaticFiles(directory=_delivery_sandbox_dir()), name="images")
 
 
 # In-memory, content-keyed idempotency for POST-LLM email sends (single-process server). Replaces the

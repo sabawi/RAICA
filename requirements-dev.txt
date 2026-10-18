@@ -1,0 +1,7 @@
+# RAICA development environment = the server set (requirements.txt) + development-only tools.
+#   pip install -r requirements-dev.txt
+# EasyOCR pulls torch, torchvision and opencv (~1.1 GB). A server does not need it: the document store indexes text,
+# and OCR falls back to tesseract (document_interrogator.py). Measured 2026-10-18: production's 350 indexed documents
+# are all .md, and a clean server install starts with "Tesseract initialized as primary OCR engine".
+-r requirements.txt
+easyocr>=1.7.0

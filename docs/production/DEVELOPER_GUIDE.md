@@ -48,8 +48,8 @@ The Agentic RAG System is a sophisticated 2-stage LLM processing architecture th
 git clone <repository>
 cd flaskserver
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (development set = server set + EasyOCR; a server uses requirements.txt only)
+pip install -r requirements-dev.txt
 
 # Configure LLM providers
 python tools/llm_config_tool.py

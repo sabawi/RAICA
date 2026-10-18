@@ -82,7 +82,14 @@ brew install tesseract wkhtmltopdf python3
 - Upgrades pip to latest version
 
 ### 4. Python Dependencies
-Installs all packages from `requirements.txt` including:
+Since v1.0.0.335 there are three files:
+- `requirements.txt`: the **server** set. Everything a server needs; no EasyOCR, so no torch, torchvision or opencv
+  (~1.1 GB saved). OCR then uses tesseract (`document_interrogator.py` falls back to it automatically).
+- `requirements-dev.txt`: the server set plus EasyOCR, for development machines.
+- `requirements.lock`: production's exact versions, used as constraints:
+  `pip install -r requirements.txt -c requirements.lock` (the NewX installer does this).
+
+`requirements.txt` includes:
 - FastAPI and web framework dependencies
 - AI/ML libraries (faiss-cpu, numpy, pandas)
 - Document processing (pytesseract, PyPDF2, python-docx)

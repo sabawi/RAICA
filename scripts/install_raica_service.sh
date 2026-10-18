@@ -80,14 +80,20 @@ sed -i -e "s#^User=.*#User=$RUN_USER#" -e "s#^Group=.*#Group=$RUN_USER#" "$TMP_U
 
 # Stop any hand-started instance first, or systemd will start a SECOND one and
 # the port bind will fail in a way that looks like a crash loop.
-if pgrep -f "python3 fastapi_server_complete.py" >/dev/null 2>&1; then
+# systemd sends the unit's output to logs/server_complete.log and opens that file BEFORE ExecStartPre (which would
+# create the folder) runs: on a fresh clone every start failed with 209/STDOUT (NewX installer test, 2026-10-18)
+install -d -o "$RUN_USER" -g "$RUN_USER" "$ROOT/logs" "$ROOT/logs/archive" "$ROOT/runtime" "$ROOT/document_store"
+# A RAICA started by hand — NOT the one systemd already runs (pgrep matches both; the unit's own MainPID is excluded)
+unit_pid="$(systemctl show -p MainPID --value raica.service 2>/dev/null || echo 0)"
+hand_pids() { pgrep -f "python3 fastapi_server_complete.py" 2>/dev/null | grep -vx "${unit_pid:-0}" || true; }
+if [ -n "$(hand_pids)" ]; then
     warn "a hand-started RAICA is running — stopping it so systemd can own the port"
-    pkill -INT -f "python3 fastapi_server_complete.py" || true
+    hand_pids | xargs -r kill -INT 2>/dev/null || true   # only the hand-started ones, never the unit's own
     for _ in $(seq 1 20); do
-        pgrep -f "python3 fastapi_server_complete.py" >/dev/null 2>&1 || break
+        [ -n "$(hand_pids)" ] || break
         sleep 1
     done
-    pgrep -f "python3 fastapi_server_complete.py" >/dev/null 2>&1 \
+    [ -n "$(hand_pids)" ] \
         && { fail "could not stop the existing process"; exit 1; }
     ok "hand-started instance stopped"
 fi
