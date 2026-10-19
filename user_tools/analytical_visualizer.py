@@ -378,9 +378,11 @@ Respond with ONLY the Python code following this exact format."""
                     
                     logger.info(f"🧠 Using Ollama LLM: {llm_config['config']['model']}")
                     
+                    _key = llm_config['config'].get('api_key') or ''      # sent as a bearer token (Ollama cloud)
                     async with session.post(
                         url, 
                         json=payload,
+                        headers={'Authorization': f'Bearer {_key}'} if _key else None,
                         timeout=aiohttp.ClientTimeout(total=llm_config['config'].get('timeout', 60))
                     ) as response:
                         if response.status == 200:

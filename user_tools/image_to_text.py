@@ -388,8 +388,12 @@ class ImageToTextTool(BaseUserTool):
             else:
                 logger.info(f"🖼️ Using base64 data: {len(image_data)} chars")
 
-            # Use chat API for vision models with images in messages
-            response = ollama.chat(
+            # The CONFIGURED host and key (vision.config base_url / api_key). The module-level ollama.chat() used the
+            # library's default host and no key, so a cloud vision leg would silently have stayed local (2026-10-19).
+            _host = self.vision_config.get('base_url') or None
+            _key = self.vision_config.get('api_key') or ''
+            _client = ollama.Client(host=_host, headers={'Authorization': f'Bearer {_key}'} if _key else None)
+            response = _client.chat(
                 model=model,
                 messages=[{
                     'role': 'user',

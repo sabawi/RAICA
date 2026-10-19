@@ -75,7 +75,9 @@ def test_no_fallback_attempt_when_primary_succeeds():
 # ---------------------------------------------------------------------------------------------------
 # SI-098: a model can answer HTTP 200 with "I can't see an image" (deepseek-v4.1-flash:cloud did, 12/12,
 # 2026-09-24). That reply was returned as a SUCCESS, so the fallback never ran and the answering model
-# was told there was no image. These mock ollama.chat itself, so the real reply parsing is exercised.
+# was told there was no image. These mock the Ollama CLIENT itself, so the real reply parsing is exercised.
+# (v1.0.0.338: vision calls ollama.Client(host=<configured>, headers=<bearer>).chat, not the module-level
+# ollama.chat, which used the library's default host and no key; the seam moved with it, the assertions did not.)
 # ---------------------------------------------------------------------------------------------------
 import json as _json
 import user_tools.image_to_text as _itt
@@ -88,13 +90,24 @@ def _chat_replies(replies, calls):
     return fake_chat
 
 
+CLIENTS = []   # (host, headers) each vision call was made with
+
+
 def _run_with_chat(tool, replies, calls):
-    orig = _itt.ollama.chat
-    _itt.ollama.chat = _chat_replies(replies, calls)
+    fake_chat = _chat_replies(replies, calls)
+
+    class FakeClient:
+        def __init__(self, host=None, headers=None, **kw):
+            CLIENTS.append((host, headers))
+
+        def chat(self, model, messages, **kw):
+            return fake_chat(model, messages, **kw)
+    orig = _itt.ollama.Client
+    _itt.ollama.Client = FakeClient
     try:
         return tool.get_image_processing_results({"prompt": "x", "images": [_TINY_JPEG_B64]})
     finally:
-        _itt.ollama.chat = orig
+        _itt.ollama.Client = orig
 
 
 def test_blind_primary_reply_triggers_fallback():

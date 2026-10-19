@@ -66,7 +66,18 @@ class OllamaProvider(LLMProvider):
         """
         super().__init__(config)
         self.base_url = config.get('base_url', 'http://127.0.0.1:11434')
+        # A configured api_key is sent as a bearer token. ollama.com (Ollama cloud) requires it; the local daemon
+        # ignores the header (its config carries the placeholder "ollama"). NewX docs/DESIGN_ai_service_admin.md §3:
+        # Ollama 0.40.6's local daemon does NOT use a key for cloud models, so a cloud leg points base_url at
+        # https://ollama.com with api_key ${OLLAMA_API_KEY}.
+        self.api_key = config.get('api_key') or ''
         self.session = None
+
+    def _headers(self) -> Dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
         
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
@@ -121,7 +132,7 @@ class OllamaProvider(LLMProvider):
             async with session.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
-                headers={"Content-Type": "application/json"}
+                headers=self._headers()
             ) as response:
 
                 if response.status != 200:
@@ -259,7 +270,7 @@ Remember: Always include a valid function name that matches available tools exac
             async with session.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                headers={"Content-Type": "application/json"}
+                headers=self._headers()
             ) as response:
                 
                 if response.status != 200:
@@ -306,7 +317,7 @@ Remember: Always include a valid function name that matches available tools exac
         """
         try:
             session = await self._get_session()
-            async with session.get(f"{self.base_url}/api/tags") as response:
+            async with session.get(f"{self.base_url}/api/tags", headers=self._headers()) as response:
                 return response.status == 200
         except Exception as e:
             logger.error(f"❌ Ollama health check failed: {e}")
