@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.335
+# RAICA - RAG AI Context Agency v1.0.0.336
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.335-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.335)
+[![Version](https://img.shields.io/badge/version-1.0.0.336-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.336)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -99,8 +99,13 @@ pip install -r requirements.txt -c requirements.lock   # a SERVER: production's 
 pip install -r requirements-dev.txt                    # a DEVELOPMENT machine: + EasyOCR (pulls torch, ~1.1 GB)
 python fastapi_server_complete.py
 ```
+> **Configuration (v1.0.0.336):** `config/llm_config.yaml` is the INSTALLATION's file. It is created on first start
+> from `config/llm_config.defaults.yaml` (what the repository ships), is not tracked by git, and is read-only.
+> Updates migrate its structure but never change its values. See `docs/PROJECT_CONFIGURATION_DIRECTIVE.md`.
+```bash
+```
 
-## ⭐ About RAICA v1.0.0.335
+## ⭐ About RAICA v1.0.0.336
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -759,7 +764,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.335 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.336 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

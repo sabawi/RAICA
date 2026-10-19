@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 
+# FIRST, before anything reads the configuration: the site-owned config/llm_config.yaml must exist and be current
+# (created from config/llm_config.defaults.yaml when missing; structure migrations applied; values never changed —
+# utils/config_migrate.py). A release that stopped tracking the file makes `git pull` delete it on existing clones;
+# this recreates it, identical, before the first read.
+from utils.config_migrate import ensure_site_config as _ensure_site_config
+_ensure_site_config()
+
 # Import centralized version information
 from version import __version__, __release__, get_release_string
 from orchestration import policy as delivery_policy  # shared delivery policy (auth/recipient-lock/format)

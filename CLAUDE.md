@@ -180,7 +180,7 @@ tests/
 2. **NO HARDCODED FALLBACKS** - System must fail fast if config is missing
 3. **NO CONSTANTS FILES** - config/llm_constants.py is ELIMINATED from project
 4. **.env ONLY FOR SECRETS** - Email addresses, passwords, API keys, user IDs ONLY
-5. **SINGLE CONFIG FILE** - config/llm_config.yaml is the ONLY source of truth
+5. **SINGLE CONFIG FILE** - Single source of truth: each installation's `config/llm_config.yaml` (site-owned, untracked, read-only). The repository ships `config/llm_config.defaults.yaml` and structure migrations (`config/migrations/`); developers change defaults there. Updates never change a site value; a key is removed only by the release whose code stops reading it (`utils/config_migrate.py`, owner-approved 2026-10-19)
 
 ### ENFORCEMENT:
 - REJECT any code with hardcoded config values

@@ -168,8 +168,8 @@ class ModelAliasManager:
 
     def _save_llm_config(self, config: Dict[str, Any]):
         """Save LLM configuration YAML"""
-        with open(self.llm_config_file, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        from utils.config_migrate import atomic_write      # read-only site file (v1.0.0.336)
+        atomic_write(self.llm_config_file, yaml.dump(config, default_flow_style=False, sort_keys=False))
         print(f"{Colors.OKGREEN}✓ LLM config updated: {self.llm_config_file}{Colors.ENDC}")
 
     def list_aliases(self):

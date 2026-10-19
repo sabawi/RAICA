@@ -1,3 +1,7 @@
+# RAICA release DEFAULTS (v1.0.0.336+). Developers edit THIS file; each installation runs its own
+# config/llm_config.yaml (site-owned, untracked, read-only), created from this file at install and changed only by
+# the NewX admin page (AI service) or structure migrations — never by an update. utils/config_migrate.py.
+config_version: 1
 debug:
   log_requests: false
   log_timing: true

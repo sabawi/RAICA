@@ -28,6 +28,10 @@ class ConfigLoader:
         if config_file:
             self.config_file = Path(config_file)
         else:
+            # the site-owned live file (utils/config_migrate.py): exists and current before the first read, for every
+            # entry point that uses the loader (CLIs, tests, scripts) — the server also calls it first thing
+            from utils.config_migrate import ensure_site_config
+            ensure_site_config(Path(__file__).parent.parent / "config")
             # Look for config file in multiple locations
             possible_locations = [
                 Path("config/llm_config.yaml"),

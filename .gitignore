@@ -186,3 +186,8 @@ tests/data/intent_eval_results.jsonl
 /*.pdf
 .deploy_previous_sha
 logs/deploy.log
+
+# Site-owned configuration (v1.0.0.336, utils/config_migrate.py): each installation's live file and its backups
+config/llm_config.yaml
+config/llm_config.yaml.v*.bak
+config/.llm_config.yaml.*

@@ -65,7 +65,11 @@ QWEN_API_KEY="your_qwen_key_here"
 
 ### **RULE 3: CONFIGURATION FILE ARCHITECTURE**
 ```
-📁 SINGLE SOURCE OF TRUTH: config/llm_config.yaml
+📁 SINGLE SOURCE OF TRUTH: each installation's config/llm_config.yaml
+     (site-owned, untracked, read-only — owner-approved 2026-10-19, v1.0.0.336)
+   The repository ships config/llm_config.defaults.yaml + structure migrations (config/migrations/).
+   Developers change DEFAULTS there. A site's values change only through the NewX admin page (AI service) or the
+   developer CLIs (which write through utils/config_migrate.atomic_write); never through an update.
   ├── All model configurations
   ├── All timeout values
   ├── All URL endpoints
@@ -109,8 +113,13 @@ QWEN_API_KEY="your_qwen_key_here"
    - Test failure modes (missing config)
 
 ### **For Configuration Changes:**
-1. Edit `config/llm_config.yaml`
-2. Restart server to load changes
+1. A change for EVERY installation (a release): edit `config/llm_config.defaults.yaml`. A new key reaches every site
+   automatically with its default; a move/rename/removal needs a migration `config/migrations/mNNNN_*.py`
+   (VERSION, MOVES, REMOVES) and the defaults' `config_version` bumped to it. Existing values are NEVER changed —
+   sites see a changed default as a recommendation.
+2. A change for THIS installation: the NewX admin page, or `tools/llm_config_tool.py` (the live file is read-only;
+   the tools write through the migrator's atomic writer).
+3. Restart server to load changes
 3. Verify in logs: "✅ Configuration loaded from config/llm_config.yaml"
 
 ---
@@ -214,7 +223,7 @@ grep -r "3600\|8192\|11434" --include="*.py" .
 - All fallbacks defined in llm_config.yaml
 - .env contains only secrets and user data
 - Server fails fast with clear error if config missing
-- Single source of truth: llm_config.yaml
+- Single source of truth: the installation's llm_config.yaml (release defaults: llm_config.defaults.yaml)
 
 ❌ **Configuration violations:**
 - Any hardcoded model names, URLs, timeouts

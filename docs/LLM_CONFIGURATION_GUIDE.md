@@ -36,6 +36,12 @@ User Request → Tool Calling LLM (OpenAI) → Multi-Tool Execution → Primary 
 
 The configuration file is the **single source of truth** for all LLM behavior. Changes take effect on server restart.
 
+> **Since v1.0.0.336 the live file is site-owned** (untracked, read-only, `utils/config_migrate.py`). The repository
+> ships `config/llm_config.defaults.yaml`. The live file is created from it on first start and migrated on later
+> starts. Migrations only add or move keys; they never change a value. The example below shows the defaults'
+> structure. Edit a site's values on the NewX admin page or with `tools/llm_config_tool.py`; edit the DEFAULTS
+> for a release.
+
 ```yaml
 # =============================================================================
 # LLM Configuration File - Current Production Configuration

@@ -339,9 +339,9 @@ class LLMConfigTool:
 
 """
         
-        with open(self.config_file, 'w') as f:
-            f.write(config_header)
-            yaml.dump(config, f, default_flow_style=False, indent=2, sort_keys=False)
+        # the site-owned file is read-only: write through the same atomic writer as the migrator (v1.0.0.336)
+        from utils.config_migrate import atomic_write
+        atomic_write(self.config_file, config_header + yaml.dump(config, default_flow_style=False, indent=2, sort_keys=False))
         
         print(f"✅ Configuration saved to {self.config_file}")
     
@@ -718,8 +718,8 @@ class LLMConfigTool:
                 }
         
         # Save updated config
-        with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        from utils.config_migrate import atomic_write      # read-only site file (v1.0.0.336)
+        atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
     def configure_optimization(self):
         """Interactive optimization settings configuration"""
@@ -850,8 +850,8 @@ class LLMConfigTool:
             config['optimization']['detailed_logging'] = detailed_logging
         
         # Save updated config
-        with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        from utils.config_migrate import atomic_write      # read-only site file (v1.0.0.336)
+        atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False))
     
     def configure_arbitrator(self):
         """Configure arbitrator settings for task validation and retry logic"""
@@ -1008,8 +1008,8 @@ class LLMConfigTool:
             config['arbitrator']['config']['model'] = model
         
         # Save updated config
-        with open(config_path, 'w', encoding='utf-8') as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        from utils.config_migrate import atomic_write      # read-only site file (v1.0.0.336)
+        atomic_write(config_path, yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False))
     
     def display_arbitrator_info(self):
         """Display information about arbitrator system"""
