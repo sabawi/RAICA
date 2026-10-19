@@ -150,11 +150,33 @@ if [ "$MODE" = dryrun ]; then
     ylw "DRY RUN — nothing changed."; exit 0
 fi
 
+# move_tree TARGET — move the CURRENT BRANCH to TARGET, in either direction, and PROVE it got there.
+# Until v1.0.0.337 the apply step did a detached checkout of the target and then checked the branch out again and
+# fast-forwarded: for a rollback (or --to an older commit) the branch tip is the NEWER commit, so it landed back where
+# it started and still printed "✓ DEPLOYED" (found 2026-10-19 by the NewX installer's rollback test; present since
+# v1.0.0.323). Forward = fast-forward; backward = reset --hard (safe: a dirty tree was refused above). Crossing back
+# over v1.0.0.336, git replaces the site-owned config/llm_config.yaml with the old tracked file — a copy is kept first.
+move_tree() {
+    local target="$1"
+    if git merge-base --is-ancestor HEAD "$target" 2>/dev/null; then
+        git merge --ff-only --quiet "$target" || return 1
+    else
+        if [ -f config/llm_config.yaml ] && ! git ls-files --error-unmatch config/llm_config.yaml >/dev/null 2>&1 \
+           && git cat-file -e "$target:config/llm_config.yaml" 2>/dev/null; then
+            local keep="config/llm_config.yaml.site-before-rollback-$(date +%Y%m%d%H%M%S)"
+            cp -p config/llm_config.yaml "$keep"
+            ylw "the target tracks config/llm_config.yaml: the site's file is kept as $keep (re-apply its values after a later upgrade)"
+        fi
+        git reset --hard --quiet "$target" || return 1
+    fi
+    [ "$(git rev-parse HEAD)" = "$(git rev-parse "$target^{commit}")" ] || {
+        red "✗ the tree is at $(git rev-parse --short HEAD), not at $(git rev-parse --short "$target")"; return 1; }
+}
+
 hdr "apply"
 echo "$PREV_SHA" > "$STATE_FILE"     # recorded BEFORE anything changes
-git checkout --quiet "$TARGET_SHA" 2>/dev/null || git merge --ff-only --quiet "$TARGET_SHA" || {
+move_tree "$TARGET_SHA" || {
     red "✗ could not move to $TARGET_SHA — service untouched"; record "FAILED checkout target=$TARGET_SHA"; exit 1; }
-git checkout --quiet "$BRANCH" 2>/dev/null && git merge --ff-only --quiet "$TARGET_SHA" 2>/dev/null
 CHANGE_EPOCH=$(date +%s)
 NEW_VERSION=$(grep -m1 -E '^VERSION' version.py | cut -d'"' -f2)
 info "tree now at $(git rev-parse --short HEAD)  version.py=$NEW_VERSION"
@@ -173,7 +195,7 @@ fi
 
 red "✗ DEPLOY FAILED — rolling back to $(git rev-parse --short "$PREV_SHA")"
 record "FAILED deploy target=$TARGET_SHA — rolling back to $PREV_SHA"
-git merge --ff-only --quiet "$PREV_SHA" 2>/dev/null || git reset --hard --quiet "$PREV_SHA"
+move_tree "$PREV_SHA" || red "✗ could not move the tree back to $PREV_SHA — investigate now"
 RB_EPOCH=$(date +%s); RB_OLD=$(main_pid)
 restart_service
 if verify_running "$RB_OLD" "$RB_EPOCH"; then
