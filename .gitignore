@@ -190,4 +190,7 @@ logs/deploy.log
 # Site-owned configuration (v1.0.0.336, utils/config_migrate.py): each installation's live file and its backups
 config/llm_config.yaml
 config/llm_config.yaml.v*.bak
+# LLM admin API state (utils/llm_admin.py): the change being verified and the last outcome — per installation
+config/.llm_admin_pending.json
+config/.llm_admin_last.json
 config/.llm_config.yaml.*

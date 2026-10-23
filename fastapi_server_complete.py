@@ -4,6 +4,10 @@
 # (created from config/llm_config.defaults.yaml when missing; structure migrations applied; values never changed —
 # utils/config_migrate.py). A release that stopped tracking the file makes `git pull` delete it on existing clones;
 # this recreates it, identical, before the first read.
+# Before THAT: a change made through the LLM admin API (/admin/llm/*) that the previous start did not confirm (it
+# crashed, or stopped before its self-test) is rolled back here, before any code reads the file (utils/llm_admin.py).
+from utils.llm_admin import pending_on_start as _llm_admin_pending_on_start
+_llm_admin_pending_on_start()
 from utils.config_migrate import ensure_site_config as _ensure_site_config
 _ensure_site_config()
 
@@ -2753,6 +2757,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Ollama service not available: {e}")
     
+    # LLM admin API: a change made just before this start is tested once now; kept, or rolled back + restarted.
+    try:
+        from utils.llm_admin import verify_after_start as _llm_admin_verify
+        asyncio.create_task(_llm_admin_verify())
+    except Exception as e:
+        logger.error(f"LLM admin change verification could not start: {e}")
+
     # Initialize document interrogator with startup and background scanning
     try:
         from document_interrogator import get_document_interrogator
@@ -13380,6 +13391,59 @@ async def llm_admin_test(request: Request):
                                         provider=body.get('provider') or None)
     except LookupError as e:
         return JSONResponse(status_code=404, content={"error": str(e)})
+
+
+@app.get("/admin/llm/change")
+async def llm_admin_change_status(request: Request):
+    """The change being verified (if any) and the outcome of the last one: confirmed, or restored and why."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    return llm_admin.change_status()
+
+
+@app.put("/admin/llm/legs")
+async def llm_admin_change_leg(request: Request):
+    """Change one leg: {path, model?, provider?, settings?}. Validated through RAICA's loader, written atomically with a
+    backup, then RAICA restarts, tests the leg once, and keeps the change or restores the previous file by itself."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get('path'), str):
+            raise llm_admin.ChangeError('body: {path, model?, provider?, settings?}')
+        done = llm_admin.change_leg(body['path'], model=body.get('model'), provider=body.get('provider'),
+                                    settings=body.get('settings'))
+    except llm_admin.ChangeBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+    except llm_admin.ChangeError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ValueError:  # the body is not JSON
+        return JSONResponse(status_code=400, content={"error": "body must be JSON"})
+    return JSONResponse(status_code=202, content={"changed": done, **llm_admin.restart()})
+
+
+@app.put("/admin/llm/secrets/{name}")
+async def llm_admin_set_secret(name: str, request: Request):
+    """Set one key in RAICA's .env: {value}. Only a name the config refers to as ${NAME}. Restart + self-test as for a
+    leg. The value is never echoed (last 4 characters only)."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    try:
+        body = await request.json()
+        done = llm_admin.set_secret(name, (body or {}).get('value') if isinstance(body, dict) else None)
+    except llm_admin.ChangeBusy as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
+    except llm_admin.ChangeError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except ValueError:  # the body is not JSON
+        return JSONResponse(status_code=400, content={"error": "body must be JSON"})
+    return JSONResponse(status_code=202, content={"changed": done, **llm_admin.restart()})
 
 
 # ==============================================================================

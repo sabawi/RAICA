@@ -290,7 +290,9 @@ For detailed parameter explanations and advanced tuning options, **refer to the 
 
 ### LLM Admin API (for the NewX admin page)
 `/admin/llm/*` lets the NewX admin page (Admin → AI service) read RAICA's legs, providers and keys (keys only as
-set / not set and the last 4 characters) and list each provider's models. It is **off unless `RAICA_ADMIN_TOKEN`
+set / not set and the last 4 characters), list each provider's models, test a leg with one real call, and change a leg or
+a key — RAICA then restarts itself (under systemd), tests the change once and keeps it or restores the previous file
+by itself (`GET /admin/llm/change` shows the outcome). It is **off unless `RAICA_ADMIN_TOKEN`
 (24+ characters) is set in RAICA's `.env`**; every call must send it as `X-RAICA-Admin-Token`. Reference:
 `docs/LLM_ADMIN_API.md`.
 ```bash

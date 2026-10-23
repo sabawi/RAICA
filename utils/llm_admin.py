@@ -218,3 +218,289 @@ async def test_leg(cfg, path, model=None, provider=None):
         out['error'] = '%s: %s' % (type(e).__name__, str(e)[:300])
     out['ms'] = int((time.monotonic() - t0) * 1000)
     return out
+
+
+# ── changing a leg or a key: write, restart, verify, restore (step 2c) ───────────────────────────────────────────
+# A bad change can stop RAICA from starting, and then nothing outside can ask it to restore. So the safety net is HERE:
+#   PUT -> backup + atomic write + PENDING marker -> restart (SIGTERM to itself under systemd, which starts it again)
+#   start #1 -> pending_on_start(): attempts 1, run with the change -> verify_after_start(): test the changed leg once
+#            -> ok: confirmed (marker removed)      -> fail: restore the backup, restart again
+#   a start that finds attempts already >= 1 (start #1 crashed or never verified) -> restore BEFORE the config is read.
+PENDING = CONFIG_DIR / '.llm_admin_pending.json'
+LAST = CONFIG_DIR / '.llm_admin_last.json'
+ENV_FILE = CONFIG_DIR.parent / '.env'
+_SAFE_SECRET = re.compile(r'^[A-Za-z0-9._~:+/=@-]{8,512}$')   # parsed identically by python-dotenv and systemd
+_VALID_NAME = re.compile(r'^[A-Z][A-Z0-9_]{1,63}$')
+
+
+class ChangeError(ValueError):
+    pass
+
+
+class ChangeBusy(ChangeError):
+    """Another change is still being verified (HTTP 409)."""
+
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _read_json(p):
+    import json
+    try:
+        return json.loads(Path(p).read_text())
+    except Exception:                                   # noqa: BLE001
+        return None
+
+
+def _write_json(p, obj, mode=0o600):
+    import json
+    from utils.config_migrate import atomic_write
+    atomic_write(p, json.dumps(obj, indent=1, default=str), mode=mode)
+
+
+def change_status():
+    return {'pending': _read_json(PENDING), 'last': _read_json(LAST)}
+
+
+def _same_type(old, new):
+    if isinstance(old, bool) or isinstance(new, bool):
+        return isinstance(old, bool) and isinstance(new, bool)
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return True
+    return isinstance(old, str) and isinstance(new, str)
+
+
+def apply_leg_change(cfg, path, model=None, provider=None, settings=None):
+    """A copy of `cfg` with the leg changed. Rules (no list of legs or keys in code): the leg must be discovered; a
+    setting must ALREADY exist on the leg as a scalar and keep its type; nothing that is or would become a ${SECRET}
+    reference is written here (keys go through set_secret); the provider can change only on a leg that names its own,
+    and must exist under llm.providers."""
+    import copy
+    leg = find_leg(cfg, path)
+    if leg is None:
+        raise ChangeError('no leg %r in the site config' % path)
+    new = copy.deepcopy(cfg)
+    node = _get(new, path)
+    if model is not None:
+        if not isinstance(model, str) or not model.strip() or '${' in model:
+            raise ChangeError('model must be a non-empty name')
+        node[leg['model_key']] = model.strip()
+    if provider is not None:
+        if provider not in (_get(new, 'llm.providers') or {}):
+            raise ChangeError('no provider %r under llm.providers' % provider)
+        if leg['provider_from'] != 'leg':
+            raise ChangeError('%s uses the primary leg\'s provider; change that leg instead' % path)
+        if node.get('provider') or node.get('type'):
+            node['provider' if node.get('provider') else 'type'] = provider
+        else:
+            parent = _get(new, path.rsplit('.', 1)[0])
+            parent['type'] = provider
+    for k, v in (settings or {}).items():
+        if k in ('model', 'model_name', 'provider', 'type'):
+            raise ChangeError('%s: use the model / provider fields' % k)
+        if k not in node or isinstance(node[k], (dict, list)):
+            raise ChangeError('%s is not a setting of %s (only existing settings can be changed)' % (k, path))
+        if isinstance(node[k], str) and '${' in node[k]:
+            raise ChangeError('%s refers to a secret; set the key with PUT /admin/llm/secrets/{NAME}' % k)
+        if isinstance(v, (dict, list)) or v is None or not _same_type(node[k], v):
+            raise ChangeError('%s must stay a %s' % (k, type(node[k]).__name__))
+        if isinstance(v, str) and '${' in v:
+            raise ChangeError('%s: a value may not contain ${' % k)
+        node[k] = v
+    return new
+
+
+def validate(new_cfg):
+    """The proposed file must load through RAICA's own loader and still show the changed legs."""
+    import tempfile
+    from utils.config_loader import ConfigLoader
+    from utils.config_migrate import _dump
+    fd, tmp = tempfile.mkstemp(prefix='.llm_config.proposed.', suffix='.yaml', dir=str(CONFIG_DIR))
+    try:
+        with os.fdopen(fd, 'w') as fh:
+            fh.write(_dump(new_cfg))
+        loaded = ConfigLoader(tmp).load_config(reload=True)
+        if not isinstance(loaded, dict) or 'llm' not in loaded:
+            raise ChangeError('the proposed file does not load as a configuration')
+    finally:
+        os.unlink(tmp)
+
+
+def _begin(kind, detail, test_paths, write):
+    """Back up, write, record the pending change. `write()` performs the atomic write(s)."""
+    if PENDING.exists():
+        raise ChangeBusy('another change is still being verified; see GET /admin/llm/change')
+    from datetime import datetime
+    from utils.config_migrate import atomic_write
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backups = {}
+    bak = LIVE.with_name('llm_config.yaml.admin-%s.bak' % stamp)
+    atomic_write(bak, LIVE.read_text(), mode=0o400)
+    backups[str(LIVE)] = str(bak)
+    if kind == 'secret' and ENV_FILE.exists():
+        ebak = ENV_FILE.with_name('.env.admin-%s.bak' % stamp)
+        atomic_write(ebak, ENV_FILE.read_text(), mode=0o600)
+        backups[str(ENV_FILE)] = str(ebak)
+    _write_json(PENDING, {'kind': kind, 'detail': detail, 'test_paths': test_paths, 'backups': backups,
+                          'at': _now(), 'attempts': 0})
+    try:
+        write()
+    except Exception:
+        _restore(backups)
+        PENDING.unlink(missing_ok=True)
+        raise
+    return backups
+
+
+def _restore(backups):
+    from utils.config_migrate import atomic_write
+    for target, bak in backups.items():
+        mode = 0o444 if Path(target) == LIVE else 0o600
+        atomic_write(target, Path(bak).read_text(), mode=mode)
+
+
+def change_leg(path, model=None, provider=None, settings=None):
+    cfg = raw_config()
+    new = apply_leg_change(cfg, path, model=model, provider=provider, settings=settings)
+    validate(new)
+    from utils.config_migrate import atomic_write, _dump
+    detail = {'path': path, 'model': model, 'provider': provider, 'settings': settings or {}}
+    _begin('leg', detail, [path], lambda: atomic_write(LIVE, _dump(new)))
+    return detail
+
+
+def env_line_value(value):
+    if not isinstance(value, str) or not _SAFE_SECRET.match(value):
+        raise ChangeError('a key may only contain letters, digits and ._~:+/=@- (8 to 512 characters): it is written '
+                          'unquoted so that python-dotenv and systemd read the same value')
+    return value
+
+
+def set_secret(name, value):
+    """Write NAME=value into RAICA's .env (mode 600). Only a name the site config already refers to as ${NAME}."""
+    cfg = raw_config()
+    if not _VALID_NAME.match(name or ''):
+        raise ChangeError('not a valid variable name')
+    used = [l['path'] for l in legs(cfg) if any(s['name'] == name for s in l['secrets'])]
+    if not used and not any(name in refs(b) for b in (_get(cfg, 'llm.providers') or {}).values()):
+        raise ChangeError('%s is not referred to by the site config (no ${%s} anywhere)' % (name, name))
+    line = '%s=%s' % (name, env_line_value(value))
+    from utils.config_migrate import atomic_write
+
+    def write():
+        lines = ENV_FILE.read_text().splitlines() if ENV_FILE.exists() else []
+        out, done = [], False
+        for l in lines:
+            if re.match(r'^\s*(export\s+)?%s\s*=' % re.escape(name), l):
+                if not done:
+                    out.append(line); done = True
+                continue
+            out.append(l)
+        if not done:
+            out.append(line)
+        atomic_write(ENV_FILE, '\n'.join(out) + '\n', mode=0o600)
+    _begin('secret', {'name': name, 'last4': value[-4:]}, used[:1], write)
+    return {'name': name, 'used_by': used, 'last4': value[-4:]}
+
+
+def _systemctl_show(unit, user):
+    import subprocess
+    cmd = ['systemctl'] + (['--user'] if user else []) + ['show', unit, '-p', 'MainPID', '-p', 'Restart']
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
+    return dict(l.split('=', 1) for l in out.splitlines() if '=' in l)
+
+
+def _own_cgroup():
+    return Path('/proc/self/cgroup').read_text().strip().splitlines()[-1].split(':', 2)[-1]
+
+
+def supervised():
+    """True only when systemd will start RAICA again after it exits: this process is the MainPID of the .service unit
+    whose cgroup it runs in, and that unit has Restart=always (a SIGTERM ends RAICA cleanly; only `always` restarts a
+    clean exit). INVOCATION_ID is NOT evidence: a shell started by systemd passes it to everything it launches
+    (found 2026-10-23: a hand-started RAICA sent itself SIGTERM and stayed down)."""
+    try:
+        cg = _own_cgroup()
+        unit = cg.rstrip('/').rsplit('/', 1)[-1]
+        if not unit.endswith('.service'):
+            return False
+        props = _systemctl_show(unit, user='/user.slice/' in cg)
+        return props.get('MainPID') == str(os.getpid()) and props.get('Restart') == 'always'
+    except Exception:                                   # noqa: BLE001 — unknown means "not supervised": never stop
+        return False
+
+
+def restart():
+    """Restart RAICA through its supervisor: SIGTERM to this (main) process under systemd (Restart=always starts it
+    again — the path scripts/deploy.sh uses). Without a supervisor, say so: stopping would leave RAICA down."""
+    if not supervised():
+        return {'restarting': False, 'note': 'no supervisor (systemd) detected: restart RAICA yourself '
+                                             '(./stop_complete.sh && ./start_complete.sh); the change is verified at '
+                                             'that start'}
+    import asyncio
+    import signal
+    asyncio.get_event_loop().call_later(1.0, os.kill, os.getpid(), signal.SIGTERM)
+    return {'restarting': True, 'note': 'RAICA restarts in about a second; it then tests the change and keeps it, '
+                                        'or restores the previous file and restarts again'}
+
+
+def pending_on_start():
+    """FIRST thing at start (before the config is read). A start that finds a pending change it already tried once
+    (the previous start crashed or never confirmed it) restores the backup. Never raises."""
+    import logging
+    log = logging.getLogger(__name__)
+    # Once per PROCESS: uvicorn.run("fastapi_server_complete:app") imports the server module a second time, so its
+    # top-level code runs twice in one start (found 2026-10-23: the second run counted a second attempt and restored a
+    # change that had not failed). The process environment is shared by both imports.
+    if os.environ.get('_RAICA_LLM_ADMIN_START') == str(os.getpid()):
+        return 'already checked'
+    os.environ['_RAICA_LLM_ADMIN_START'] = str(os.getpid())
+    try:
+        p = _read_json(PENDING)
+        if not p:
+            return None
+        if int(p.get('attempts', 0)) >= 1:
+            _restore(p.get('backups') or {})
+            PENDING.unlink(missing_ok=True)
+            _write_json(LAST, {'result': 'restored', 'why': 'RAICA did not confirm the change on its first start '
+                               '(it crashed or stopped before its self-test)', 'change': p, 'at': _now()})
+            log.error('↩ LLM admin: the pending change was NOT confirmed on its first start — previous files restored '
+                      '(%s)', p.get('detail'))
+            return 'restored'
+        p['attempts'] = int(p.get('attempts', 0)) + 1
+        _write_json(PENDING, p)
+        return 'trying'
+    except Exception as e:                              # noqa: BLE001
+        log.error('LLM admin: pending-change check failed: %s', e)
+        return None
+
+
+async def verify_after_start():
+    """Background, once the server has started with a pending change: test the changed leg once. Pass -> confirmed;
+    fail -> restore the previous files and restart (or ask for a restart without a supervisor)."""
+    import logging
+    log = logging.getLogger(__name__)
+    p = _read_json(PENDING)
+    if not p:
+        return None
+    results = []
+    try:
+        cfg = raw_config()
+        for path in p.get('test_paths') or []:
+            results.append(await test_leg(cfg, path))
+    except Exception as e:                              # noqa: BLE001
+        results.append({'ok': False, 'error': '%s: %s' % (type(e).__name__, e)})
+    if all(r.get('ok') for r in results):
+        PENDING.unlink(missing_ok=True)
+        _write_json(LAST, {'result': 'confirmed', 'tests': results, 'change': p, 'at': _now()})
+        log.warning('✅ LLM admin: change confirmed (%s)', p.get('detail'))
+        return 'confirmed'
+    _restore(p.get('backups') or {})
+    PENDING.unlink(missing_ok=True)
+    _write_json(LAST, {'result': 'restored', 'why': 'the self-test after the restart failed', 'tests': results,
+                       'change': p, 'at': _now()})
+    log.error('↩ LLM admin: the change FAILED its self-test — previous files restored, restarting (%s)', results)
+    restart()
+    return 'restored'

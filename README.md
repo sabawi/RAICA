@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.341
+# RAICA - RAG AI Context Agency v1.0.0.342
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.341-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.341)
+[![Version](https://img.shields.io/badge/version-1.0.0.342-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.342)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -105,7 +105,7 @@ python fastapi_server_complete.py
 ```bash
 ```
 
-## ⭐ About RAICA v1.0.0.341
+## ⭐ About RAICA v1.0.0.342
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -284,10 +284,11 @@ curl -X POST http://localhost:5000/v1/embeddings \
 # -> {"object":"list","model":"text-embedding-3-small","data":[{"index":0,"embedding":[...1024 floats]},...],"usage":{...}}
 ```
 
-**LLM admin API (`/admin/llm/*`, v1.0.0.341):** for the NewX admin page — RAICA's legs (discovered from the config,
+**LLM admin API (`/admin/llm/*`, v1.0.0.340+):** for the NewX admin page — RAICA's legs (discovered from the config,
 not listed in code), providers, keys (only set / not set and the last 4 characters) and each provider's own model
-list, and (v1.0.0.341) one real test call on a leg's current or proposed model. Off unless `RAICA_ADMIN_TOKEN` is
-set in `.env`; every call sends it as `X-RAICA-Admin-Token`. See
+list (v1.0.0.340), one real test call on a leg's current or proposed model (v1.0.0.341), and changing a leg or a key
+(v1.0.0.342) — RAICA restarts itself under systemd, tests the change once, and keeps it or restores the previous file
+by itself. Off unless `RAICA_ADMIN_TOKEN` is set in `.env`; every call sends it as `X-RAICA-Admin-Token`. See
 `docs/LLM_ADMIN_API.md`.
 
 **Customizing News Sources:**
@@ -772,7 +773,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.341 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.342 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 

@@ -181,6 +181,26 @@ def test_the_server_migrates_before_anything_reads_the_config():
     `git pull` delete it on existing clones)."""
     tree = ast.parse((REPO / 'fastapi_server_complete.py').read_text())
     body = [n for n in tree.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))]
+    # One step may come first (v1.0.0.342): the LLM admin API's restore of an unconfirmed change — it must run before
+    # the migration, which would otherwise crash on such a file at every start. It reads no config at import (below).
+    if isinstance(body[0], ast.ImportFrom) and body[0].module == 'utils.llm_admin':
+        assert isinstance(body[1], ast.Expr) and body[1].value.func.id == '_llm_admin_pending_on_start'
+        body = body[2:]
     assert isinstance(body[0], ast.ImportFrom) and body[0].module == 'utils.config_migrate'
     assert isinstance(body[1], ast.Expr) and isinstance(body[1].value, ast.Call) \
         and body[1].value.func.id == '_ensure_site_config'
+
+
+def test_the_step_before_the_migration_imports_no_project_code():
+    """utils/llm_admin.py runs before the config exists on a fresh clone: its module-level imports must stay standard
+    library + yaml (project modules are imported inside the functions that need them)."""
+    import sys
+    tree = ast.parse((REPO / 'utils' / 'llm_admin.py').read_text())
+    mods = set()
+    for n in tree.body:
+        if isinstance(n, ast.Import):
+            mods |= {a.name.split('.')[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom):
+            mods.add((n.module or '').split('.')[0])
+    allowed = set(sys.stdlib_module_names) | {'yaml'}
+    assert mods <= allowed, mods - allowed
