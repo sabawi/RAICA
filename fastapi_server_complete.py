@@ -13360,6 +13360,28 @@ async def llm_admin_provider_models(provider: str, request: Request):
             "note": "listed by the provider; a listed model is not proven to work until it is tested"}
 
 
+@app.post("/admin/llm/test")
+async def llm_admin_test(request: Request):
+    """ONE real call (it costs one model call) on a leg's current model, or on a proposed {model, provider} for it.
+    Body: {"path": "<leg path>", "model": optional, "provider": optional}. A provider failure is the result (ok:false),
+    not an HTTP error."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse(status_code=400, content={"error": "body must be JSON: {path, model?, provider?}"})
+    if not isinstance(body, dict) or not isinstance(body.get('path'), str):
+        return JSONResponse(status_code=400, content={"error": "path (a leg path from GET /admin/llm/config) is required"})
+    try:
+        return await llm_admin.test_leg(llm_admin.raw_config(), body['path'], model=body.get('model') or None,
+                                        provider=body.get('provider') or None)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+
+
 # ==============================================================================
 # LOGGING CONTROL ENDPOINTS
 # ==============================================================================

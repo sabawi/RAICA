@@ -1146,6 +1146,11 @@ admin_ui:
     tool_calling.gather_gate: Gather gate
     document_interrogator.embedding: Embeddings (documents, /v1/embeddings)
     embeddings_api.local: Embeddings (on-box)
+  embedding_legs:          # tested by embedding one word (and checking the vector size), not by a chat prompt
+  - document_interrogator.embedding
+  - embeddings_api.local
+  test_prompt: Reply with the single word OK.   # POST /admin/llm/test sends this ONE tiny prompt (1 call)
+  test_max_tokens: 16                            # and caps its answer at this many tokens
 # Models the admin OFFERS to bots (owner 2026-10-19/23): [{name, provider, model}]. A bot's request naming one of
 # these runs that model for the ANSWER only; a name not on the list is refused with a clear error.
 offered_models: []

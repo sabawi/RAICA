@@ -147,3 +147,74 @@ async def list_models(cfg, provider):
         s = getattr(p, 'session', None)
         if s is not None and not s.closed:
             await s.close()
+
+
+# ── testing a leg: ONE real call (step 2b) ───────────────────────────────────────────────────────────────────────
+def find_leg(cfg, path):
+    for l in legs(cfg):
+        if l['path'] == path:
+            return l
+    return None
+
+
+async def _close(p):
+    s = getattr(p, 'session', None)
+    if s is not None and not getattr(s, 'closed', True):
+        await s.close()
+
+
+async def test_leg(cfg, path, model=None, provider=None):
+    """One real call on a leg's current model, or on a proposed model/provider for it. Returns
+    {ok, kind, provider, model, ms, reply | dims, error}. Never raises for a provider failure: the error is the result.
+    Chat legs get admin_ui.test_prompt (config); legs listed in admin_ui.embedding_legs (config) embed one word through
+    RAICA's own embeddings code, which also checks the vector dimension the leg is configured for."""
+    import time
+    leg = find_leg(cfg, path)
+    if leg is None:
+        raise LookupError('no leg %r in the site config' % path)
+    prov = provider or leg['provider']
+    if prov not in (_get(cfg, 'llm.providers') or {}):
+        raise LookupError('no provider %r under llm.providers' % prov)
+    mdl = model or leg['model']
+    if not mdl:
+        raise LookupError('leg %r has no model set; name one to test' % path)
+    ui = cfg.get('admin_ui') or {}
+    prompt, cap = ui.get('test_prompt'), ui.get('test_max_tokens')
+    if not prompt or not isinstance(cap, int) or cap < 1:
+        raise LookupError('admin_ui.test_prompt / admin_ui.test_max_tokens are not set in the site config')
+    node = _get(cfg, path) or {}
+    out = {'path': path, 'provider': prov, 'model': mdl, 'ok': False}
+    t0 = time.monotonic()
+    try:
+        if path in (ui.get('embedding_legs') or []):
+            from utils.embeddings_api import embed_texts
+            svc = node.get('service') or {}
+            same = prov == leg['provider']
+            ec = {'provider': prov, 'model': mdl, 'dimension': int(node.get('dimension')),
+                  'base_url': os.path.expandvars(str((svc.get('base_url') if same else None)
+                                                     or provider_config(cfg, prov).get('base_url'))).rstrip('/'),
+                  'api_key': os.path.expandvars(str((svc.get('api_key') if same else None)
+                                                    or provider_config(cfg, prov).get('api_key') or '')),
+                  'timeout': float(node['timeout']['embedding_request'])}   # config, no fallback (RAICA rule)
+            vectors, tokens = await embed_texts([str(prompt)], ec)
+            out.update(ok=True, kind='embedding', dims=len(vectors[0]) if vectors else 0, tokens=tokens)
+        else:
+            from llm_providers.factory import LLMProviderFactory
+            own = _scalars(node) if prov == leg['provider'] else {}
+            p = LLMProviderFactory.create_provider(prov, provider_config(cfg, prov, own))
+            text = ''
+            try:
+                async for chunk in p.generate_stream(str(prompt), mdl, temperature=0, max_tokens=cap, num_predict=cap,
+                                                     stream=True):
+                    text += chunk or ''
+                    if len(text) > 400:
+                        break
+            finally:
+                await _close(p)
+            if not text.strip():
+                raise RuntimeError('the model answered with no text')
+            out.update(ok=True, kind='chat', reply=' '.join(text.split())[:160])
+    except Exception as e:                                   # noqa: BLE001 — the provider's error IS the result
+        out['error'] = '%s: %s' % (type(e).__name__, str(e)[:300])
+    out['ms'] = int((time.monotonic() - t0) * 1000)
+    return out
