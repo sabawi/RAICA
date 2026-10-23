@@ -30,6 +30,11 @@ class LLMProvider(ABC):
                 safe_config[key] = "***MASKED***"
         return safe_config
     
+    async def list_models(self) -> List[str]:
+        """The provider's OWN list of model names (LLM admin API, utils/llm_admin.py). Raises on any failure — an
+        empty or guessed list would read as "no models" and hide the real error."""
+        raise NotImplementedError('%s cannot list its models' % self.name)
+
     @abstractmethod
     async def generate_stream(self, prompt: str, model: str, **kwargs) -> AsyncIterator[str]:
         """Generate streaming response from LLM

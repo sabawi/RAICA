@@ -288,6 +288,16 @@ llm:
 
 For detailed parameter explanations and advanced tuning options, **refer to the comprehensive LLM Configuration Guide**.
 
+### LLM Admin API (for the NewX admin page)
+`/admin/llm/*` lets the NewX admin page (Admin → AI service) read RAICA's legs, providers and keys (keys only as
+set / not set and the last 4 characters) and list each provider's models. It is **off unless `RAICA_ADMIN_TOKEN`
+(24+ characters) is set in RAICA's `.env`**; every call must send it as `X-RAICA-Admin-Token`. Reference:
+`docs/LLM_ADMIN_API.md`.
+```bash
+curl -H "X-RAICA-Admin-Token: $RAICA_ADMIN_TOKEN" http://localhost:5000/admin/llm/config
+curl -H "X-RAICA-Admin-Token: $RAICA_ADMIN_TOKEN" http://localhost:5000/admin/llm/providers/ollama/models
+```
+
 ### Model Management CLI Tool
 
 **For comprehensive CLI documentation, see:** [`docs/CLI_MODEL_MANAGEMENT.md`](../CLI_MODEL_MANAGEMENT.md)

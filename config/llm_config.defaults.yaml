@@ -1,7 +1,7 @@
 # RAICA release DEFAULTS (v1.0.0.336+). Developers edit THIS file; each installation runs its own
 # config/llm_config.yaml (site-owned, untracked, read-only), created from this file at install and changed only by
 # the NewX admin page (AI service) or structure migrations — never by an update. utils/config_migrate.py.
-config_version: 1
+config_version: 2
 debug:
   log_requests: false
   log_timing: true
@@ -1128,3 +1128,24 @@ user_tools:
       - /var/tmp
       - /opt
       - /usr/local
+# LLM admin API (/admin/llm/*, utils/llm_admin.py; NewX docs/DESIGN_ai_service_admin.md §6), config_version 2.
+# Legs are DISCOVERED (every node with a model / model_name); these are the catalogues that are not legs, and the
+# labels the NewX admin page shows. A new leg in a future release appears with no code change.
+admin_ui:
+  leg_exclude:
+  - code_generation        # the code agent's model presets and per-provider defaults: a catalogue, not a leg
+  - llm.providers          # each provider's default model: a catalogue, not a leg
+  labels:
+    llm.primary.config: Answer (primary)
+    llm.tool_calling.config: Tool choice
+    arbitrator.config: Arbitrator
+    vision.config: Vision (images)
+    deep_research.engine: Deep research
+    convergence.intent_classifier: Intent classifier
+    convergence.shadow_classifier: Shadow classifier
+    tool_calling.gather_gate: Gather gate
+    document_interrogator.embedding: Embeddings (documents, /v1/embeddings)
+    embeddings_api.local: Embeddings (on-box)
+# Models the admin OFFERS to bots (owner 2026-10-19/23): [{name, provider, model}]. A bot's request naming one of
+# these runs that model for the ANSWER only; a name not on the list is refused with a clear error.
+offered_models: []

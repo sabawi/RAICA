@@ -323,6 +323,15 @@ Remember: Always include a valid function name that matches available tools exac
             logger.error(f"❌ Ollama health check failed: {e}")
             return False
     
+    async def list_models(self) -> List[str]:
+        """Models this Ollama endpoint lists (/api/tags), with the configured key sent as for every other route."""
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/api/tags", headers=self._headers()) as response:
+            if response.status != 200:
+                raise RuntimeError(f"{self.base_url}/api/tags answered {response.status}: {(await response.text())[:200]}")
+            data = await response.json()
+        return [m.get('name') or m.get('model') for m in data.get('models', []) if m.get('name') or m.get('model')]
+
     def get_available_models(self) -> List[str]:
         """Get available Ollama models
         

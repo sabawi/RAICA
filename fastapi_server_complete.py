@@ -13321,6 +13321,46 @@ async def health_check():
     }
 
 # ==============================================================================
+# LLM ADMIN API (/admin/llm/*) — utils/llm_admin.py; NewX docs/DESIGN_ai_service_admin.md §5.
+# Every call needs X-RAICA-Admin-Token == RAICA_ADMIN_TOKEN (.env); without a configured token the API is off.
+# ==============================================================================
+
+def _llm_admin_denied(request: Request):
+    from utils import llm_admin
+    problem = llm_admin.token_problem(request.headers.get(llm_admin.TOKEN_HEADER))
+    if problem is None:
+        return None
+    return JSONResponse(status_code=problem[0], content={"error": problem[1]})
+
+
+@app.get("/admin/llm/config")
+async def llm_admin_config(request: Request):
+    """The site's legs (discovered from the config), providers and offered models; secrets only as set / last 4."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    return llm_admin.summary()
+
+
+@app.get("/admin/llm/providers/{provider}/models")
+async def llm_admin_provider_models(provider: str, request: Request):
+    """That provider's own model list. 'Listed' is not proof a model works: test it (POST /admin/llm/test)."""
+    denied = _llm_admin_denied(request)
+    if denied:
+        return denied
+    from utils import llm_admin
+    try:
+        names = await llm_admin.list_models(llm_admin.raw_config(), provider)
+    except LookupError as e:
+        return JSONResponse(status_code=404, content={"error": str(e)})
+    except Exception as e:  # noqa: BLE001 — the provider's own error, shown as it is
+        return JSONResponse(status_code=502, content={"error": "%s: %s" % (type(e).__name__, str(e)[:300])})
+    return {"provider": provider, "listed": names, "count": len(names),
+            "note": "listed by the provider; a listed model is not proven to work until it is tested"}
+
+
+# ==============================================================================
 # LOGGING CONTROL ENDPOINTS
 # ==============================================================================
 

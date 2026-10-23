@@ -438,6 +438,15 @@ class OpenAIProvider(LLMProvider):
             logger.error(f"❌ OpenAI health check failed: {e}")
             return False
     
+    async def list_models(self) -> List[str]:
+        """Models this OpenAI-compatible endpoint lists (GET /models; OpenAI, OpenRouter, DeepInfra)."""
+        session = await self._get_session()
+        async with session.get(f"{self.base_url}/models") as response:
+            if response.status != 200:
+                raise RuntimeError(f"{self.base_url}/models answered {response.status}: {(await response.text())[:200]}")
+            data = await response.json()
+        return sorted(m['id'] for m in data.get('data', []) if isinstance(m, dict) and m.get('id'))
+
     def get_available_models(self) -> List[str]:
         """Get available OpenAI models
         
