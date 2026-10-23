@@ -155,6 +155,32 @@ QWEN_API_KEY="your_qwen_api_key_here"
 - Verifies end-to-end functionality
 - Automatically cleans up test server
 
+### 9. Optional: Indexing Local Documents
+
+Indexing your own documents (PDF, Word, spreadsheets, text, images and scans) so that RAICA can search them and answer
+from them is **optional**. RAICA installs, starts and answers chat requests without it, and NewX does not need it to run.
+
+**What it needs:**
+- **An embedding API** that RAICA calls for every indexed chunk and every search: OpenAI, or an OpenAI-compatible
+  service, or a local or cloud model through Ollama or another provider. It is set in `config/llm_config.yaml` under
+  `document_interrogator.embedding` (`provider`, `model_name`, `dimension`, `service.base_url`, and `api_key` read from
+  `.env`). The shipped default is OpenAI `text-embedding-3-small` (needs `OPENAI_API_KEY`).
+- **At least one folder to index.** A fresh install indexes nothing: `watched_directories.json` (site-owned, not in
+  git) is created with an empty folder list, the startup scan logs `No directories configured for watching`, and no
+  embedding calls are made for indexing.
+
+**How to turn it on:** configure the embedding provider above, then add a folder with
+`POST /documents/index-directory` (`{"directory_path": "/path/to/docs", "recursive": true}`) or in
+`watched_directories.json`.
+
+**What is off without it:** the `document_search` tool has nothing to search. In NewX this matters for one bot:
+**HelpTips** answers only from its indexed copy of the NewX help documentation, so without an index it cannot answer.
+Everything else in NewX works.
+
+**Not the same thing:** the same `document_interrogator.embedding` provider also serves RAICA's
+`POST /v1/embeddings` endpoint, which NewX's content profiling (VTiles topic rows, Matching) calls. Turning document
+indexing off does not turn that endpoint off; whether NewX uses it is a NewX setting.
+
 ## Post-Installation
 
 ### Start the Server
