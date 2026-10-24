@@ -129,4 +129,6 @@ pointed `data` at tools that never ran or had failed, used up the gather rounds,
 **Regression prompt:** `@Ask solve \[ \frac{\partial^2u}{\partial t^2}=c^2\nabla^2u \] and plot the
 solution for a set of typical u values` — before: a chart in 1 of 3 local runs and 0 of 1 on production
 (post 8834, 2026-10-22); after: 3 of 3, no retries, ~20 s.
+v1.0.0.345: `compute` also says a plotted series must fit the 200-value return limit; the first grid had been 201
+points in 3 of 4 runs (truncated, recomputed), and was 200 in 3 of 3 after.
 

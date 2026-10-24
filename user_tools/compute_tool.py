@@ -172,7 +172,10 @@ class ComputeTool(BaseUserTool):
             "build the inputs inside each expression, one expression for the x grid and one per "
             "curve: [\"np.linspace(-5, 5, 101)\", \"np.exp(-(np.linspace(-5, 5, 101) - 1)**2)\"]. "
             "Names do not carry from one expression to the next, so each must be complete on its "
-            "own. Never point `data` at a tool that has not run, or at an output that failed. "
+            f"own. A series you will plot must have at most {_MAX_RETURNED_ELEMENTS} points — a "
+            "longer one comes back truncated and cannot be referenced — so size the grid to fit "
+            "(np.linspace(a, b, n) with n at or under that limit). Never point `data` at a tool "
+            "that has not run, or at an output that failed. "
             "Only pure-maths numpy functions are available."
         )
 
