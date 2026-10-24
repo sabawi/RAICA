@@ -1020,6 +1020,15 @@ user_tools:
     max_image_bytes: 2097152
     max_image_pixels: 4000000
     max_envelope_bytes: 9000000
+    # The model that WRITES the program (deepseek-v4-pro measured 2026-10-24: correct simulation in one call).
+    # Named explicitly: CodeGenLLMClient does not resolve code_generation.selected_model unless it is a preset key,
+    # and with no explicit provider it walks the whole fallback list (paid providers included). writer_fallback
+    # false: a bot any member can call tries ONLY this model, never the paid providers in code_generation.fallback.
+    writer_provider: ollama
+    writer_model: deepseek-v4-pro:cloud
+    writer_fallback: false
+    writer_max_tokens: 16384
+    max_attempts: 2
   sandboxed_executor:
     base_directory: null
     sandbox_workspace_name: sandbox_workspace

@@ -11,6 +11,35 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-109 — The gather gate's verdict never reaches the tool selector; a requested chart can run out of rounds  [P2 — OPEN]
+- **Seen:** live 2026-10-24, NewX post 9010 (solar-sail prompt): the gate said "plot_data must be run" in all 3
+  rounds; `_second_round_tool_calls` was called WITHOUT that verdict, re-checked its own figures with two more
+  `compute` calls each round, `max_rounds` ended it, no chart. Design (`RAICA_NONDR_GATHER_GATE.md` §3.1) says
+  needs_more → execute next_tools; the code drops the verdict.
+- **Tried, not shipped:** passing the verdict to the selector (patch + 2 tests kept outside the repo). Real path, 3
+  runs: chart in 1/3 vs 2/3 unchanged — no measurable effect; the model kept spending rounds on its own physics.
+- **Related:** `run_python_analysis` (1.0.0.347, off) addresses the prompts this hit (simulations), and a defect
+  that made the gate blind to tool output with a table inside larger text was fixed in `describe_reference`.
+- **Options to the owner (unanswered):** a final plot-only round when a requested chart is still missing; or 4 rounds.
+
+### SI-110 — CodeGenLLMClient ignores `code_generation.selected_model` and drops `system_prompt` on Ollama  [P2 — OPEN]
+- **Seen:** 2026-10-24, building `run_python_analysis` (which now names its model and puts its rules in the message,
+  so it is not affected).
+- **(a) Model choice:** `code_generation.selected_model: deepseek-v4-pro:cloud` is not a key of `model_presets`, so
+  `CodeGenLLMClient.__init__` takes the "not found in presets" branch and `primary_model` is `None`. `generate()`
+  with no explicit provider then walks the WHOLE `fallback.order` — first entry `ollama/gpt-oss:120b-cloud`, and it
+  includes paid `openai` / `anthropic` entries; `fallback_enabled` is not consulted on that path (only when a provider
+  is passed). Shown offline: `CodeGenLLMClient()` → `ollama None`, order `[gpt-oss:120b, deepseek-v4.1-flash, gpt-4o,
+  claude-sonnet-4…]`.
+- **(b) System prompt:** `generate(..., system_prompt=…)` accepts it but the Ollama call sends
+  `messages=[{"role": "user", "content": prompt}]` only (`agents/coding_agent/llm_client.py:653`). Proven by effect:
+  rules passed as system_prompt (save charts as PNG) were ignored by every program; moved into the message, obeyed.
+- **Why it might matter:** the coding agent and website deployer use this client. They may be running on
+  gpt-oss:120b, not the configured deepseek-v4-pro, with their system prompts silently dropped — and could reach paid
+  providers when Ollama fails.
+- **Evidence still needed:** which model the coding agent's calls actually reach (its log line `🤖 LLM CALL: Trying
+  provider=…, model=…`), and whether the other providers' paths send the system prompt.
+
 ### SI-108 — Plotting a formula: no chart; the arbitrator's retry ran an off-whitelist tool and lost its chart  [FIXED v1.0.0.343 — deployed to live 2026-10-24; live Ask run produced its chart; retry path not yet seen live]
 - **Found** by the owner: NewX post 8834 (prod, 2026-10-22) — wave-equation "solve and plot" answered without a chart.
 - **Causes (logs, prod 21:02 and local 2026-10-23/24):** (1) `compute`/`plot_data` descriptions said "already

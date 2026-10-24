@@ -1,9 +1,7 @@
 # DESIGN — `run_python_analysis`: solve it with code when no tool fits
 
-Status: **APPROVED (owner, 2026-10-24); phase P0 BUILT locally** — `deploy/pysandbox/`, `utils/py_sandbox.py`,
-`tests/integration/test_pysandbox_redteam.py` (25 pass), `run_pysandbox_plants.py` (16/16 plants red). Not wired
-to any tool, not committed, not on live.
-Security is the first requirement; every other choice gives way to it.
+Status: **APPROVED (owner, 2026-10-24). P0 built (1.0.0.346); P1 built and verified locally (1.0.0.347):**
+`user_tools/run_python_analysis_tool.py`, OFF by default, not on Ask's whitelist, not on live. P1 results in §11.
 
 ## 1. What the owner asked for
 
@@ -170,3 +168,27 @@ and rejects anything that is not a well-formed envelope.
 3. **DECIDED (owner, 2026-10-24): Ask first;** other bots later, only if needed — each one is added to its own
    `allowed_tools` deliberately, never by default.
 4. Quota: each code run is 1–2 `deepseek-v4-pro` calls (~10 k output tokens measured) on the shared account.
+
+## 11. P1 results (local, 2026-10-24) — real path: NewX `build_context_messages` + `call_raica`, Ask's whitelist
+plus `run_python_analysis` (in memory; Ask.yaml unchanged until P3), RAICA 1.0.0.347 with the tool enabled locally.
+
+| Prompt (3 runs each) | Chart in answer | Figures vs independent result | Time |
+|---|---|---|---|
+| Soccer ball with/without drag | 3/3 | 3/3 correct (51.4 m / 90.35 m, 3.31 s / 3.93 s) | 24–70 s |
+| Rabbits and foxes (Lotka-Volterra) | 3/3 | 3/3 correct (42.80, 21.40, 83.1-month cycle) | 33–130 s |
+| Solar sail (NewX post 9010) | 3/3 | 3/3 correct for a Sun-facing sail (β 0.153, never escapes); 0/3 also covered a tilted sail | 53–130 s |
+
+Found and fixed during P1 (each a named test that fails on the earlier code):
+1. **The shared code-generation client drops `system_prompt` on Ollama** — every program called `plt.show()` and saved
+   no chart. The rules now travel in the message. (SI-110 logs the client defect itself.)
+2. **The same client does not resolve `code_generation.selected_model`** and, with no explicit provider, walks its whole
+   fallback list including PAID providers whatever `fallback_enabled` says. The tool names its provider and model
+   (`writer_provider` / `writer_model`) and turns fallback off; verified offline that only that model is tried.
+3. **The gate was blind to this tool's output.** `describe_reference` described any text containing a "table" as ONLY
+   that table — and three lines of the program's source sharing a comma count qualified — so the gate saw neither the
+   results nor the chart and re-ran the tool every round (155 s, 4 runs). A table that is a minority of the text is
+   now shown as before AND followed by the text (`_TABLE_DOMINANT_SHARE`); 370 reference/gate tests unchanged.
+
+Open (quality, not safety): the ambiguity rule did not make any run cover the tilted-sail reading; chart titles are
+written by the program before it knows the result ("Spiral Outward" over a closed orbit); two runs quoted a later of
+several equal peaks. NewX's citation guard was not part of this path and must be checked at P3 through a real post.

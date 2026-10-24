@@ -58,6 +58,13 @@ _MAX_CELLS = 200_000
 # identical to the model simply agreeing with everything, and only the REASON told them apart.
 _PROSE_PREVIEW_CHARS = 6000
 _TOTAL_PREVIEW_CHARS = 24000
+# A located table is "the output" only when it is most of the text (a fetched CSV inside lookup_website's wrapper).
+# When it is a small part of a larger text, describing ONLY the table hid everything else: a run_python_analysis
+# result (printed results + a chart marker + the program) was summarised as "table, 3 data rows" — built from a few
+# lines of the PROGRAM'S SOURCE that happened to share a comma count — so the gather gate saw no results and no chart
+# and kept asking for them (2026-10-24). Below this share the table is described exactly as before AND the whole text
+# follows as prose — nothing previously shown is dropped; mixed text gains its context.
+_TABLE_DOMINANT_SHARE = 0.5
 
 
 class ReferenceError_(ValueError):
@@ -218,15 +225,21 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
                    "Compute the figure you need inside `compute` instead.")
         return (f"=== {ref_id} === {len(_entries)} computed series\n"
                 + "\n".join(_lines) + "\n" + _syntax)
+    table_note = ""
     if _looks_tabular(text):
         try:
             header, rows = _parse_table(text)
+            block, _ = _locate_table(_strip_note(text))
             sample = "\n".join(", ".join(r[:len(header)]) for r in rows[:preview_rows])
             last = ", ".join(rows[-1][:len(header)]) if rows else ""
-            return (f"=== {ref_id} === table, {len(rows)} data rows\n"
-                    f"columns: {', '.join(repr(h) for h in header)}\n"
-                    f"first rows:\n{sample}\n"
-                    f"last row:\n{last}")
+            table_desc = (f"=== {ref_id} === table, {len(rows)} data rows\n"
+                          f"columns: {', '.join(repr(h) for h in header)}\n"
+                          f"first rows:\n{sample}\n"
+                          f"last row:\n{last}")
+            if len(block) >= _TABLE_DOMINANT_SHARE * len((text or "").strip()):
+                return table_desc
+            table_note = table_desc + "\n--- the full text around that table ---\n"
+
         except ReferenceError_:
             pass
     records = _json_records(text)
@@ -261,14 +274,14 @@ def describe_reference(ref_id: str, text: str, preview_rows: int = _PREVIEW_ROWS
     body = text.strip()
     budget = prose_chars or _PROSE_PREVIEW_CHARS
     if len(body) <= budget:
-        return f"=== {ref_id} === text, {len(text)} characters\n{body}"
+        return f"{table_note}=== {ref_id} === text, {len(text)} characters\n{body}"
     # HEAD AND TAIL, not head alone. In prose the answer can sit anywhere, and a page often puts
     # the specific fact last (a summary line, a latest value, a conclusion). Head-only truncation
     # would move the blind spot rather than remove it — the fixture that caught this had the answer
     # in the final sentence. Two thirds from the front, one third from the end.
     head_n = (budget * 2) // 3
     tail_n = budget - head_n
-    return (f"=== {ref_id} === text, {len(text)} characters\n"
+    return (f"{table_note}=== {ref_id} === text, {len(text)} characters\n"
             f"{body[:head_n]}\n"
             f"[… {len(body) - budget} characters omitted from the middle …]\n"
             f"{body[-tail_n:]}\n"

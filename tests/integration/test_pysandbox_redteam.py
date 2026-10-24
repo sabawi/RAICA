@@ -81,7 +81,8 @@ def test_legitimate_program_runs_and_returns_its_chart():
     r = _run("import numpy as np, matplotlib.pyplot as plt\n"
              "x=np.linspace(0,1,50); plt.plot(x,x**2); plt.savefig('chart.png')\nprint('sum', round(float((x**2).sum()),3))")
     assert r['ok'] and 'sum 16.837' in r['stdout'] and len(r['images']) == 1
-    assert r['images'][0][:3] == b'\xff\xd8\xff'          # re-encoded JPEG, not the program's own bytes
+    assert r['images'][0][:8] == b'\x89PNG\r\n\x1a\n'      # a PNG we re-encoded from pixels, not the program's bytes
+    assert b'matplotlib' not in r['images'][0]               # matplotlib's own metadata chunk is gone
 
 
 def test_runs_under_gvisor_not_the_host_kernel():

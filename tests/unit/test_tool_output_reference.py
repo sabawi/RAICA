@@ -290,3 +290,34 @@ class TestProseIsNotSummarisedLikeATable:
     def test_short_prose_is_passed_whole_without_a_notice(self):
         d = describe_reference("search_web#1", "A short factual answer.")
         assert "A short factual answer." in d and "TRUNCATED" not in d
+
+
+class TestTableInsideLargerText:
+    """2026-10-24: a run_python_analysis result (printed results + a chart marker + the program) was described as
+    "table, 2 data rows" built from three lines of the PROGRAM'S SOURCE that shared a comma count. The gather gate
+    saw no results and no chart, said "no calculations performed, no plot", and re-ran the tool every round."""
+
+    RESULT = "\n".join([
+        '[[chart:/static/images/media/abc.png|align=center|caption="Orbit"]]',
+        "PROGRAM OUTPUT (computed in RAICA's sandbox by the program below):",
+        "```", "beta = 0.153", "Maximum radius: 1.441 AU", "FINAL: the probe never escapes", "```",
+        "PROGRAM:", "```python",
+        "import numpy as np",
+        "x, y, vx = 1.0, 0.0, 0.0",
+        "a, b, c = 2.0, 3.0, 4.0",
+        "p, q, r = 5.0, 6.0, 7.0",
+        "print('beta =', 0.153)",
+        "```",
+    ] + ["# padding line of the program source"] * 20)
+
+    def test_results_and_marker_survive_a_spurious_table(self):
+        desc = describe_reference("run_python_analysis#1", self.RESULT)
+        assert "FINAL: the probe never escapes" in desc
+        assert "[[chart:/static/images/media/abc.png" in desc
+
+    def test_a_dominant_table_is_still_described_as_a_table(self):
+        """Unchanged: a fetched CSV that is most of the text keeps the compact table view."""
+        csv = "Date,10 Yr\n" + "\n".join(f"12/{d:02d}/2025,4.{d:02d}" for d in range(1, 29))
+        desc = describe_reference("lookup_website#1", "As of today:\n" + csv + "\nSource: x")
+        assert desc.startswith("=== lookup_website#1 === table, 28 data rows")
+        assert "full text around" not in desc

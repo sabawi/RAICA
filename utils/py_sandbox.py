@@ -100,7 +100,7 @@ def _reencode_png(raw, cfg):
         with Image.open(io.BytesIO(raw)) as img:
             img.load()
             out = io.BytesIO()
-            img.convert('RGB').save(out, format='JPEG', quality=90)
+            img.convert('RGB').save(out, format='PNG', optimize=True)
             return out.getvalue()
     except Exception:  # noqa: BLE001 — any decoder complaint means "not a usable image", reported by the caller
         return None
