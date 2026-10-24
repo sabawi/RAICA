@@ -11,7 +11,7 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-108 — Plotting a formula: no chart; the arbitrator's retry ran an off-whitelist tool and lost its chart  [FIXED v1.0.0.343 locally, 2026-10-24 — production deploy pending]
+### SI-108 — Plotting a formula: no chart; the arbitrator's retry ran an off-whitelist tool and lost its chart  [FIXED v1.0.0.343 — deployed to live 2026-10-24; live Ask run produced its chart; retry path not yet seen live]
 - **Found** by the owner: NewX post 8834 (prod, 2026-10-22) — wave-equation "solve and plot" answered without a chart.
 - **Causes (logs, prod 21:02 and local 2026-10-23/24):** (1) `compute`/`plot_data` descriptions said "already
   retrieved data only", so the model referenced tools that never ran or failed until the gate's rounds ran out;

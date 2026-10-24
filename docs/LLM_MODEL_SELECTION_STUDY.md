@@ -1,6 +1,7 @@
 # LLM Model Selection — Why RAICA Runs on deepseek-v4-pro
 
 **Written:** 2026-10-10 · **Against:** v1.0.0.334 (local and live on the same commit, `f6773b5`)
+**Updated:** 2026-10-24 — arbitrator and vision moved to deepseek-v4.1-flash, vision fallback to minimax-m3.1-flash (§4.6)
 **Purpose:** one place to cite when the question "is there a cheaper model?" comes back. Every number
 below is taken from a dated RAICA record (changelog or `SUSPECTED_ISSUES.md`) or from Ollama's
 published price list, and is marked with its source. Anything that is NOT in a record is labelled as such.
@@ -17,17 +18,21 @@ model that **matched** deepseek-v4-pro — glm-5.3 — produced about **13× the
 request and was slower, so it costs more at nearly the same per-token price. The owner's broader trials
 (MiniMax, Kimi) reached the same conclusion; those are not in the written record (§5).
 
+The light lanes are a different question. On 2026-10-24 the arbitrator and vision moved from glm-5.3-flash to
+**deepseek-v4.1-flash** (the build Ollama upgraded on 2026-10-17), and the vision fallback from minimax-m3 to
+**minimax-m3.1-flash** — same or better accuracy, several times faster, at a small cost difference (§4.6).
+
 ## 2. What runs where today
 
-Read from `config/llm_config.yaml` on 2026-10-10 (local == live, same commit):
+Read from `config/llm_config.yaml` on 2026-10-24 (local == live, every selected model compared):
 
 | Lane (config path) | Model |
 |---|---|
 | `llm.primary` | `deepseek-v4-pro:cloud` |
 | `llm.tool_calling` | `deepseek-v4-pro:cloud` |
 | `code_generation.providers.ollama` | `deepseek-v4-pro:cloud` |
-| `arbitrator` | `glm-5.3-flash:cloud` |
-| `vision` | `glm-5.3-flash:cloud` (fallback `minimax-m3:cloud`, v1.0.0.324) |
+| `arbitrator` | `deepseek-v4.1-flash:cloud` (was glm-5.3-flash until 2026-10-24, §4.6) |
+| `vision` | `deepseek-v4.1-flash:cloud`, fallback `minimax-m3.1-flash:cloud` (were glm-5.3-flash / minimax-m3 until 2026-10-24, §4.6) |
 | `deep_research.engine.model` | `deepseek-v4.1-flash:cloud` (heavy synthesis/verify routed to pro, §4.4) |
 | `convergence.shadow_classifier`, `convergence.intent_classifier` | `deepseek-v4.1-flash:cloud` |
 
@@ -52,6 +57,9 @@ rates." US$ per million tokens.
 | deepseek-v4.1-flash | 0.30 | 0.006 | 1.20 |
 | gpt-oss:120b | 0.15 | 0.014 | 0.60 |
 | glm-5.3-flash | 0.15 | 0.03 | 0.50 |
+| minimax-m3.1-flash | 0.15 | not recorded | 0.60 |
+
+minimax-m3.1-flash: from <https://ollama.com/library/minimax-m3.1-flash>, read 2026-10-23 (published 2026-10-19).
 
 Off-peak (outside 12:00–18:00 UTC on weekdays, and all weekend) is discounted for **deepseek-v4.1-flash
 and deepseek-v4-pro** only (same source).
@@ -75,7 +83,7 @@ file (`--out` defaults to empty); the changelog is the record.
 | Model | Result |
 |---|---|
 | glm-5.3 | answers **37/42** (14 cases × 3) |
-| deepseek-v4.1-flash | answers 37/42 — **REJECTED**: skipped the calculator and got compound interest wrong in **2/3** runs ($6,804.22 vs the true $6,847.26) |
+| deepseek-v4.1-flash (the build before Ollama's 2026-10-17 upgrade) | answers 37/42 — **REJECTED**: skipped the calculator and got compound interest wrong in **2/3** runs ($6,804.22 vs the true $6,847.26) |
 | deepseek-v4-pro (4 discriminating cases × 3, against glm-5.3's rows on the same cases) | answers **9/12** and tools **9/12** — the same as glm-5.3; compound interest **3/3** (glm-5.3 2/3) |
 
 Speed and volume, same 4 cases: deepseek-v4-pro median **38 s** vs glm-5.3 **96 s**; about **620** vs
@@ -140,6 +148,65 @@ disambiguations. On arbitration it reached parity on verdicts, but with `reasoni
   to **deepseek-v4-pro** "for more professional, persuasive output"; small mechanical calls (plan, grade,
   relevance, under ~8K) stay on flash. The numbers for that second comparison are not in the changelog.
 
+### 4.6 Arbitrator and vision — glm-5.3-flash vs deepseek-v4.1-flash, and the vision fallback (2026-10-23)
+
+Source: this run; harness `tests/integration/run_vision_arbitrator_eval_live.py` (v1.0.0.344). Owner question: is the
+deepseek-v4.1-flash build Ollama shipped on 2026-10-17 better than glm-5.3-flash for the arbitrator and vision, and is
+the new minimax-m3.1-flash a better vision fallback than minimax-m3? **240 real calls, 0 errors, 0 rate limits**,
+3 runs per case, arms alternated inside each case.
+
+**Method — RAICA's own code, nothing re-implemented.** Vision: `ImageToTextTool.get_image_processing_results` with
+RAICA's system prompt, JSON contract and reply check, fallback OFF so each model stands alone; 12 generated images with
+known answers (receipt, table, bar and line chart, count, small text, rotated text, diagram, memo, pie chart,
+calendar, and a BLANK image that must be reported as blank). Arbitrator: the exact `arbitrator_system_prompt`, the
+same prompt layout (request[:200], each result[:500]), `OllamaProvider.generate_stream` with the arbitrator's kwargs,
+and RAICA's parse steps; 16 hand-built cases of 1–6 tool results, mixed good and bad (114 task verdicts per arm).
+
+**Vision** (51 facts per arm = 17 per run × 3; cost = measured tokens × §3 prices):
+
+| Model | Facts right | Followed RAICA's JSON contract | Time median / p90 / max | Output tokens (median) | $ per 1,000 images |
+|---|---|---|---|---|---|
+| glm-5.3-flash | 51/51 | 36/36 | 3.1 / 5.2 / 7.5 s | 346 | 0.26 |
+| **deepseek-v4.1-flash** | 51/51 | 36/36 | **0.8 / 1.1 / 1.3 s** | 185 | 0.40 |
+| minimax-m3 | 50/51 (read a serial "48-AXQ-209" as "…-2009") | 36/36 | 3.5 / 12.8 / 24.3 s | 179 | 1.02 |
+| **minimax-m3.1-flash** | 51/51 | 36/36 | 2.3 / 3.8 / 4.8 s | 186 | **0.23** |
+
+All four reported the blank image as blank and invented nothing. These images did not separate the models on
+accuracy; speed and steadiness did.
+
+**Arbitrator** (16 cases × 3 runs = 48 per arm; reasoning off on both, as RAICA runs it):
+
+| | glm-5.3-flash | **deepseek-v4.1-flash** |
+|---|---|---|
+| Replies RAICA's parser could read | 45/48 | **48/48** |
+| Task verdicts right | 108/114 | **111/114** |
+| Cases fully right — original key / revised key (below) | 42/48 / 42/48 | 45/48 / **48/48** |
+| Retry instructions given for every BAD verdict | yes | yes |
+| Time median / p90 | 4.1 / 6.0 s | **0.7 / 1.0 s** |
+
+The two cases where they differ, each the same in all 3 runs:
+- **stale_news** (asked for the latest news, got 2021 articles): glm said GOOD; deepseek said BAD, stale data.
+- **partial_cities** (weather asked for 3 cities, 1 returned): both saw the missing cities, but RAICA could not parse
+  glm's reply (3.4–4.4k characters) in any run, so the verdict would be lost. deepseek's parsed every time, marking the
+  call that worked GOOD and listing the two missing cities as missing tools. The case was keyed BAD before the run;
+  that is how RAICA's arbitrator is designed to report a partial result, so the key was revised after reading the
+  replies — both scores are shown.
+
+**Cost — an ESTIMATE, tokens not recorded for this lane.** Live made 51 arbitrator calls on 2026-10-21..23 (11–28 a
+day). The prompt is ~14k characters (≈4–5k tokens) at 0.30 vs 0.15 $/M input; deepseek's replies were about a third of
+glm's length (median 715 vs 2,147 characters) at 1.20 vs 0.50 $/M output. That is under a tenth of a cent more per
+call — well under a dollar a month at live's volume.
+
+**Decision (owner, 2026-10-24, RAICA v1.0.0.343):** arbitrator and vision → deepseek-v4.1-flash; vision fallback →
+minimax-m3.1-flash (a different model family from the primary, which is what a fallback is for). glm-5.3-flash is no
+longer selected for any lane. **Checked on live after the switch:** the arbitrator answered a real Ask request in
+0.81 s and RAICA parsed it.
+
+**Limits.** Synthetic images and hand-built arbitrator cases, not real traffic; 3 runs per case; one day, so nothing
+about busy hours. The first scoring had two scorer bugs, both fixed in the committed harness and checked by hand: the
+date in RAICA's report wrapper failed the "blank" case for every model, and an order check read only first mentions.
+An earlier run made 0 model calls (the vision tool needs the main thread) and was discarded.
+
 ## 5. Not in the written record
 
 - **MiniMax and Kimi as tool/synthesis models.** The owner reports trialling minimax-* and kimi-* for
@@ -165,7 +232,8 @@ figures may differ today.
 ## 7. When to revisit
 
 - Ollama changes a price in §3, or a new model appears in a lane's price band.
-- A cheaper candidate is proposed: run it through `run_tool_model_eval_live.py` (tool lane) and the
+- A cheaper candidate is proposed: run it through `run_tool_model_eval_live.py` (tool lane),
+  `run_vision_arbitrator_eval_live.py` (arbitrator, vision) and the
   `tests/benchmark` suite (DR, citations, vision), against deepseek-v4-pro **on the same cases**, and compare
   accuracy before cost. Write the estimated token spend down first — the account is shared with production.
 - The SI-102 re-run (§6) is done.

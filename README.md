@@ -1,8 +1,8 @@
-# RAICA - RAG AI Context Agency v1.0.0.343
+# RAICA - RAG AI Context Agency v1.0.0.344
 
 An advanced AI-powered server with multi-LLM orchestration, tool calling, document processing, vision capabilities, intelligent email management, **SEC regulatory filings**, **academic research integration**, and **extensible plugin system**.
 
-[![Version](https://img.shields.io/badge/version-1.0.0.343-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.343)
+[![Version](https://img.shields.io/badge/version-1.0.0.344-blue)](https://github.com/sabawi/RAICA/releases/tag/v1.0.0.344)
 [![Python](https://img.shields.io/badge/python-3.13-green)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Installation](https://img.shields.io/badge/installation-automated-brightgreen)](install.sh)
@@ -105,7 +105,7 @@ python fastapi_server_complete.py
 ```bash
 ```
 
-## ⭐ About RAICA v1.0.0.343
+## ⭐ About RAICA v1.0.0.344
 
 RAICA (RAG AI Context Agency) is a fork of the Agentic-RAG-System, designed as a clean starting point for building intelligent AI-powered applications.
 
@@ -421,8 +421,9 @@ change lanes with `./config_server_cli.py`, and verify with `python tests/integr
 - **Primary Model**: `deepseek-v4-pro:cloud` (conversation, reasoning, synthesis)
 - **Tool Calling**: `deepseek-v4-pro:cloud` (tool selection and arguments; alternatives kept as aliases:
   `glm_toolcall_ollama` = glm-5.3, `glm52_toolcall_alt` = glm-5.2)
-- **Arbitrator**: `glm-5.3-flash:cloud` (validates tool results, JSON)
-- **Vision Model**: `glm-5.3-flash:cloud`, fallback `minimax-m3:cloud` — the vision model states whether it
+- **Arbitrator**: `deepseek-v4.1-flash:cloud` (validates tool results, JSON; was glm-5.3-flash until v1.0.0.343 —
+  [the comparison](docs/LLM_MODEL_SELECTION_STUDY.md))
+- **Vision Model**: `deepseek-v4.1-flash:cloud`, fallback `minimax-m3.1-flash:cloud` — the vision model states whether it
   actually saw the image; a model that did not is rejected and the fallback runs
 - **Deep Research / intent classification**: `deepseek-v4.1-flash:cloud` (heavy synthesis: `deepseek-v4-pro:cloud`)
 - **Code generation presets**: include `deepseek-v4-pro:cloud` (Ollama default), `glm-5.3-flash:cloud`, `deepseek-v4.1-flash:cloud`, `gpt-oss:120b-cloud`
@@ -773,7 +774,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📝 Version History
 
-RAICA v1.0.0.343 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
+RAICA v1.0.0.344 is the latest release, forked from Agentic-RAG-System v1.0.3.123.
 
 All features from the parent project are included. See the [Agentic-RAG-System](https://github.com/sabawi/Agentic-RAG-System) repository for historical changelog.
 
