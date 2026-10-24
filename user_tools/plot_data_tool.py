@@ -77,12 +77,17 @@ class PlotDataTool(BaseUserTool):
     def description(self) -> str:
         return (
             "Draw a real chart from data you have ALREADY retrieved with another tool — for example "
-            "a CSV, JSON or table fetched with lookup_website. Use this whenever the user asks for a "
-            "chart, plot or graph of data that did not come from search_datasets/compare_datasets. "
-            "Supply the x values, one or more named y series aligned to them, and where the data "
-            "came from; RAICA renders the image and returns a [[chart:...]] marker to place in your "
-            "answer. You cannot draw a chart any other way: never write a marker yourself. If you "
-            "have no data to pass, do not call this — say a chart could not be produced."
+            "a CSV, JSON or table fetched with lookup_website — or from values `compute` GENERATED "
+            "from a formula, function or model (a solution curve, a distribution, a projection). "
+            "Use this whenever the user asks for a chart, plot or graph of data that did not come "
+            "from search_datasets/compare_datasets. Supply the x values, one or more named y series "
+            "aligned to them, and where the data came from; RAICA renders the image and returns a "
+            "[[chart:...]] marker to place in your answer. To plot a formula, first have `compute` "
+            "evaluate it on a grid, then reference each computed series here by its expression — "
+            "{\"from\": \"compute#1\", \"column\": \"<the expression>\"}; for such values `source` "
+            "names the formula and `url` is the page it was taken from. You cannot draw a chart any "
+            "other way: never write a marker yourself. If you have no data to pass and none can be "
+            "computed, do not call this — say a chart could not be produced."
         )
 
     @property
@@ -96,8 +101,10 @@ class PlotDataTool(BaseUserTool):
                            "description": "Who published the underlying data, e.g. "
                                           "\"U.S. Department of the Treasury\"."},
                 "url": {"type": "string",
-                        "description": "URL the data was actually retrieved from. Required — a chart "
-                                       "without a source is not publishable."},
+                        "description": "URL the data was actually retrieved from — for values "
+                                       "`compute` generated from a formula, the page that formula "
+                                       "was taken from. Required — a chart without a source is not "
+                                       "publishable."},
                 "x_name": {"type": "string", "description": "Label for the x axis, e.g. \"Date\"."},
                 "x_type": {"type": "string", "enum": list(_X_TYPES),
                            "description": "temporal for dates, quantitative for numbers, "

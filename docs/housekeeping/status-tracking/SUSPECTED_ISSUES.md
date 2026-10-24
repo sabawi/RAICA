@@ -11,6 +11,18 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-108 — Plotting a formula: no chart; the arbitrator's retry ran an off-whitelist tool and lost its chart  [FIXED v1.0.0.343 locally, 2026-10-24 — production deploy pending]
+- **Found** by the owner: NewX post 8834 (prod, 2026-10-22) — wave-equation "solve and plot" answered without a chart.
+- **Causes (logs, prod 21:02 and local 2026-10-23/24):** (1) `compute`/`plot_data` descriptions said "already
+  retrieved data only", so the model referenced tools that never ran or failed until the gate's rounds ran out;
+  (2) the arbitrator's retry offered all 35 tools and did not filter what came back (`analytical_visualizer` ran for
+  Ask, which allows 10); (3) `_merge_corrected_results` discarded a successful call of a different tool than the one
+  that failed, chart included.
+- **Fix + evidence:** CHANGELOG_v1.0.0.343 — real path 3/3 charts after (1/3 before); 6 unit tests, 3 plants red.
+- **Still to see:** a real retry on the live server logging `Tool regeneration - available tools: <~10>` (not 35).
+  Clear this item only after the deploy and that observation.
+
+
 ### SI-107 — Four unit tests fail on master (found running the suite for v1.0.0.332) — **P2**
 `./venv/bin/python -m pytest tests/unit` → 4 failed / 1012 passed, IDENTICAL on 1.0.0.331 (checked by
 stashing the v1.0.0.332 edits): `test_html_entities.py::test_html_entities_are_escaped`,

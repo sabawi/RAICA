@@ -96,6 +96,23 @@ def _filter_model_tool_calls(tool_calls, where=""):
     return kept
 
 
+def _retry_permitted_tools(retry_candidates):
+    """Tools the arbitrator's retry may offer and run: None (unrestricted) or a frozenset.
+
+    The retry regenerates calls that FAILED, and the tools that failed were permitted when first
+    dispatched (some legitimately originate outside the request whitelist — deferred POST-LLM
+    plugins, delivery actions), so their names stay permitted. What the retry may NOT do is reach
+    for a tool the request never allowed: on 2026-10-24 a failed `compute` for the Ask bot was
+    "corrected" into `analytical_visualizer`, chosen from all 35 tools although Ask allows 10.
+    Derived from the request's own whitelist and the failed calls — no list of tool names here.
+    """
+    allowed = _model_allowed_tools.get()
+    if allowed is None:
+        return None
+    return frozenset(allowed) | _SYSTEM_INJECTED_TOOLS | {
+        c.get("tool_name") for c in (retry_candidates or []) if c.get("tool_name")}
+
+
 def _model_tool_permitted(func_name: str):
     """(permitted, allowed_set) for a MODEL-CHOSEN tool call."""
     allowed = _model_allowed_tools.get()
@@ -5102,9 +5119,15 @@ async def intelligent_retry_with_circuit_breakers(
             # 🚨 LOG EXACT CONTEXT SENT TO LLM
             logger.info(f"🔧 REGENERATION CONTEXT SENT TO LLM:\n{'='*80}\n{regeneration_context}\n{'='*80}")
             
+            # Offer only what this request may run (see _retry_permitted_tools) — the same rule
+            # the other regeneration path applies to its offered tools.
+            _permitted = _retry_permitted_tools(retry_candidates)
+            _regen_defs = await tool_manager.get_tools_definitions()
+            if _permitted is not None:
+                _regen_defs = [t for t in _regen_defs if t['function']['name'] in _permitted]
             regenerated_tools = await _regenerate_failed_tools_with_llm(
-                llm_manager, regeneration_context, current_retry_candidates, 
-                await tool_manager.get_tools_definitions(), iteration_count=iteration
+                llm_manager, regeneration_context, current_retry_candidates,
+                _regen_defs, iteration_count=iteration, permitted=_permitted
             )
             
             logger.info(f"🔧 ITERATION {iteration}: LLM returned {len(regenerated_tools)} regenerated tool calls")
@@ -5487,7 +5510,7 @@ YOU MUST CALL THE FAILED TOOLS AGAIN WITH CORRECTIONS - DO NOT RETURN TEXT!
     
     return context
 
-async def _regenerate_failed_tools_with_llm(llm_manager, regeneration_context, retry_candidates, available_tools, iteration_count=1):
+async def _regenerate_failed_tools_with_llm(llm_manager, regeneration_context, retry_candidates, available_tools, iteration_count=1, permitted=None):
     """Call LLM to regenerate failed tool calls with corrections using iterative accumulative prompt structure"""
     
     # 🎯 CRITICAL: Use IDENTICAL system prompt from original tool calling (pre_tool_model_system_prompt.txt)
@@ -5545,15 +5568,22 @@ The purpose is to drop the new code in place of the failed code."""
         # Tool regeneration: Response received
         logger.info(f"🔧 Tool regeneration - response: {len(str(result))} chars, {len(result.get('tool_calls', []))} tool calls")
         
-        # NOT filtered. This path REGENERATES calls that already failed, so the
-        # whitelist question was settled when they were first dispatched — some
-        # legitimately originate outside the request whitelist (deferred POST-LLM
-        # plugins, classifier-selected delivery actions). Filtering here blocked a
-        # real retry of social_media_wordpress, caught by the Tier-1 benchmark.
-        # The vulnerability this guard exists for is a model naming a tool it was
-        # never OFFERED, which happens at the structured / content-parsed entry
-        # points below — both still filtered.
+        # Filtered against `permitted` (_retry_permitted_tools), NOT the bare request
+        # whitelist. The calls being regenerated already failed, and some legitimately
+        # originate outside the whitelist (deferred POST-LLM plugins, classifier-selected
+        # delivery actions) — filtering on the whitelist alone blocked a real retry of
+        # social_media_wordpress, caught by the Tier-1 benchmark. Their own names are in
+        # `permitted`, so that retry still runs. A DIFFERENT tool the request never allowed
+        # is dropped: the model can name a tool it was not offered.
         tool_calls = result.get("tool_calls", [])
+        if permitted is not None:
+            _blocked = [tc.get('function', {}).get('name') for tc in tool_calls
+                        if tc.get('function', {}).get('name') not in permitted]
+            if _blocked:
+                logger.warning("🔒 BLOCKED off-whitelist tool call(s) [retry]: %s (permitted: %s)",
+                               _blocked, sorted(permitted))
+                tool_calls = [tc for tc in tool_calls
+                              if tc.get('function', {}).get('name') in permitted]
         logger.info(f"🔧 LLM returned {len(tool_calls)} regenerated tool calls")
         
         return tool_calls
@@ -5705,7 +5735,17 @@ def _merge_corrected_results(original_results_list, corrected_results, retry_can
             logger.info(f"🔄 MERGED CORRECTION: {candidate['tool_name']} at index {task_index}")
         else:
             logger.warning(f"⚠️ NO CORRECTION AVAILABLE: {candidate['tool_name']} at index {task_index}")
-    
+
+    # A successful corrected call of a DIFFERENT tool than any that failed (the retry replaced a
+    # failed `compute` with a chart tool) matched no candidate above and was discarded, chart and
+    # all, while the loop reported success (2026-10-24). Keep it as an entry of its own; the
+    # failed entry stays as it is, so the answer can state both.
+    _candidate_names = {c["tool_name"] for c in retry_candidates}
+    for cr in corrected_results:
+        if cr.get("corrected") and cr.get("tool_name") not in _candidate_names:
+            final_results.append(f"Tool: {cr['tool_name']}\nResult: {cr['result']}\n\n")
+            logger.info(f"🔄 MERGED SUBSTITUTE: {cr['tool_name']} kept as a new entry")
+
     return final_results
 
 def _detect_tool_failure_pattern(tool_result: str) -> str:

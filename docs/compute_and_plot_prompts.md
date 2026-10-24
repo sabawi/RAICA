@@ -114,3 +114,19 @@ not just arithmetic.
 - **Charts render and are accurate** — spot-check two plotted points against the reported stats.
 - **NaN-bearing series report their missing count.** Silence there means the nan trap was missed.
 - **If a calculation fails, the answer must say so and omit the figure**, never estimate it.
+
+---
+
+## Plotting a formula (nothing fetched) — added v1.0.0.343
+
+`compute` also GENERATES values: with `data` omitted, each expression builds its own grid
+(`["np.linspace(-5, 5, 101)", "np.exp(-(np.linspace(-5, 5, 101) - 1)**2)"]` — names do not carry
+between expressions), and `plot_data` references each series by its expression
+(`{"from": "compute#1", "column": "<the expression>"}`), with `url` the page the formula came from.
+Before 1.0.0.343 both tool descriptions said they worked only on ALREADY-retrieved data, so the model
+pointed `data` at tools that never ran or had failed, used up the gather rounds, and no chart was made.
+
+**Regression prompt:** `@Ask solve \[ \frac{\partial^2u}{\partial t^2}=c^2\nabla^2u \] and plot the
+solution for a set of typical u values` — before: a chart in 1 of 3 local runs and 0 of 1 on production
+(post 8834, 2026-10-22); after: 3 of 3, no retries, ~20 s.
+

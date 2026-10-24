@@ -167,8 +167,13 @@ class ComputeTool(BaseUserTool):
             "\"np.corrcoef(revenue, spend)[0][1]\"). It also does plain arithmetic on numbers you "
             "already have — a square root, compound interest, a percentage change — with `data` "
             "omitted (e.g. \"np.sqrt(7921)\", \"5000 * (1 + 0.045/12)**84\"); use it for those "
-            "rather than working the arithmetic out yourself. Only pure-maths numpy functions are "
-            "available."
+            "rather than working the arithmetic out yourself. It also GENERATES values when nothing "
+            "has been fetched — to tabulate or plot a formula, function or model, omit `data` and "
+            "build the inputs inside each expression, one expression for the x grid and one per "
+            "curve: [\"np.linspace(-5, 5, 101)\", \"np.exp(-(np.linspace(-5, 5, 101) - 1)**2)\"]. "
+            "Names do not carry from one expression to the next, so each must be complete on its "
+            "own. Never point `data` at a tool that has not run, or at an output that failed. "
+            "Only pure-maths numpy functions are available."
         )
 
     @property
