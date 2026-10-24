@@ -49,12 +49,22 @@ WRITER_POLICY = (
     "- State each physical or modelling assumption as a comment, and print it too.\n"
     "- If the question can reasonably be read in more than one way, or its literal premise makes the asked-for "
     "outcome impossible, compute each reasonable reading and say which is which.\n"
+    "- Anything the task or the user's words say can be adjusted, controlled, steered or chosen is a decision "
+    "variable, not a fixed value — even when the task suggests one setting. Search or optimise over it (including "
+    "letting it change during the process when it can), and report the best result it achieves next to the "
+    "fixed-setting case. Do not conclude that a goal is impossible until that search has failed.\n"
+    "- Check your own result before reporting it: quantities your model conserves (energy, angular momentum, mass) "
+    "must stay constant to within the integration tolerance, every value must stay physically possible (no distance "
+    "through zero, no speed beyond light, no negative population), and the integration must reach its intended end. "
+    "If any check fails, the program is wrong, not the physics: write what failed to sys.stderr and exit with status 1 "
+    "(sys.exit(1)) so the program can be corrected. Never print, explain away or plot a result that failed its check.\n"
     "- Print the step-by-step results, each with its units, in the order a reader should follow them. Print the "
     "final answers last, clearly labelled.\n"
     "- Save each requested chart as a PNG in the working directory (at most {max_images}, each at most "
     "{max_pixels} pixels in total, e.g. figsize=(10, 7) at dpi=150 — a larger image is discarded), with a title, labelled "
-    "axes with units, and a legend. For spatial paths and orbits use an equal axis scale and mark reference "
-    "objects. Print the file name of each chart you saved.\n"
+    "axes with units, and a legend. For spatial paths and orbits use an equal axis scale, set the limits so the "
+    "computed path fills most of the chart, and mark only the reference objects that fall within that view. Print "
+    "the file name of each chart you saved.\n"
     "- Return only the program, in one ```python block."
 )
 
@@ -136,6 +146,9 @@ class RunPythonAnalysisTool(BaseUserTool):
         if not task:
             return {"success": False, "error": "run_python_analysis: `task` is required — describe the problem."}
         caption = str(kwargs.get('chart_caption') or '').strip()[:120] or 'Computed result'
+        # The task is written by the tool selector, and it decides which readings get computed (2026-10-24: every
+        # solar-sail task said "always face-on", so no run could cover the steered sail the user's words allowed).
+        logger.info("🧪 run_python_analysis: task (%d chars): %s", len(task), task[:600].replace('\n', ' '))
 
         from agents.coding_agent.llm_client import CodeGenLLMClient
         client = CodeGenLLMClient()

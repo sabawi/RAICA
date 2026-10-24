@@ -1,6 +1,6 @@
 # DESIGN — `run_python_analysis`: solve it with code when no tool fits
 
-Status: **APPROVED (owner, 2026-10-24). P0 built (1.0.0.346); P1 built and verified locally (1.0.0.347); P2 audit done (1.0.0.348, §12):**
+Status: **APPROVED (owner, 2026-10-24). P0 built (1.0.0.346); P1 built and verified locally (1.0.0.347); P2 audit done (1.0.0.348, §12); P3 live for Ask (1.0.0.350 + NewX 1.0.0.464, §13):**
 `user_tools/run_python_analysis_tool.py`, OFF by default, not on Ask's whitelist, not on live. P1 results in §11.
 
 ## 1. What the owner asked for
@@ -214,3 +214,15 @@ Smoke after the instruction change (one run per prompt, real path): chart 3/3, f
 run chose. The rabbits-and-foxes run read "fox growth per rabbit eaten 0.01" as 0.01 × the predation rate (rabbit peak
 2,134.7 — matches an independent computation of that reading) where the 9 P1 runs used 0.01 directly (42.8). Both
 readings are reasonable; neither run said the other existed. Surfacing ambiguity remains the open quality item.
+
+## 13. P3 — live for Ask (2026-10-24, owner: "go with A")
+
+- Production: gVisor `release-20261019.0` (apt, pinned) registered in `/etc/docker/daemon.json`; image
+  `raica-pysandbox:1` built on the server (same 17 package versions as local); red-team suite 25/25 ON the server;
+  site config `memory: 384m`, `min_host_available_mb: 400` (owner); reference program 2.8 s at 384 MB.
+- Ask.yaml (NewX 1.0.0.464): `run_python_analysis` on the whitelist, a directive reconciling it with the "compute" and
+  "computed as" rules, and the owner's rule to look for viable alternatives when the literal constraints limit the
+  answer.
+- Writer instructions (1.0.0.350): self-check with non-zero exit, path-filling charts, adjustable = decision variable.
+- Known limitation: SI-111 (a steered sail is never computed). Deploy-path fix found on the way: 1.0.0.349.
+- NewX caches plugin YAML at start-up: an Ask.yaml change needs a NewX restart (deploy does it).

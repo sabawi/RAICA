@@ -22,6 +22,19 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   that made the gate blind to tool output with a table inside larger text was fixed in `describe_reference`.
 - **Options to the owner (unanswered):** a final plot-only round when a requested chart is still missing; or 4 rounds.
 
+### SI-111 — run_python_analysis: the model will not compute a reading it believes is impossible (steered solar sail)  [P2 — OPEN, documented limitation]
+- **Seen:** 2026-10-24, owner's prompt (400 kg probe, 300 × 300 m "adjustable" sail). 0 of 15 runs computed a steered
+  sail; every task fixed the sail face-on ("oriented to maximize thrust, i.e., always face the Sun") and several
+  answers state "both forces fall as 1/r², so it can never escape" — true only face-on. An independent simulation of a
+  steered sail (β 0.344) reaches escape velocity at ~4.2 yr and 120 AU at ~65 yr.
+- **Tried (none moved it):** writer "compute each reading"; Ask "look for a viable alternative" (owner's rule — produced
+  a larger sail and beam sailing instead, one run inventing a resource); "adjustable things are decision variables to
+  optimise" (one program tried a fixed 60° tilt only).
+- **Also seen, not traced:** run p4_s300y's answer says the probe "does not even reach 2 AU"; the true orbit reaches
+  3.2 AU. Whether the program printed that or the answer invented it is unknown (program output not kept).
+- **Next:** a reviewer pass — after the program, one model call compares an "impossible / never" conclusion with the
+  user's exact words and may request one more program. Owner chose to ship without it first (option A).
+
 ### SI-110 — CodeGenLLMClient ignores `code_generation.selected_model` and drops `system_prompt` on Ollama  [P2 — OPEN]
 - **Seen:** 2026-10-24, building `run_python_analysis` (which now names its model and puts its rules in the message,
   so it is not affected).

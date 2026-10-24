@@ -109,6 +109,11 @@ def test_writer_rules_are_in_the_message_itself(env):
     assert 'Save each requested chart as a PNG' in prompt and 'simulate the orbit' in prompt
     # the limits the sandbox enforces are told to the writer (2026-10-24: 2400x1800 charts were silently discarded)
     assert '512m' in prompt and '4,000,000 pixels' in prompt
+    # a program whose result fails its own physical checks must exit non-zero, so the repair attempt runs
+    # (2026-10-24, NewX post 8349: an orbit "fell into the Sun" at -503,000 km/s and was reported as an artifact)
+    # an adjustable quantity is optimised, not fixed (2026-10-24: "adjustable" sail was fixed face-on in 7/7 tasks)
+    assert 'is a decision variable, not a fixed value' in prompt
+    assert 'sys.exit(1)' in prompt and 'Never print, explain away or plot a result that failed its check' in prompt
 
 
 def test_one_repair_attempt_gets_the_error(env):
