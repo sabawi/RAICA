@@ -1,6 +1,6 @@
 # DESIGN — `run_python_analysis`: solve it with code when no tool fits
 
-Status: **APPROVED (owner, 2026-10-24). P0 built (1.0.0.346); P1 built and verified locally (1.0.0.347):**
+Status: **APPROVED (owner, 2026-10-24). P0 built (1.0.0.346); P1 built and verified locally (1.0.0.347); P2 audit done (1.0.0.348, §12):**
 `user_tools/run_python_analysis_tool.py`, OFF by default, not on Ask's whitelist, not on live. P1 results in §11.
 
 ## 1. What the owner asked for
@@ -192,3 +192,25 @@ Found and fixed during P1 (each a named test that fails on the earlier code):
 Open (quality, not safety): the ambiguity rule did not make any run cover the tilted-sail reading; chart titles are
 written by the program before it knows the result ("Spiral Outward" over a closed orbit); two runs quoted a later of
 several equal peaks. NewX's citation guard was not part of this path and must be checked at P3 through a real post.
+
+## 12. P2 security audit (2026-10-24) — recorded in NewX `docs/SECURITY_SPEC_AND_AUDIT.md` §5
+
+Found and fixed:
+1. **The server could be starved.** Production has ~1 GB available with swap in use; a program at its 512 MB limit
+   costs ~575 MB of host memory (measured: empty program +65 MB, 450 MB program +560 MB). `check_host_memory` refuses to
+   start unless `min_host_available_mb` (default 400) remains after the program's whole limit, and answers "busy". It
+   runs after the one-program lock is taken and inside the `try`, so a refusal releases the lock (planted: red).
+2. **A program killed for memory was reported as "no readable result".** The sandbox's own exit status is now in the
+   notes (137 → "most often the memory limit"), so the repair attempt knows why. Red-team memory-bomb test asserts it.
+3. **The writer was not told the memory or image-size limits** — charts over `max_image_pixels` were silently dropped.
+   Both are now in its instructions, from config.
+4. NewX (1.0.0.463): chart links could climb out of the media folder (`../`); a link must now name one file.
+
+Measured for P3: the reference solar-sail program runs at 192 MB; a deliberately heavy program (2 M-point solution, three
+2400×1800 charts) needs more than 256 MB. Production cannot afford 512 MB + 400 MB margin at its usual ~0.85–1.1 GB
+available, so P3 must choose `memory` (e.g. 384m) and `min_host_available_mb` for that host, or accept "busy" answers.
+
+Smoke after the instruction change (one run per prompt, real path): chart 3/3, figures correct 3/3 for the reading each
+run chose. The rabbits-and-foxes run read "fox growth per rabbit eaten 0.01" as 0.01 × the predation rate (rabbit peak
+2,134.7 — matches an independent computation of that reading) where the 9 P1 runs used 0.01 directly (42.8). Both
+readings are reasonable; neither run said the other existed. Surfacing ambiguity remains the open quality item.

@@ -15,6 +15,7 @@ from agents.coding_agent import llm_client
 from utils import py_sandbox
 
 CFG = {'enabled': True, 'timeout_seconds': 60, 'max_images': 3, 'max_attempts': 2, 'writer_max_tokens': 100,
+       'memory': '512m', 'max_image_pixels': 4000000,
        'writer_provider': 'ollama', 'writer_model': 'deepseek-v4-pro:cloud', 'writer_fallback': False}
 
 
@@ -106,6 +107,8 @@ def test_writer_rules_are_in_the_message_itself(env):
     _execute(task='simulate the orbit')
     prompt = _Writer.instances[0].calls[0]['prompt']
     assert 'Save each requested chart as a PNG' in prompt and 'simulate the orbit' in prompt
+    # the limits the sandbox enforces are told to the writer (2026-10-24: 2400x1800 charts were silently discarded)
+    assert '512m' in prompt and '4,000,000 pixels' in prompt
 
 
 def test_one_repair_attempt_gets_the_error(env):

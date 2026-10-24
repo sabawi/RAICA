@@ -1020,6 +1020,9 @@ user_tools:
     max_image_bytes: 2097152
     max_image_pixels: 4000000
     max_envelope_bytes: 9000000
+    # Memory that must remain for the rest of the server AFTER a program uses its whole `memory` limit; below it the
+    # tool answers "busy" instead of starting (production has ~1 GB available, swap in use — 2026-10-24 audit).
+    min_host_available_mb: 400
     # The model that WRITES the program (deepseek-v4-pro measured 2026-10-24: correct simulation in one call).
     # Named explicitly: CodeGenLLMClient does not resolve code_generation.selected_model unless it is a preset key,
     # and with no explicit provider it walks the whole fallback list (paid providers included). writer_fallback

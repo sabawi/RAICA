@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 WRITER_POLICY = (
     "You answer a quantitative question by writing ONE complete, self-contained Python 3 program. It runs in a "
     "sandbox with numpy, scipy, sympy, pandas and matplotlib (Agg backend), no network, no input, no files except "
-    "the ones it creates in its working directory, and a time limit of {timeout} seconds — keep it well inside that.\n"
+    "the ones it creates in its working directory, a time limit of {timeout} seconds and a memory limit of {memory} "
+    "— keep well inside both (store only what you print or plot, not every integration step).\n"
     "Rules:\n"
     "- Derive every number in the code. Where the answer depends on how a system evolves over time, integrate the "
     "equations numerically; do not use a closed-form shortcut whose assumptions do not hold.\n"
@@ -50,7 +51,8 @@ WRITER_POLICY = (
     "outcome impossible, compute each reasonable reading and say which is which.\n"
     "- Print the step-by-step results, each with its units, in the order a reader should follow them. Print the "
     "final answers last, clearly labelled.\n"
-    "- Save each requested chart as a PNG in the working directory (at most {max_images}), with a title, labelled "
+    "- Save each requested chart as a PNG in the working directory (at most {max_images}, each at most "
+    "{max_pixels} pixels in total, e.g. figsize=(10, 7) at dpi=150 — a larger image is discarded), with a title, labelled "
     "axes with units, and a legend. For spatial paths and orbits use an equal axis scale and mark reference "
     "objects. Print the file name of each chart you saved.\n"
     "- Return only the program, in one ```python block."
@@ -138,7 +140,8 @@ class RunPythonAnalysisTool(BaseUserTool):
         from agents.coding_agent.llm_client import CodeGenLLMClient
         client = CodeGenLLMClient()
         client.fallback_enabled = bool(cfg.get('writer_fallback'))   # no paid fallback for a public bot
-        system = WRITER_POLICY.format(timeout=cfg['timeout_seconds'], max_images=cfg['max_images'])
+        system = WRITER_POLICY.format(timeout=cfg['timeout_seconds'], max_images=cfg['max_images'],
+                                      memory=cfg['memory'], max_pixels=f"{cfg['max_image_pixels']:,}")
 
         program, result, history = '', None, []
         for attempt in range(1, int(cfg.get('max_attempts') or 1) + 1):

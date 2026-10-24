@@ -35,7 +35,7 @@ LABEL = 'raica.pysandbox=1'
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config', 'llm_config.yaml')
 _NUMERIC = ('pids_limit', 'nproc_limit', 'nofile_limit', 'timeout_seconds', 'kill_grace_seconds', 'max_concurrent', 'queue_wait_seconds',
             'max_program_bytes', 'max_stdout_bytes', 'max_stderr_bytes', 'max_images', 'max_image_bytes',
-            'max_image_pixels', 'max_envelope_bytes')
+            'max_image_pixels', 'max_envelope_bytes', 'min_host_available_mb')
 
 _semaphore = None
 _semaphore_key = None
@@ -193,6 +193,39 @@ async def _read_capped(stream, cap):
             return bytes(buf[:cap]), True
 
 
+def _memory_mb(value):
+    """Docker's memory notation ('512m', '1g', '268435456') in MB; None if it cannot be read."""
+    v = str(value).strip().lower()
+    scale = {'k': 1 / 1024, 'm': 1, 'g': 1024}.get(v[-1:], None)
+    try:
+        return float(v[:-1]) * scale if scale else float(v) / 2**20
+    except ValueError:
+        return None
+
+
+def _host_available_mb():
+    with open('/proc/meminfo') as f:
+        for line in f:
+            if line.startswith('MemAvailable:'):
+                return int(line.split()[1]) / 1024
+    return None
+
+
+def check_host_memory(cfg, available_mb=None):
+    """Refuse to start a program the host cannot afford. The sandbox shares a small server with NewX (production:
+    3.9 GB, ~1 GB available, swap in use — measured 2026-10-24); a program at its full limit costs the limit plus
+    ~65 MB of gVisor (measured: 450 MB program -> 560 MB host). Start only if `min_host_available_mb` remains for
+    the site after the program has used its whole limit; otherwise answer busy rather than squeeze the site."""
+    limit = _memory_mb(cfg['memory'])
+    available = _host_available_mb() if available_mb is None else available_mb
+    if limit is None or available is None:
+        raise SandboxRefused("sandbox refused: cannot read the memory limit or the host's available memory")
+    need = limit + cfg['min_host_available_mb']
+    if available < need:
+        raise SandboxRefused(f"sandbox busy: the server is short of memory ({available:.0f} MB available, "
+                             f"{need:.0f} MB needed); try again later")
+
+
 async def run_program(program, cfg=None):
     """Run `program` (str) in a fresh sandbox. Returns the checked result dict; raises SandboxRefused."""
     cfg = cfg if cfg is not None else load_settings()
@@ -208,6 +241,7 @@ async def run_program(program, cfg=None):
     name = f"raica-pysbx-{uuid.uuid4().hex[:16]}"
     proc = None
     try:
+        check_host_memory(cfg)                 # inside the try: a refusal still releases the semaphore below
         proc = await asyncio.create_subprocess_exec(
             *docker_argv(cfg, name), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE)
@@ -231,6 +265,11 @@ async def run_program(program, cfg=None):
         except asyncio.TimeoutError:
             pass                               # the finally block removes it
         result = parse_envelope(raw, cfg)
+        if result['exit'] is None and not result['timed_out'] and proc.returncode is not None:
+            # No envelope: the runner itself died. Say how, or the repair attempt is told only "no readable result".
+            result['notes'].append(f"the sandbox stopped with status {proc.returncode}" + (
+                f" (killed — most often by using more than the {cfg['memory']} memory limit)"
+                if proc.returncode in (137, -9) else ""))
         logger.info("🧪 py-sandbox: %s exit=%s timed_out=%s stdout=%d chars images=%d notes=%s", name,
                     result['exit'], result['timed_out'], len(result['stdout']), len(result['images']),
                     result['notes'])

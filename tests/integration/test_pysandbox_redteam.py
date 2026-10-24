@@ -222,6 +222,8 @@ print('REPORT=' + json.dumps(n))
 def test_memory_bomb_is_stopped():
     r = _run("b = bytearray(1500 * 1024 * 1024); b[::4096] = b'x' * len(b[::4096]); print('REPORT=\"ALLOCATED\"')")
     assert 'ALLOCATED' not in r['stdout'] and not r['ok']
+    # The repair attempt must learn WHY (2026-10-24: it was told only "no readable result").
+    assert any('memory limit' in n for n in r['notes']), r['notes']
 
 
 def test_infinite_loop_is_stopped_by_the_runner_clock():
