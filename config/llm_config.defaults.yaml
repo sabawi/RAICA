@@ -990,6 +990,36 @@ stock_analyzer:
   fetch_retries: 3
   fetch_backoff_seconds: 0.8
 user_tools:
+  # run_python_analysis — owner 2026-10-24, docs/DESIGN_run_python_analysis.md. Runs a model-written Python program
+  # in a throwaway gVisor container. EVERY program is treated as hostile. utils/py_sandbox.py REFUSES to run unless
+  # runtime is runsc and network is none, and it never mounts a host path or passes a host variable. Limits are
+  # ceilings (the container is gone the moment the program ends), not reservations.
+  run_python_analysis:
+    enabled: false
+    image: raica-pysandbox:1
+    runtime: runsc
+    network: none
+    user: '65534:65534'
+    memory: 512m
+    cpus: '1'
+    # Under gVisor, programs inside the container are NOT host processes: the pid limit counts gVisor's own host
+    # threads. At 64, ~20 sleeping child processes exhausted it and the sandbox died with no output (measured
+    # 2026-10-24). So: nproc is the limit the PROGRAM meets (a clean "fork failed"); pids_limit is the host backstop.
+    pids_limit: 256
+    nproc_limit: 32
+    nofile_limit: 256
+    tmpfs_size: 64m
+    timeout_seconds: 60
+    kill_grace_seconds: 10
+    max_concurrent: 1
+    queue_wait_seconds: 30
+    max_program_bytes: 100000
+    max_stdout_bytes: 32768
+    max_stderr_bytes: 8192
+    max_images: 3
+    max_image_bytes: 2097152
+    max_image_pixels: 4000000
+    max_envelope_bytes: 9000000
   sandboxed_executor:
     base_directory: null
     sandbox_workspace_name: sandbox_workspace
