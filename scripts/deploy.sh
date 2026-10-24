@@ -56,9 +56,13 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+# Capture, then match. `systemctl … | grep -q` under pipefail FAILS when grep exits at the match while systemctl is
+# still writing (SIGPIPE): on production it answered "no" 1 time in 6 with the unit installed (2026-10-24).
 systemd_managed() {
-    command -v systemctl >/dev/null 2>&1 && \
-    systemctl list-unit-files "$SERVICE" --no-pager 2>/dev/null | grep -q "^$SERVICE"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local units
+    units="$(systemctl list-unit-files "$SERVICE" --no-pager 2>/dev/null)"
+    grep -q "^$SERVICE" <<<"$units"
 }
 main_pid() {
     if systemd_managed; then systemctl show "$SERVICE" -p MainPID --value 2>/dev/null

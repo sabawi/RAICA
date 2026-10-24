@@ -46,7 +46,8 @@ sed -e "s#__ROOT__#$ROOT#g" -e "s#__USER__#$RUN_USER#g" -e "s#__PYVER__#$PYVER#g
 
 # Verify BEFORE touching the system. Needs no root.
 if command -v systemd-analyze >/dev/null 2>&1; then
-    if systemd-analyze verify "$TMP_UNIT" 2>&1 | grep -qE "Unknown|Failed|ignoring"; then
+    # Capture, then match: under pipefail `verify | grep -q` fails on SIGPIPE and a REJECTED unit read as clean.
+    if grep -qE "Unknown|Failed|ignoring" <<<"$(systemd-analyze verify "$TMP_UNIT" 2>&1)"; then
         systemd-analyze verify "$TMP_UNIT" 2>&1 | head -10
         fail "systemd-analyze rejected the unit — not installing"
         exit 1
@@ -56,7 +57,7 @@ fi
 
 if [ "$CHECK_ONLY" = "1" ]; then
     echo; echo "── current state ──"
-    if systemctl list-unit-files raica.service --no-pager 2>/dev/null | grep -q raica; then
+    if grep -q raica <<<"$(systemctl list-unit-files raica.service --no-pager 2>/dev/null)"; then
         ok "unit installed; ActiveState=$(systemctl show -p ActiveState --value raica 2>/dev/null)"
         # Ask systemd what it APPLIED, not what the file says.
         limit="$(systemctl show -p StartLimitIntervalUSec --value raica 2>/dev/null)"
