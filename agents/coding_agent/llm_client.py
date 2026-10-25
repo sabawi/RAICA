@@ -245,6 +245,13 @@ def extract_best_code_block(content: str, expected_type: str = None) -> str:
                     pass
 
     if code_lines:
+        # A fence line is never code. Reached when the opening fence did not pair up — e.g. the model doubled it
+        # ("```python\n```python\n…```", seen 3/3 writer runs 2026-10-25): the closing fence then ended up in the
+        # program and the sandbox failed on it with a SyntaxError.
+        while code_lines and code_lines[-1].strip().startswith('```'):
+            code_lines.pop()
+        while code_lines and code_lines[0].strip().startswith('```'):
+            code_lines.pop(0)
         code = '\n'.join(code_lines).strip()
         if len(code) > 50:  # Minimum viable code length
             logger.debug(f"Extracted unfenced code: len={len(code)}")

@@ -172,3 +172,78 @@ def test_writer_policy_carries_the_9088_rules():
     desc = RunPythonAnalysisTool().description
     assert "Describe WHAT to plot, not how to style it" in desc
     assert "do not describe the others as a designed comparison" in desc
+
+
+def test_the_users_own_words_reach_the_writer(monkeypatch):
+    """Post 9091 (2026-10-25): the user asked for a STEERABLE sail; the selector's task said "sail acceleration is
+    radially outward" and the writer, seeing only the task, never steered. The request text set for this request must
+    travel to the writer with the task, and the writer is told the user's words win."""
+    import asyncio
+    import user_tools.run_python_analysis_tool as T
+    from utils.request_context import set_request_text
+    seen = {}
+
+    class FakeClient:
+        fallback_enabled = False
+
+        def generate(self, prompt, **kw):
+            seen['prompt'] = prompt
+            class R:
+                success = False
+                error = 'stop here'
+            return R()
+    import agents.coding_agent.llm_client as L
+    monkeypatch.setattr(L, 'CodeGenLLMClient', FakeClient)
+    monkeypatch.setattr(T.py_sandbox, 'load_settings', lambda: {
+        'enabled': True, 'timeout_seconds': 60, 'max_images': 2, 'memory': '384m', 'max_image_pixels': 2000000,
+        'writer_provider': 'ollama', 'writer_model': 'x', 'max_attempts': 1})
+
+    async def go():
+        set_request_text("=== SYSTEM INSTRUCTIONS ===\nbe nice\n=====\n\nUnfurls its steerable solar sail")
+        return await T.RunPythonAnalysisTool().execute(task="integrate with radially outward sail force")
+    asyncio.run(go())
+    assert "<<<\n=== SYSTEM INSTRUCTIONS" in seen['prompt'] and "steerable solar sail\n>>>" in seen['prompt']
+    assert "the user's words win wherever the two differ" in seen['prompt']
+
+
+def test_no_request_text_leaves_the_task_alone(monkeypatch):
+    """Callers that never set the request text (Deep Research, direct tool calls) get exactly the old prompt."""
+    import asyncio, contextvars
+    import user_tools.run_python_analysis_tool as T
+    seen = {}
+
+    class FakeClient:
+        fallback_enabled = False
+
+        def generate(self, prompt, **kw):
+            seen['prompt'] = prompt
+            class R:
+                success = False
+                error = 'stop'
+            return R()
+    import agents.coding_agent.llm_client as L
+    monkeypatch.setattr(L, 'CodeGenLLMClient', FakeClient)
+    monkeypatch.setattr(T.py_sandbox, 'load_settings', lambda: {
+        'enabled': True, 'timeout_seconds': 60, 'max_images': 2, 'memory': '384m', 'max_image_pixels': 2000000,
+        'writer_provider': 'ollama', 'writer_model': 'x', 'max_attempts': 1})
+    contextvars.Context().run(asyncio.run, T.RunPythonAnalysisTool().execute(task="t"))
+    assert seen['prompt'].endswith("TASK:\nt")      # the request block (and its <<< >>> fence) is absent
+
+
+def test_a_doubled_opening_fence_does_not_leak_into_the_program():
+    """2026-10-25, 3/3 writer runs: the model opened with ```python twice; the extractor fell back to unfenced
+    extraction and kept the closing ``` as the program's last line, so attempt 1 always died on a SyntaxError."""
+    import ast
+    from user_tools.run_python_analysis_tool import _extract_program
+    raw = "```python\n```python\nimport math\nx = math.sqrt(2)\nprint('value of x is', x)\n```"
+    prog = _extract_program(raw)
+    ast.parse(prog)                                   # raises SyntaxError if a fence leaked
+    assert prog.startswith("import math") and "```" not in prog
+
+
+def test_writer_is_told_not_to_assert_the_hoped_for_outcome():
+    """2026-10-25 (post 9091 re-runs): programs asserted "reached 120 AU" and exited 1 when the physics said no; each
+    became a failure, was retried, and the answer came from a simpler model instead."""
+    from user_tools.run_python_analysis_tool import WRITER_POLICY
+    assert "never a condition to assert or exit on" in WRITER_POLICY
+    assert "Never assume a force can point anywhere at full strength" in WRITER_POLICY

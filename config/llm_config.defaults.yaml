@@ -1053,6 +1053,11 @@ user_tools:
     writer_fallback: false
     writer_max_tokens: 16384
     max_attempts: 2
+    # SI-115: true = each chart is shown to the vision model (vision.config) before publishing and an unreadable one is
+    # redrawn, at most chart_redraws times (the last redraw is not checked). Fails open: no verdict → publish as before.
+    # OFF by default: a redraw rescued 1 flagged chart in 4 (real path, 2026-10-25), at 1-2 extra writer calls each.
+    chart_check: false
+    chart_redraws: 2
   sandboxed_executor:
     base_directory: null
     sandbox_workspace_name: sandbox_workspace

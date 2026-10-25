@@ -11,13 +11,24 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-115 — Superimposed 3D charts from run_python_analysis are often unreadable  [P3 — OPEN, partly addressed 1.0.0.352]
+### SI-115 — Superimposed 3D charts from run_python_analysis are often unreadable  [P3 — OPEN; chart check built OFF 1.0.0.353]
 - **Seen:** NewX post 9088 and 9 real-path runs 2026-10-25. Policy now names stacked offsets or wireframes; final
   three runs: 1 readable (wireframes), 1 stacked but swamped by a 1/r singularity and three colour bars, 1 opaque and
   aliased. Also run 2 ended with `[[chart:wave_solutions_3d.png]]`: the program PRINTED a marker, the sandbox defanged
   it, the writer copied it back undefanged; NewX drops it (no media file), so readers see nothing.
 - **Next:** stop tuning wording (3 rounds). Options: render-time check of the PNG (e.g. ask the vision model whether
   each named series is distinguishable) and one repair; or tell the caller to prefer side-by-side panels.
+- **1.0.0.353 — chart check built, OFF (`user_tools.run_python_analysis.chart_check`).** `utils/chart_check.py` shows
+  each chart to the vision model (vision.config model, then fallback) with what it was drawn to show; unreadable →
+  redraw with every earlier rejection quoted, at most `chart_redraws` (2) times; the last redraw is not checked (the
+  damper); fails open. Measured 2026-10-25:
+  - Detection: the vision model agreed with my own reading 17 of 18 times (6 earlier charts ×3: 17/18 incl. one
+    borderline wireframe that split; 3 redraws ×3: 8/9).
+  - Rescue, real NewX path, 7 runs of the 9088 request: 5 first drafts flagged; a redraw made only **1 of 5**
+    readable (cc1); 2 runs drew a readable chart on the first try. Each rescue attempt costs 1-2 more writer
+    calls (deepseek-v4-pro) and 20-60 s.
+  - So it ships OFF. **Owner decision:** keep off; turn on as is; or have a rejected redraw give each series its own
+    panel plus one superimposed panel (the layout of the clearly readable run cl2) and measure that.
 
 ### SI-114 — Retry engine re-ran a failure a later call had already redone  [RESOLVED 1.0.0.352]
 - **Seen:** post 9088: the gather loop's second `run_python_analysis` succeeded; the arbitrator still marked the
@@ -70,6 +81,19 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   3.2 AU. Whether the program printed that or the answer invented it is unknown (program output not kept).
 - **Next:** a reviewer pass — after the program, one model call compares an "impossible / never" conclusion with the
   user's exact words and may request one more program. Owner chose to ship without it first (option A).
+- **2026-10-25 (owner re-ran it on prod, post 9091 — same answer).** 9091's caller task again fixed the sail face-on;
+  the program failed its own energy check (0.30) and the answer explained the failure away.
+  - 1.0.0.353 passes the user's own words to the writer next to the caller's task, with "the user's words win where
+    the two differ", plus rules on checks and force laws (CHANGELOG_v1.0.0.353). **Sail: 0/3 on pro** — the caller
+    still wrote "keep it face-on for maximum thrust" and the answers said "never".
+  - Ask on deepseek-v4.1-flash (writer still pro), 3 real-path runs: **0/3 correct.** One used a valid steered-sail
+    force law (cos³α, cos²α·sinα) but reported escape at 173 y while crossing 30 AU at 21 y; one gave full thrust in
+    any direction plus an invented "×0.5 for tilt" (escape 0.5 y); one stayed face-on ("1–3 y, simulation
+    incomplete"). Cost: 5–6 tool calls, 6–12 pro writer calls, 255–584 s per answer (NewX timeout 900 s).
+  - Found on the way, both fixed in 353: (D1) a reply opening with a doubled ```` ```python ```` fence leaked the
+    fence into the program (SyntaxError; writer-only test 3/3, not seen on prod); (D2) a program asserted the outcome
+    the question hoped for and exited 1 — the writer is now told a check verifies the computation, never the outcome.
+  - Still open. Neither model computes a steered sail from these words; the reviewer pass above remains the option.
 
 ### SI-110 — CodeGenLLMClient ignores `code_generation.selected_model` and drops `system_prompt` on Ollama  [P2 — OPEN]
 - **Seen:** 2026-10-24, building `run_python_analysis` (which now names its model and puts its rules in the message,

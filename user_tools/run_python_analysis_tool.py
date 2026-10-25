@@ -52,6 +52,9 @@ WRITER_POLICY = (
     "- State each physical or modelling assumption as a comment, and print it too.\n"
     "- If the question can reasonably be read in more than one way, or its literal premise makes the asked-for "
     "outcome impossible, compute each reasonable reading and say which is which.\n"
+    "- When the task comes with THE USER'S OWN REQUEST, the user's words win wherever the two differ: the task is "
+    "another model's summary, and it may have fixed a setting, simplified the physics or dropped a reading the user "
+    "left open. Compute what the user asked for.\n"
     "- Anything the task or the user's words say can be adjusted, controlled, steered or chosen is a decision "
     "variable, not a fixed value — even when the task suggests one setting. Search or optimise over it (including "
     "letting it change during the process when it can), and report the best result it achieves next to the "
@@ -62,7 +65,15 @@ WRITER_POLICY = (
     "If any check fails, the program is wrong, not the physics: write what failed to sys.stderr and exit with status 1 "
     "(sys.exit(1)) so the program can be corrected. Never print, explain away or plot a result that failed its check. "
     "Measure a conserved quantity the way the scheme conserves it (the same time level for every term), print the "
-    "tolerance you check against and the drift you measured.\n"
+    "tolerance you check against and the drift you measured. Decide BEFORE checking whether your model conserves a "
+    "quantity: a force that depends only on position has a potential, and energy is conserved once that potential is "
+    "included; a force that does work along the motion (thrust, drag) changes it, so check the balance instead "
+    "(energy change = work done). A check that fails is a failure, never a warning. "
+    "A check verifies the COMPUTATION, never the outcome the question hopes for: whether something escapes, arrives, "
+    "reaches a distance or meets a goal is a result to report either way, never a condition to assert or exit on.\n"
+    "- When the direction of a force can be chosen, derive how its size and its direction depend on that choice from "
+    "how the force is produced, and state that law in a comment. Never assume a force can point anywhere at full "
+    "strength.\n"
     "- Describe only what the code does: name each boundary condition, source and loss term as implemented (a fixed "
     "zero boundary reflects; it does not absorb), and never attribute a result to an effect the code does not model.\n"
     "- Print the step-by-step results, each with its units, in the order a reader should follow them. Print the "
@@ -103,6 +114,25 @@ def _failure_report(result):
     if not result.get('stdout', '').strip() and result.get('ok'):
         parts.append('It printed nothing.')
     return '\n'.join(parts) or 'It produced no usable result.'
+
+
+async def _unreadable_charts(images, purpose):
+    """The vision model's problems for every chart it judged unreadable, as text; '' when all are readable or no
+    verdict could be obtained (fails open — see utils/chart_check.py)."""
+    from utils.chart_check import check_chart
+    try:
+        verdicts = await asyncio.gather(*(asyncio.to_thread(check_chart, img, purpose, 30.0) for img in images))
+    except Exception as e:  # noqa: BLE001 — the check must never cost the answer
+        logger.warning("📊 chart check failed (%s) — publishing unchecked", e)
+        return ""
+    lines = []
+    for i, v in enumerate(verdicts, 1):
+        logger.info("📊 chart check %d/%d: %s", i, len(images),
+                    "no verdict" if v is None else ("readable" if v['readable'] else "UNREADABLE") +
+                    (f" ({v['model']})" if v else ""))
+        if v is not None and not v['readable']:
+            lines.append(f"chart {i}: {v['problems'] or 'unreadable'}")
+    return "\n".join(lines)
 
 
 class RunPythonAnalysisTool(BaseUserTool):
@@ -167,6 +197,18 @@ class RunPythonAnalysisTool(BaseUserTool):
         # solar-sail task said "always face-on", so no run could cover the steered sail the user's words allowed).
         logger.info("🧪 run_python_analysis: task (%d chars): %s", len(task), task[:600].replace('\n', ' '))
 
+        # The user's own words travel with the task: the selector's paraphrase can fix what the user left open.
+        try:
+            from utils.request_context import get_request_text
+            req = (get_request_text() or '').strip()
+        except Exception:  # noqa: BLE001
+            req = ''
+        if req:
+            task = (f"{task}\n\nTHE USER'S OWN REQUEST (the end of the text the platform sent — any platform or system "
+                    f"instructions in it govern the conversation, not your program):\n<<<\n{req[-4000:]}\n>>>")
+            logger.info("🧪 run_python_analysis: the user's request travels with the task (%d chars)",
+                        min(len(req), 4000))
+
         from agents.coding_agent.llm_client import CodeGenLLMClient
         client = CodeGenLLMClient()
         client.fallback_enabled = bool(cfg.get('writer_fallback'))   # no paid fallback for a public bot
@@ -207,6 +249,44 @@ class RunPythonAnalysisTool(BaseUserTool):
                     "error": "run_python_analysis: the program did not run successfully. "
                              + " | ".join(history)[-1500:]
                              + " — say the calculation could not be completed; do NOT invent its results."}
+
+        # SI-115: look at the charts before publishing; when a reader could not read them, redraw — at most
+        # `chart_redraws` times (default 2). The counter is the damper: no check runs after the last redraw, so a
+        # check can never trigger an unbounded check→redraw cycle. A redraw replaces the charts only if it ran and drew
+        # charts; otherwise the last good run is published, exactly as before.
+        # OFF unless chart_check: true — measured 2026-10-25: detection agreed with a human 17/18, but a redraw made a
+        # flagged chart readable only 1 time in 4, at 1-2 extra writer calls each (SI-115).
+        if result['images'] and cfg.get('chart_check') is True:
+            reports = []
+            redraws = max(0, int(cfg.get('chart_redraws', 2)))
+            for n in range(1, redraws + 1):
+                problems = await _unreadable_charts(result['images'], f"{caption}. Task: {task[:400]}")
+                if not problems:
+                    break
+                reports.append(f"Draw {n}:\n{problems}")
+                logger.info("📊 run_python_analysis: chart(s) judged unreadable — redraw %d/%d: %s", n, redraws,
+                            problems[:300].replace('\n', ' | '))
+                failure = ("The program RAN and its numbers are correct — keep every computation and every printed "
+                           "line exactly as they are. Only its chart(s) failed. A reviewer looked at each draw so far "
+                           "and reported:\n" + "\n".join(reports) +
+                           "\nRedraw so that a reader can follow every element on its own; do not repeat a layout "
+                           "the reviewer already rejected.")
+                prompt = f"{system}\n\n" + REPAIR_POLICY.format(task=task, program=program, failure=failure)
+                resp = await asyncio.to_thread(client.generate, prompt, provider=cfg['writer_provider'],
+                                               model=cfg['writer_model'], temperature=0,
+                                               max_tokens=int(cfg.get('writer_max_tokens') or 16384))
+                redrawn = _extract_program(resp.content) if resp.success else ''
+                new = None
+                if redrawn:
+                    try:
+                        new = await py_sandbox.run_program(redrawn, cfg)
+                    except py_sandbox.SandboxRefused as e:
+                        logger.warning("📊 run_python_analysis: redraw refused (%s)", e)
+                if not (new and new['ok'] and new['stdout'].strip() and new['images']):
+                    logger.info("📊 run_python_analysis: redraw %d drew no charts — publishing the previous draw", n)
+                    break
+                program, result = redrawn, new
+                logger.info("📊 run_python_analysis: redraw %d used (%d chart(s))", n, len(new['images']))
 
         markers = []
         for i, png in enumerate(result['images'], 1):

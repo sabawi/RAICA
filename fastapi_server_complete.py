@@ -10915,6 +10915,11 @@ The above image analysis was automatically performed on newly uploaded images. T
                         
                         # Convert messages to prompt for LLM Manager
                         user_message = messages[-1]['content'] if messages else data.get('prompt', '')
+                        try:   # the user's own words, for tools whose arguments another model wrote
+                            from utils.request_context import set_request_text
+                            set_request_text(user_message if isinstance(user_message, str) else None)
+                        except Exception:   # noqa: BLE001 — never block the request on this
+                            pass
                         system_prompt = load_tool_model_system_prompt(
                             RAGONLY=_is_rag_only_request())
                         
