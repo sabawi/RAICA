@@ -159,3 +159,16 @@ def test_sandbox_refusal_is_reported(env, monkeypatch):
     _Writer.next_replies = [_Resp("```python\nprint(1)\n```")]
     r = _execute(task='simulate it')
     assert r['success'] is False and 'busy' in r['error']
+
+
+def test_writer_policy_carries_the_9088_rules():
+    """Post 9088 (2026-10-25): "solve" got a numerical scheme and no exact solution; three translucent surfaces
+    hid one another; the answer blamed an energy loss on "absorbing boundaries" the code did not have. Each rule
+    must reach the program's writer, and the caller must leave chart styling to it."""
+    from user_tools.run_python_analysis_tool import WRITER_POLICY, RunPythonAnalysisTool
+    assert "known exact solution" in WRITER_POLICY
+    assert "Transparency does not achieve that" in WRITER_POLICY
+    assert "never attribute a result to an effect the code does not model" in WRITER_POLICY
+    desc = RunPythonAnalysisTool().description
+    assert "Describe WHAT to plot, not how to style it" in desc
+    assert "do not describe the others as a designed comparison" in desc

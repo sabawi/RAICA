@@ -4985,6 +4985,43 @@ class CircuitBreakerManager:
 # Global circuit breaker manager instance
 circuit_breaker_manager = CircuitBreakerManager()
 
+async def _failure_already_done(user_prompt: str, failed_name: str, failed_result: str,
+                                later_successes: List[tuple]) -> Optional[str]:
+    """Ask the model whether a later SUCCESSFUL call in this request already did the failed call's work.
+
+    NewX post 9088 (2026-10-25): run_python_analysis failed, the gather loop ran it again and it succeeded, and this
+    retry engine then re-ran the FAILED one twice more — two extra programs, duplicate charts, and an answer that
+    presented the duplicate as a deliberate second experiment. Telling the regenerating model to skip finished work
+    did not move it (3/3 still regenerated: it works in a tool-calls-only mode framed as "regenerate the failures").
+    So the question is asked on its own, and the MODEL decides whether the work is the same — two different searches
+    by the same tool are not. Returns the model's one-line reason when it is done, else None. Any failure → None,
+    i.e. the retry runs exactly as before."""
+    from research.engine import extract_json_object
+    later = "\n\n".join(f"--- later successful {n} ---\n{str(r)[:2500]}" for n, r in later_successes)
+    prompt = (
+        f"USER REQUEST:\n{str(user_prompt)[-3000:]}\n\n"
+        f"A {failed_name} call FAILED with:\n{str(failed_result)[:1500]}\n\n"
+        f"Later in the same request, these calls SUCCEEDED:\n{later}\n\n"
+        "Question: did a later successful call already do the job the failed call was meant to do for this request "
+        "(the same work attempted again and completed), so that running the failed call again would only repeat "
+        "finished work? Answer no when the failed call was meant for something the later calls did not cover.\n\n"
+        'Respond with STRICT JSON only: {"already_done": true | false, "why": "<one short line>"}'
+    )
+    try:
+        cfg = _gather_gate_config()
+        chunks = []
+        async for ch in llm_manager.generate_stream(prompt, model=(cfg['model'] or ServerConfig.DEFAULT_TOOL_CALLING_MODEL),
+                                                    temperature=0, max_tokens=cfg['assess_max_tokens'], stream=False):
+            chunks.append(ch)
+        data = extract_json_object("".join(chunks)) or {}
+    except Exception as e:  # noqa: BLE001 — the check must never block a retry that may be needed
+        logger.warning(f"🔄 superseded-check failed ({e}); retrying as before")
+        return None
+    if data.get("already_done") is True:
+        return str(data.get("why") or "a later successful call did this work").strip()[:200]
+    return None
+
+
 async def intelligent_retry_with_circuit_breakers(
     error_analysis: Dict[str, Any], 
     pattern_analysis: Dict[str, Any],
@@ -5060,6 +5097,17 @@ async def intelligent_retry_with_circuit_breakers(
             logger.error(f"🔍 Error processing task_id {task_id}: {e}")
             continue
         
+        # A later call of the same tool that SUCCEEDED may already have done this work (the gather loop re-runs a
+        # failed tool itself). Only then is the model asked; it decides whether the work is the same.
+        _later_ok = [(tools_called[j], tools_results_list[j]) for j in range(task_index + 1, len(tools_called))
+                     if tools_called[j] == tool_name and str(j + 1) not in {str(k) for k in error_analysis}]
+        if _later_ok:
+            _why = await _failure_already_done(user_prompt, tool_name, result, _later_ok)
+            if _why:
+                logger.info(f"🔄 NOT RETRYING {tool_name} (task {task_index + 1}): a later successful call already "
+                            f"did this work — {_why}")
+                continue
+
         # Sprint 3.1: Advanced Circuit Breaker Decision System
         circuit_decision = circuit_breaker_manager.should_abort_retry(task_key, error_pattern, feedback)
         
@@ -5158,7 +5206,10 @@ async def intelligent_retry_with_circuit_breakers(
             
             # 🚨 VALIDATION: Check if LLM actually regenerated tools
             if len(regenerated_tools) == 0:
-                logger.error(f"❌ ITERATION {iteration}: No regenerated tools returned - breaking iteration loop")
+                # Also the expected outcome when a later successful call already replaced the failed one
+                # (2026-10-25, NewX post 9088: a superseded program was re-run twice and its charts duplicated).
+                logger.info(f"🔧 ITERATION {iteration}: no call regenerated — nothing to retry (failures already "
+                            f"replaced by successful calls, or the model declined); keeping the results as they are")
                 break
             
             # 🚀 RE-EXECUTE CORRECTED TOOLS

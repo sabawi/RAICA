@@ -11,6 +11,19 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-115 — Superimposed 3D charts from run_python_analysis are often unreadable  [P3 — OPEN, partly addressed 1.0.0.352]
+- **Seen:** NewX post 9088 and 9 real-path runs 2026-10-25. Policy now names stacked offsets or wireframes; final
+  three runs: 1 readable (wireframes), 1 stacked but swamped by a 1/r singularity and three colour bars, 1 opaque and
+  aliased. Also run 2 ended with `[[chart:wave_solutions_3d.png]]`: the program PRINTED a marker, the sandbox defanged
+  it, the writer copied it back undefanged; NewX drops it (no media file), so readers see nothing.
+- **Next:** stop tuning wording (3 rounds). Options: render-time check of the PNG (e.g. ask the vision model whether
+  each named series is distinguishable) and one repair; or tell the caller to prefer side-by-side panels.
+
+### SI-114 — Retry engine re-ran a failure a later call had already redone  [RESOLVED 1.0.0.352]
+- **Seen:** post 9088: the gather loop's second `run_python_analysis` succeeded; the arbitrator still marked the
+  first BAD and the retry engine regenerated it twice (prod log `server_complete_20261025_164607.log` 04:20:12–04:21:40).
+- **Fix:** `_failure_already_done` (model decides) before retrying; see CHANGELOG_v1.0.0.352. 5/5 real-path runs.
+
 ### SI-113 — Ten dataset tests fail on 1.0.0.350 and 1.0.0.351 alike  [P3 — OPEN, not triaged]
 - **Seen:** 2026-10-25 running the dataset suites for v1.0.0.351: `test_declarative_adapter.py` (4 — FBI rate /
   year filter / malformed range), `test_search_datasets_tool.py` (2), `test_data_chart_builder.py` (3),
