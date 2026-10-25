@@ -67,7 +67,8 @@ class CompareDatasetsTool(BaseUserTool):
             "window returns only a few points per line (e.g. '2024-2026' is THREE points, not a "
             "daily path) and the newest year is a PARTIAL-year average whenever the current year is "
             "unfinished. Say so when you present the chart, and treat the correlations it reports as "
-            "informative only when there are enough points to support them."
+            "informative only when there are enough points to support them. For ONE series at a finer "
+            "resolution (monthly, weekly, daily) use search_datasets with its `frequency` parameter."
         )
 
     @property

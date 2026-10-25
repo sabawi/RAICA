@@ -24,6 +24,40 @@ def _start_year(s: Dict[str, Any]) -> int:
         return 9999
 
 
+def fred_series_lookup(series_id: str, api_key: str, disc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Ask FRED whether `series_id` IS a series id (`fred/series`). FRED decides, not a pattern here: 200 → the
+    series; 400 ("Series IDs should be 25 or less alphanumeric characters" / "series does not exist") → None.
+    Found 2026-10-25: full-text SEARCH for an id ("DCOILBRENTEU") timed out at 12 s every time, while this lookup
+    answers in ~0.4 s — so a model that gave the exact id got "unknown measure"."""
+    import requests
+    endpoint = disc.get("series_endpoint", "https://api.stlouisfed.org/fred/series")
+    try:
+        sess = requests.Session()
+        resp = sess.get(endpoint, params={"series_id": series_id, "api_key": api_key, "file_type": "json"},
+                        timeout=float(disc.get("timeout_seconds", 12)), headers={"Connection": "close"})
+        if resp.status_code == 400:
+            return None
+        resp.raise_for_status()
+        seriess = (resp.json() or {}).get("seriess", []) or []
+    except Exception as e:  # noqa: BLE001 — scrub the key from any error before it can be logged upstream
+        raise RuntimeError(f"fred series lookup failed: {str(e).replace(api_key, '***')}") from None
+    finally:
+        try:
+            sess.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if not seriess:
+        return None
+    s = seriess[0]
+    return {
+        "path": s["id"],
+        "label": s.get("title") or s["id"],
+        "unit": s.get("units_short") or s.get("units") or None,
+        "coverage": f"{(s.get('observation_start') or '?')[:4]}–{(s.get('observation_end') or '?')[:4]}",
+        "frequency": s.get("frequency_short"),
+    }
+
+
 def fred_search(search_text: str, from_year: Optional[int], to_year: Optional[int],
                 api_key: str, disc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Resolve a description to the best-matching FRED series. Returns {path,label,unit,coverage,frequency}

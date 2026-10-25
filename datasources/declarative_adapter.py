@@ -16,9 +16,23 @@ from typing import Any, Callable, Dict, List, Optional
 
 from datasources.base import DataSourceAdapter, DatasetRequest
 from datasources.shapes import get_shape
-from utils.dataset_block import DatasetError, DatasetSeries
+from utils.dataset_block import RESOLUTIONS, DatasetError, DatasetSeries, to_decimal_year
 
 logger = logging.getLogger(__name__)
+
+
+def _refusal_text(resp) -> str:
+    """A source's own reason for refusing a request, short: its JSON `error_message`/`message` when it has one,
+    else the start of the body."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            for k in ("error_message", "message", "error", "detail"):
+                if isinstance(body.get(k), str) and body[k].strip():
+                    return body[k].strip()[:300]
+    except ValueError:
+        pass
+    return (resp.text or "").strip()[:300]
 
 
 def _pick(rec: Dict[str, Any], fields) -> Optional[float]:
@@ -54,8 +68,27 @@ class DeclarativeAdapter(DataSourceAdapter):
             "coverage_years": self.cfg.get("coverage", ""),
             "measures": {code: m.get("label", code) for code, m in self.cfg["measures"].items()},
             "value_kinds": self._value_kinds(),
+            "frequencies": self.frequencies(),
             "note": self.cfg.get("note", ""),
         }
+
+    def frequencies(self) -> List[str]:
+        """Resolutions this source publishes, from its config. A source that declares none is annual-only."""
+        declared = self.cfg.get("frequencies") or {}
+        return ["annual"] + [f for f in RESOLUTIONS if f != "annual" and f in declared]
+
+    def _frequency(self, request: DatasetRequest) -> Optional[str]:
+        """The requested sub-annual resolution, or None for the annual path. A resolution the source does not
+        publish is refused with the list it does publish, so the model can choose again."""
+        f = (request.frequency or "annual").strip().lower()
+        if f == "annual":
+            return None
+        if f not in (self.cfg.get("frequencies") or {}):
+            raise DatasetError(f"{self.name}: no {f!r} data; this source publishes {self.frequencies()}")
+        if not ((self.cfg["frequencies"].get(f) or {}).get("param_value")):
+            # Without the code the source would return its native resolution, which would then be LABELLED as f.
+            raise DatasetError(f"{self.name}: config declares {f!r} without a param_value")
+        return f
 
     def _value_kinds(self) -> List[str]:
         return list(self.cfg.get("value_kinds") or ["value"])
@@ -139,8 +172,10 @@ class DeclarativeAdapter(DataSourceAdapter):
                 key = next((os.environ.get(e) for e in auth.get("env", []) if os.environ.get(e)), None)
                 if not key:
                     return None
-                from datasources.discovery import fred_search
-                spec = fred_search(request.measure, request.from_year, request.to_year, key, disc)
+                from datasources.discovery import fred_search, fred_series_lookup
+                # The measure may already BE a series id: the exact lookup is asked first (FRED answers it).
+                spec = (fred_series_lookup(request.measure.strip(), key, disc) if request.measure.strip() else None) \
+                    or fred_search(request.measure, request.from_year, request.to_year, key, disc)
             elif dtype == "wb_search":            # World Bank is keyless
                 from datasources.discovery import wb_search
                 spec = wb_search(request.measure, request.from_year, request.to_year, disc)
@@ -163,14 +198,23 @@ class DeclarativeAdapter(DataSourceAdapter):
         if resolved is None:
             resolved = self._discover_measure(request)      # dynamic discovery (e.g. FRED search)
         if resolved is None:
+            hint = ((self.cfg.get("discovery") or {}).get("miss_hint") or "").strip()
             raise DatasetError(f"{self.name}: unknown measure {request.measure!r} "
-                               f"(known: {sorted(self.cfg['measures'])}; discovery found nothing)")
+                               f"(known: {sorted(self.cfg['measures'])}; discovery found nothing)"
+                               + (f". {hint}" if hint else ""))
         if resolved != request.measure:
             logger.info("🔎 data_chart measure resolved %r → %r", request.measure, resolved)
             request.measure = resolved
+        # A window given only as dates still bounds an ANNUAL request: its years become the year window.
+        for attr, yattr in (("start", "from_year"), ("end", "to_year")):
+            d = (getattr(request, attr) or "").strip()
+            if d and getattr(request, yattr) is None and d[:4].isdigit():
+                setattr(request, yattr, int(d[:4]))
+        freq = self._frequency(request)          # refuse an unpublished resolution BEFORE any fetch
         raw = (fetch_json or self._http_get)(request)
-        records = get_shape(self.cfg.get("shape", "flat_json"))(raw, self.cfg)
-        return self._build(records, request)
+        shape_cfg = {**self.cfg, "requested_frequency": freq} if freq else self.cfg
+        records = get_shape(self.cfg.get("shape", "flat_json"))(raw, shape_cfg)
+        return self._build_dated(records, request, freq) if freq else self._build(records, request)
 
     # -- URL / params / auth (declarative) ------------------------------------
     def _resolve_geo(self, geo: str) -> str:
@@ -207,12 +251,25 @@ class DeclarativeAdapter(DataSourceAdapter):
         else:
             from_year_out = request.from_year if request.from_year is not None else ""
             to_year_out = request.to_year if request.to_year is not None else ""
+        freq = self._frequency(request)
         return {
             "measure_path": self._spec(request.measure).get("path", request.measure),
             "geo_path": geo,
             "from_year": from_year_out,
             "to_year": to_year_out,
+            "frequency_code": ((self.cfg.get("frequencies") or {}).get(freq) or {}).get("param_value", "")
+            if freq else "",
+            "start_date": self._window_date(request.start, from_year_out, "-01-01"),
+            "end_date": self._window_date(request.end, to_year_out, "-12-31"),
         }
+
+    @staticmethod
+    def _window_date(given: Optional[str], year: Any, suffix: str) -> str:
+        """An ISO window bound: the caller's date (YYYY-MM becomes the first of that month), else the year bound."""
+        g = (given or "").strip()
+        if g:
+            return g + "-01" if len(g) == 7 else g
+        return f"{year}{suffix}" if year not in ("", None) else ""
 
     def _endpoint(self, request: DatasetRequest) -> str:
         return self.cfg["endpoint"].format(**self._fmt(request))
@@ -223,7 +280,12 @@ class DeclarativeAdapter(DataSourceAdapter):
         dropping the param and fetching the full series is safe and correct."""
         fmt = self._fmt(request)
         params: Dict[str, Any] = {}
-        for key, tmpl in (self.cfg.get("params") or {}).items():
+        templates = dict(self.cfg.get("params") or {})
+        if fmt["frequency_code"]:
+            # A sub-annual request: the source's own resolution and window parameters (config, not code).
+            templates.update(self.cfg.get("frequency_params") or {})
+            templates.update(self.cfg.get("window_params") or {})
+        for key, tmpl in templates.items():
             val = str(tmpl).format(**fmt).strip()
             if (not val) or ("{" in val) or val == ":" or val.startswith(":") or val.endswith(":"):
                 continue
@@ -279,6 +341,13 @@ class DeclarativeAdapter(DataSourceAdapter):
                 resp = sess.get(_url, params=params, timeout=timeout, headers={"Connection": "close"})
                 logger.info("🔎 data_chart fetch OK on attempt %d in %.1fs (%d bytes, HTTP %s)",
                             _i + 1, _t.time() - _t0, len(resp.content), resp.status_code)
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    # The source REFUSED the request (bad series, unpublished resolution, …). Retrying cannot
+                    # change that, and its own message is what the model needs to choose again — e.g. FRED:
+                    # "Value of frequency is not one of: 'm', 'q', 'sa', 'a'." (2026-10-25: five identical
+                    # retries, and the model was told only "400 Bad Request").
+                    raise DatasetError(f"{self.name}: request refused (HTTP {resp.status_code}): "
+                                       f"{_scrub(_refusal_text(resp))}")
                 resp.raise_for_status()
                 return resp.json()
             except requests.exceptions.RequestException as e:
@@ -318,6 +387,49 @@ class DeclarativeAdapter(DataSourceAdapter):
         if vk == "count" and v.get("unit_count"):
             return v["unit_count"]
         return measure.get("unit") or v.get("unit")
+
+    def _build_dated(self, records: List[Dict[str, Any]], request: DatasetRequest, freq: str) -> DatasetSeries:
+        """A sub-annual series: one point per published period, keyed by its date. The annual `_build` below is
+        unchanged, so every existing chart is built exactly as before."""
+        cfg = self.cfg
+        measure = self._spec(request.measure)
+        vk = self._value_kind(request)
+        lo = to_decimal_year(self._window_date(request.start, request.from_year or "", "-01-01") or 0) \
+            if (request.start or request.from_year) else None
+        hi = to_decimal_year(self._window_date(request.end, request.to_year or "", "-12-31") or 0) \
+            if (request.end or request.to_year) else None
+        rows: Dict[float, Optional[float]] = {}
+        for rec in records:
+            if not isinstance(rec, dict) or not rec.get("date"):
+                continue
+            try:
+                xi = to_decimal_year(rec["date"])
+            except ValueError:
+                continue
+            if (lo is not None and xi < lo) or (hi is not None and xi > hi):
+                continue
+            rows[xi] = self._extract_value(rec, vk)
+        ordered = sorted(rows.items())
+        if len(ordered) < 2:
+            raise DatasetError(f"{self.name}: fewer than 2 usable {freq} points for {request.measure}")
+        xs = [x for x, _v in ordered]
+        from utils.dataset_block import _fmt_x
+        label = measure.get("label", request.measure)
+        geo_disp = cfg.get("geo_label") or (request.geo if request.geo and request.geo != "national"
+                                            else cfg.get("geo_default", ""))
+        title = cfg.get("title_template", "{label}, {x_min}–{x_max}").format(
+            label=label, value_kind=vk, geo=geo_disp, x_min=_fmt_x(xs[0], freq), x_max=_fmt_x(xs[-1], freq))
+        disc = [{"at": to_decimal_year(d["at"]), "note": d.get("note")} for d in cfg.get("discontinuities", [])
+                if (not d.get("requires_span")) or (xs[0] < to_decimal_year(d["at"]) <= xs[-1])]
+        method = (cfg.get("frequency_methodology") or "").format(frequency=freq) or cfg.get("methodology")
+        return DatasetSeries(
+            title=title, source=cfg["source_name"], url=cfg["home_url"],
+            x_name="date", x_type="temporal", x=xs,
+            series=[{"name": f"{label} {vk}" if vk in ("rate", "count") else label,
+                     "unit": self._unit(vk, measure), "y": [v for _x, v in ordered]}],
+            measure=request.measure, geo=geo_disp or None, retrieved=_dt.date.today().isoformat(),
+            methodology=method, discontinuities=disc, source_tier=self.source_tier, resolution=freq,
+        )
 
     def _build(self, records: List[Dict[str, Any]], request: DatasetRequest) -> DatasetSeries:
         cfg, xcfg = self.cfg, self.cfg["x"]

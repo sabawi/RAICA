@@ -23,7 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FixedLocator, FuncFormatter, MaxNLocator
 
 from utils.dataset_block import DatasetSeries
 
@@ -136,15 +136,12 @@ def _set_fitted_title(fig, ax, title: str, width_px: int,
 
 
 def _decimal_year_to_date(value: float) -> "date_cls":
-    """Inverse of `plot_data_tool._to_decimal_year`: 2025.5 -> 2025-07-02."""
-    year = int(math.floor(value))
-    start = date_cls(year, 1, 1).toordinal()
-    length = date_cls(year + 1, 1, 1).toordinal() - start
-    offset = int(round((value - year) * length))
-    return date_cls.fromordinal(start + min(max(offset, 0), length - 1))
+    """Inverse of `to_decimal_year`: 2025.5 -> 2025-07-02 (one copy, in utils.dataset_block)."""
+    from utils.dataset_block import decimal_year_to_date
+    return decimal_year_to_date(value)
 
 
-def _apply_temporal_ticks(ax, x) -> bool:
+def _apply_temporal_ticks(ax, x, resolution: Optional[str] = None) -> bool:
     """SI-091 — label a DATE axis with calendar dates, not decimal years.
 
     `plot_data_tool._to_decimal_year` turns 2025-07-02 into 2025.5 because `DatasetSeries`
@@ -166,6 +163,20 @@ def _apply_temporal_ticks(ax, x) -> bool:
     if len(nums) < 2 or all(float(v).is_integer() for v in nums):
         return False                      # whole years — the catalog case, left alone
     span = max(nums) - min(nums)
+    if resolution in ("monthly", "quarterly") and span <= 3:
+        # One point per month/quarter: tick ON the periods and name them. Span-based day labels ("25 Feb, 21 Apr")
+        # fall between the points and name days the data does not have (2026-10-25, monthly Brent).
+        pts = sorted(set(nums))
+        step = max(1, -(-len(pts) // 12))            # at most 12 labels
+        ax.xaxis.set_major_locator(FixedLocator(pts[::step]))
+
+        def _period(value, _pos):
+            d = _decimal_year_to_date(value)
+            return f"Q{(d.month - 1) // 3 + 1} {d.year}" if resolution == "quarterly" else d.strftime("%b %Y")
+        ax.xaxis.set_major_formatter(FuncFormatter(_period))
+        for lab in ax.get_xticklabels():
+            lab.set_rotation(0)
+        return True
     fmt = "%Y" if span > 3 else ("%b %Y" if span > 0.7 else "%d %b")
 
     def _fmt(value, _pos):
@@ -245,7 +256,7 @@ def generate_data_chart(series: DatasetSeries, kind: str = "auto",
         # labels / title / source footer
         _set_fitted_title(fig, ax, series.title, width_px)
         if series.x_type == "temporal":
-            _apply_temporal_ticks(ax, x)
+            _apply_temporal_ticks(ax, x, series.resolution)
         ax.set_xlabel(series.x_name, color=_TXT, fontsize=9)
         ylab = series.series[0].get("unit") or series.series[0]["name"]
         ax.set_ylabel(ylab, color=_TXT, fontsize=9)

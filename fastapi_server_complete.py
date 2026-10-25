@@ -3621,10 +3621,16 @@ _ARTIFACT_MARKER_RELAY = (
     "You must NEVER fabricate a chart — do NOT invent or hand-write a [[chart:...]] marker, do NOT emit "
     "matplotlib/plotly/quickchart or any chart code or chart URL, and do NOT put data values inside a marker. "
     "Charts come only from real tool output; never from you.\n"
+    "- SHOW A SERIES ONCE. When several markers chart the SAME series (the same `Series key:` in their "
+    "digests, differing only in period), include only the one whose period fits the request; the others "
+    "are earlier attempts, not additional findings.\n"
     # SI-027 — describe the chart you were GIVEN, not the one the user pictured.
-    "- STATE THE GRANULARITY, AND DO NOT READ MORE INTO A CHART THAN IT CONTAINS. Dataset charts "
-    "(search_datasets / compare_datasets) plot ANNUAL MEANS of the underlying series, so a request for "
-    "'the last 2 years' yields only two or three annual points per line — not a daily path. When the "
+    "- STATE THE GRANULARITY, AND DO NOT READ MORE INTO A CHART THAN IT CONTAINS. A dataset chart "
+    "(search_datasets / compare_datasets) has the resolution its digest states on the `X:` line. An "
+    "ANNUAL chart plots ANNUAL MEANS of the underlying series, so a request for 'the last 2 years' at "
+    "annual resolution yields only two or three points per line — not a daily path; where a question "
+    "turns on movement within a year, search_datasets can return a series at a finer resolution its "
+    "source publishes (its `frequency` parameter). When the "
     "points are few, say so in one clause ('annual averages; 3 points per series'), and describe what the "
     "chart actually shows — LEVELS at those points and the direction between them — rather than narrating "
     "it as a continuous path, a trend line, or intra-year movement it cannot resolve. Two lines rising "
@@ -3682,7 +3688,7 @@ def _caption_of(marker: str) -> str:
 
 
 
-def _repair_answer_chart_markers(answer: str, auth_markers):
+def _repair_answer_chart_markers(answer: str, auth_markers, series_keys=None):
     """Replace every `[[chart:...]]` the answer contains with its AUTHORITATIVE counterpart from tool evidence,
     and append any authoritative marker the answer dropped entirely. Deterministic; never raises — returns
     (possibly_repaired_answer, num_changes). Matching (single dataset dominates): 1 authoritative marker →
@@ -3737,8 +3743,21 @@ def _repair_answer_chart_markers(answer: str, auth_markers):
             return chosen
         repaired = _CHART_MARKER_RE_SRV.sub(_sub, answer)
 
-        # 2) any authoritative marker still entirely absent → append it (a chart at the end beats no chart)
-        missing = [a for a in auth_markers if a not in repaired]
+        # 2) any authoritative marker still entirely absent → append it (a chart at the end beats no chart) —
+        # except a second drawing of a series already in the answer, or already being appended: the writer is
+        # told to show a series once, and appending its other windows overrode that (2026-10-25, Brent ×3).
+        # The latest drawing of a series wins when none is in the answer. Unkeyed markers are always appended.
+        keys = series_keys or {}
+        shown = {keys[a] for a in auth_markers if a in repaired and keys.get(a)}
+        missing = []
+        for a in reversed([a for a in auth_markers if a not in repaired]):
+            k = keys.get(a)
+            if k and k in shown:
+                logger.info("📊 CHART REPAIR: not appending a second chart of series %r", k[:120])
+                continue
+            if k:
+                shown.add(k)
+            missing.insert(0, a)
         if missing:
             repaired = repaired.rstrip() + "\n\n" + "\n\n".join(missing) + "\n"
             changes += len(missing)
@@ -8150,6 +8169,10 @@ async def _gather_gate_assess(user_message: str, prior_results, tools_array: lis
         # gate saw no request at all and answered "No user prompt was provided", which would have
         # made every shadow verdict worthless while looking like it was working.
         f"USER REQUEST:\n{(user_message or '')[-4000:]}\n\n"
+        # The selector read "this year" correctly from the dates inside tool output; the gate, judging the same
+        # output, read it as the previous year in 3/3 runs (2026-10-25). State the date as a fact here.
+        f"TODAY: {datetime.now().strftime('%A, %B %d, %Y')}. Resolve every relative time in the request "
+        "(this year, last month, since…, until now) against today before judging what is missing.\n\n"
         f"{summary}\n\n"
         f"TOOLS AVAILABLE: {', '.join(names)}\n\n"
         "Judge ONLY this: can the user's request be answered ACCURATELY and COMPLETELY from what "
@@ -8262,10 +8285,30 @@ def _describe_round_results(results) -> str:
         return ""
     # Total cap across outputs: prose now carries a real budget each, so several results must not
     # compound into an unbounded prompt. Tables stay tiny regardless (schema only).
-    from utils.tool_output_reference import _TOTAL_PREVIEW_CHARS
+    from utils.tool_output_reference import _TOTAL_PREVIEW_CHARS, _PROSE_PREVIEW_CHARS
+    # FAIR SHARE, not first come. Filling the budget in order let the first round's long search results
+    # use all of it, so a later round's output was fetched and then never shown to the gate or the selector
+    # (2026-10-25, Brent chart, 3 runs: the page fetched in round 2 was omitted in rounds 2 and 3, and both
+    # kept asking for data that was already gathered). Short outputs keep their full text; the room left is
+    # split evenly between the long ones, so every output is seen. Each block states its own truncation.
+    full = {ref: describe_reference(ref, text) for ref, text in index.items()}
+    cap = _PROSE_PREVIEW_CHARS
+    if sum(len(b) for b in full.values()) > _TOTAL_PREVIEW_CHARS:
+        lengths = sorted(len(b) for b in full.values())
+        room, left = _TOTAL_PREVIEW_CHARS, len(lengths)
+        for n in lengths:                     # water-fill: every block shorter than the even share fits whole
+            if n * left > room:
+                break
+            room -= n
+            left -= 1
+        # A block is its prose plus a header line and a truncation note; leave room for both.
+        cap = max(0, room // max(left, 1) - 400)
+        logger.info("🔎 round-preview: %d outputs exceed %d chars; long outputs shown at %d chars each",
+                    len(full), _TOTAL_PREVIEW_CHARS, cap)
     blocks, used = [], 0
     for ref, text in index.items():
-        block = describe_reference(ref, text)
+        block = full[ref] if cap >= _PROSE_PREVIEW_CHARS or len(full[ref]) <= cap else \
+            describe_reference(ref, text, prose_chars=max(cap, 1))
         if used + len(block) > _TOTAL_PREVIEW_CHARS:
             blocks.append(f"[further tool output omitted — {_TOTAL_PREVIEW_CHARS} character "
                           f"budget reached; {len(index) - len(blocks)} output(s) not shown]")
@@ -8573,7 +8616,8 @@ def _second_round_audit(response, prompt: str, tools_array: list, dispositions: 
 
 
 async def _second_round_tool_calls(user_message: str, prior_results, tools_array: list,
-                                   executed_keys: set, tools_model, generate_tools) -> list:
+                                   executed_keys: set, tools_model, generate_tools,
+                                   gate_verdict: "Optional[dict]" = None) -> list:
     """SI-036 — ask the tool-calling model, ONCE, whether the data now in hand warrants more tools.
 
     The non-DR path selects all tools in a single call made BEFORE any tool runs
@@ -8594,12 +8638,29 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
     summary = _describe_round_results(prior_results)
     if not summary.strip():
         return []
+    # The gate judges WHETHER more is needed and the selector decides WHAT to call — but the selector was
+    # never told what the gate found missing. With the gate naming "no chart; use plot_data or
+    # run_python_analysis" in every round, the selector chose more searches in every round, 3/3 runs
+    # (2026-10-25). The verdict is passed as a finding to weigh, not an order: the gate can be wrong.
+    gate_note = ""
+    if gate_verdict and gate_verdict.get("missing"):
+        gate_note = (
+            "=== COMPLETENESS CHECK OF THE OUTPUT ABOVE ===\n"
+            f"Still missing: {gate_verdict['missing']}\n"
+            f"Tools it suggested: {', '.join(gate_verdict.get('next_tools') or []) or 'none named'}\n"
+            "This check read the same output you see. Close the gap it names with the tool that "
+            "obtains or produces what is missing — the suggestion is advice, choose the tool yourself, "
+            "and if the check misread the request or the output, follow the request and the output. "
+            "When the figures needed are already above, even scattered through text, the next step is "
+            "the tool that calculates or draws them, not another search for the same figures.\n"
+            "==============================================\n\n")
 
     prompt = (
         f"{user_message}\n\n"
         "=== TOOL OUTPUT GATHERED SO FAR ===\n"
         f"{summary}\n"
         "===================================\n\n"
+        f"{gate_note}"
         "The data above has already been retrieved for this request. Decide whether answering it "
         "ACCURATELY needs any further tool call now that this data exists — in particular, any "
         "figure that must be DERIVED from the data rather than read from it (an extremum, total, "
@@ -8609,8 +8670,10 @@ async def _second_round_tool_calls(user_message: str, prior_results, tools_array
         "follow from the shape actually measured above — where the mode sits, how far the mean is "
         "from the median, how fast the far end falls away — not from whichever curve is most "
         "familiar; measure the shape first if it is not yet computed, and plot the observed data "
-        "alone if no family is defensible. Pass the data BY REFERENCE as described above — never "
-        "retype the rows. Do NOT repeat a call that already appears above. "
+        "alone if no family is defensible. Pass a table's data BY REFERENCE as described above — never "
+        "retype its rows. Figures that appear only in text cannot be referenced: give those values "
+        "directly, exactly as written there, and name the page they came from. "
+        "Do NOT repeat a call that already appears above. "
         # SI-073: this round is the ONLY place a WRONG figure can still be corrected — it runs
         # BEFORE the answer is written, so a fix here means the answer is right the first time
         # rather than regenerated afterwards. Previously this prompt asked only what was
@@ -11370,6 +11433,7 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         # call, so whitelist filtering, dedup and reference
                                         # resolution are reused rather than duplicated.
                                         _gg = _gather_gate_config()
+                                        _gg_last_verdict = None     # the final second round below hears it too
                                         if _gg['enabled']:
                                             try:
                                                 from utils.tool_output_reference import build_reference_index
@@ -11414,6 +11478,7 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                         "model=%s%s", _v["round"], _v["status"], _v["missing"],
                                                         _v["next_tools"], _v["model"],
                                                         " [SHADOW — not acted on]" if _gg['shadow'] else "")
+                                                    _gg_last_verdict = None if _gg['shadow'] else _v
                                                     if _gg['shadow'] or _v["status"] == "sufficient":
                                                         _gg_stop = "shadow" if _gg['shadow'] else "sufficient"
                                                         break
@@ -11429,7 +11494,8 @@ The above image analysis was automatically performed on newly uploaded images. T
                                                         tools_array=tools_array,
                                                         executed_keys=_gg_keys,
                                                         tools_model=tools_model,
-                                                        generate_tools=llm_manager.generate_tools)
+                                                        generate_tools=llm_manager.generate_tools,
+                                                        gate_verdict=_v)
                                                     if not _more:
                                                         _gg_stop = "no_further_queries"
                                                         break
@@ -11470,13 +11536,18 @@ The above image analysis was automatically performed on newly uploaded images. T
                                         if _sr_cfg['enabled'] and _sr_cfg['max_extra_rounds'] > 0:
                                             try:
                                                 _executed_keys = {_tool_call_key(c) for c in tool_calls}
+                                                # Same finding as the gate loop's own selector: when the gate stopped at its
+                                                # ceiling still naming what is missing, this last round must hear it too.
                                                 _extra_calls = await _second_round_tool_calls(
                                                     user_message=user_message,
                                                     prior_results=phase1_results,
                                                     tools_array=tools_array,
                                                     executed_keys=_executed_keys,
                                                     tools_model=tools_model,
-                                                    generate_tools=llm_manager.generate_tools)
+                                                    generate_tools=llm_manager.generate_tools,
+                                                    gate_verdict=(_gg_last_verdict
+                                                                  if (_gg_last_verdict or {}).get("status") == "needs_more"
+                                                                  else None))
                                                 if _extra_calls:
                                                     logger.info(
                                                         f"🔁 SECOND ROUND: {len(_extra_calls)} additional tool(s) — "
@@ -12859,7 +12930,10 @@ END OF CONTEXT
                         # 📊 In buffer mode, repair any corrupted chart marker against the authoritative
                         # evidence markers, then emit the corrected full answer as a single response chunk.
                         if _buffer_chart:
-                            _repaired, _nfix = _repair_answer_chart_markers(complete_llm_response, _auth_chart_markers)
+                            from utils.dataset_block import marker_series_keys
+                            _repaired, _nfix = _repair_answer_chart_markers(
+                                complete_llm_response, _auth_chart_markers,
+                                marker_series_keys(tools_results or "", _auth_chart_markers))
                             if _nfix:
                                 logger.info(f"📊 CHART REPAIR: corrected {_nfix} chart marker(s) in the final answer")
                             complete_llm_response = _repaired

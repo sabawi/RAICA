@@ -11,7 +11,30 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-109 — The gather gate's verdict never reaches the tool selector; a requested chart can run out of rounds  [P2 — OPEN]
+### SI-113 — Ten dataset tests fail on 1.0.0.350 and 1.0.0.351 alike  [P3 — OPEN, not triaged]
+- **Seen:** 2026-10-25 running the dataset suites for v1.0.0.351: `test_declarative_adapter.py` (4 — FBI rate /
+  year filter / malformed range), `test_search_datasets_tool.py` (2), `test_data_chart_builder.py` (3),
+  `test_data_charts.py` (1). Identical with the 1.0.0.351 changes stashed. Two reasons read: `shape
+  fbi_cde_summarized: no 'offenses' block` (fixture shape vs current shape) and a digest assertion on the word
+  `sample`. Whether the tests or the code are wrong is not established; live FBI charts work (annual crime control,
+  2026-10-25).
+- **Next:** read each failure against `git log` of the shape/digest it tests; fix the tests or the code.
+
+### SI-112 — A dataset-answerable chart request is sometimes served from web pages, and gets no chart  [P2 — OPEN]
+- **Seen:** 2026-10-25, v1.0.0.351 candidate, Brent monthly prompt, 3 runs on the real NewX path: 2 called
+  `search_datasets` (FRED, monthly) and charted; 1 fetched web pages only — the gate's `next_tools` named
+  `lookup_website` / `plot_data`, never `search_datasets` — the selector's call duplicated an earlier one, the gate
+  stopped (`no_further_queries`), no chart. The answer's table was correct.
+- **Also seen:** both charted runs started the window at 2025-06 (the earlier war) while the answer named
+  28 Feb 2026 as the first attack this year; the chart covers the asked period, plus months before it.
+- **Next:** measure whether the gate is told that `search_datasets` serves sub-annual series (its tool descriptions
+  are what it sees) before changing anything; then 3+ runs.
+
+### SI-109 — The gather gate's verdict never reaches the tool selector; a requested chart can run out of rounds  [P2 — PARTLY ADDRESSED v1.0.0.351]
+- **v1.0.0.351 (2026-10-25):** the verdict now reaches the selector (loop and final round, as advice), the gate is
+  told today's date, and every round's output is described (fair-share preview). Measured on the Brent prompt only:
+  A alone 1/3 charts (0/7 before); with dataset time resolution 2/3, twice. Not re-measured on the solar-sail prompt,
+  where passing the verdict alone showed no effect — the options below remain open for that case.
 - **Seen:** live 2026-10-24, NewX post 9010 (solar-sail prompt): the gate said "plot_data must be run" in all 3
   rounds; `_second_round_tool_calls` was called WITHOUT that verdict, re-checked its own figures with two more
   `compute` calls each round, `max_rounds` ended it, no chart. Design (`RAICA_NONDR_GATHER_GATE.md` §3.1) says

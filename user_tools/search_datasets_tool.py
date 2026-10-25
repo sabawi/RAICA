@@ -21,6 +21,7 @@ from base_user_tool import BaseUserTool
 from datasources.base import DatasetRequest
 from datasources.data_chart_builder import build_data_chart
 from datasources.registry import all_catalogs
+from utils.dataset_block import RESOLUTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ class SearchDatasetsTool(BaseUserTool):
     def description(self) -> str:
         cats = all_catalogs()
         names = ", ".join(sorted(c["name"] for c in cats)) or "(none)"
+        # Each source's resolutions come from its own config entry, so a source added or extended in config is
+        # advertised correctly with no change here.
+        res = "; ".join(f"{c['name']}: {', '.join(c.get('frequencies') or ['annual'])}"
+                        for c in sorted(cats, key=lambda c: c["name"])) or "(none)"
         return (
             "RESEARCH/GATHER source (runs DURING research, NOT a delivery/packaging action): fetch a REAL "
             "numeric dataset from a curated authoritative data source and render an actual chart, embedding "
@@ -55,7 +60,11 @@ class SearchDatasetsTool(BaseUserTool):
             f"`measure` from the advertised catalogs (available sources: {names}). For the `fred` source, "
             "`measure` may ALSO be a plain DESCRIPTION of any U.S. economic/financial/housing/labor series "
             "(e.g. 'home price index', 'homeownership rate') — resolved by searching FRED, so you are not "
-            "limited to the listed measures. Not a file/email/deliverable step — only real datasets."
+            "limited to the listed measures. Not a file/email/deliverable step — only real datasets. "
+            "TIME RESOLUTION: set `frequency` to the resolution the question needs (annual is the default and "
+            "gives one value per year); use `start`/`end` (YYYY-MM or YYYY-MM-DD) for a window inside a year. "
+            f"Resolutions each source publishes — {res}. A source refuses one it does not publish and says "
+            "which it has; it never fills in periods it does not publish."
         )
 
     @property
@@ -70,6 +79,14 @@ class SearchDatasetsTool(BaseUserTool):
                 "geo": {"type": "string", "description": "geography (source-specific)", "default": "national"},
                 "from_year": {"type": "integer", "description": "start year (optional)"},
                 "to_year": {"type": "integer", "description": "end year (optional)"},
+                "frequency": {"type": "string",
+                              "enum": list(RESOLUTIONS),
+                              "default": "annual",
+                              "description": "time resolution of the returned series"},
+                "start": {"type": "string",
+                          "description": "window start, YYYY-MM or YYYY-MM-DD (optional; wins over from_year)"},
+                "end": {"type": "string",
+                        "description": "window end, YYYY-MM or YYYY-MM-DD (optional; wins over to_year)"},
                 "value_kind": {"type": "string", "enum": ["rate", "count"], "default": "rate"},
                 "chart_kind": {"type": "string", "enum": ["auto", "line", "bar", "scatter"], "default": "auto"},
             },
@@ -87,7 +104,10 @@ class SearchDatasetsTool(BaseUserTool):
             req = DatasetRequest(
                 measure=measure, geo=kwargs.get("geo", "national"),
                 from_year=kwargs.get("from_year"), to_year=kwargs.get("to_year"),
-                value_kind=kwargs.get("value_kind", "rate"))
+                value_kind=kwargs.get("value_kind", "rate"),
+                frequency=kwargs.get("frequency") or None,
+                start=(str(kwargs["start"]).strip() or None) if kwargs.get("start") else None,
+                end=(str(kwargs["end"]).strip() or None) if kwargs.get("end") else None)
             res = await asyncio.get_event_loop().run_in_executor(
                 None, functools.partial(build_data_chart, source, req,
                                         chart_kind=kwargs.get("chart_kind", "auto")))

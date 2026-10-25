@@ -100,6 +100,21 @@ def fred_observations(raw: Any, cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(obs, list):
         raise DatasetError("shape fred_observations: no 'observations' list")
 
+    if cfg.get("requested_frequency"):
+        # FRED aggregated to the requested resolution on its own side (`frequency` + `aggregation_method`), so each
+        # observation IS one period: keep its date. "." (a period not yet published) is a gap, never a zero.
+        dated = []
+        for o in obs:
+            if not isinstance(o, dict) or not isinstance(o.get("date"), str):
+                continue
+            try:
+                dated.append({"date": o["date"], "value": float(o.get("value"))})
+            except (TypeError, ValueError):
+                continue
+        if len(dated) < 2:
+            raise DatasetError("shape fred_observations: fewer than 2 usable points")
+        return dated
+
     sums: Dict[int, float] = {}
     counts: Dict[int, int] = {}
     for o in obs:

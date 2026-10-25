@@ -88,14 +88,20 @@ def test_answer_policy_bars_statistics_the_sample_cannot_support():
 def test_policy_does_not_promise_data_the_tool_cannot_serve():
     """LLM-policy gate B: a directive the CODE defeats is worse than none.
 
-    The FRED shape aggregates to annual means with no frequency parameter, so the policy must
-    never instruct the model to request daily/weekly/monthly observations.
+    Until 2026-10-25 every dataset was annual and the policy had to stay silent about finer data.
+    search_datasets now takes `frequency` (DESIGN_data_charts_time_resolution.md), so the policy
+    may say a finer resolution exists — but only while the tool really exposes that parameter and
+    a source really declares a sub-annual resolution. If either goes, this test fails.
     """
     seg = _policy_block()
-    for forbidden in ("request daily", "ask for daily", "fetch daily", "use daily data",
-                      "request weekly", "request monthly"):
-        assert forbidden.lower() not in seg.lower(), \
-            f"policy promises {forbidden!r}, which fred_observations cannot deliver"
+    if "finer resolution" not in seg:
+        return
+    from user_tools.search_datasets_tool import SearchDatasetsTool
+    assert "frequency" in SearchDatasetsTool().parameters["properties"], \
+        "policy promises a finer resolution, but search_datasets has no `frequency` parameter"
+    from datasources.registry import all_catalogs
+    assert any(len(c.get("frequencies") or []) > 1 for c in all_catalogs()), \
+        "policy promises a finer resolution, but no source declares one"
 
 
 def test_policy_is_language_not_pattern_matching():

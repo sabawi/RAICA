@@ -27,6 +27,11 @@ class DatasetRequest:
     to_year: Optional[int] = None
     value_kind: str = "rate"                       # "rate" (per 100k) | "count"
     extra: Dict[str, Any] = field(default_factory=dict)
+    # Time resolution and a window inside a year (DESIGN_data_charts_time_resolution.md). None / "annual" keeps
+    # the annual path every existing caller uses. The source declares what it publishes; RAICA never resamples.
+    frequency: Optional[str] = None               # one of utils.dataset_block.RESOLUTIONS
+    start: Optional[str] = None                   # ISO date or YYYY-MM; wins over from_year when both are given
+    end: Optional[str] = None
 
 
 class DataSourceAdapter(ABC):

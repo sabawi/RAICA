@@ -28,6 +28,7 @@ import json
 import math
 import threading
 import time
+from datetime import date as _date
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -40,6 +41,46 @@ _TIERS = ("structured_api", "bulk_file", "html_table", "unknown")  # extraction-
 
 class DatasetError(ValueError):
     """Raised on a malformed dataset (fail-closed: no chart is ever built from bad data)."""
+
+
+# Resolutions a dataset can carry. A source declares which of these it publishes (config `frequencies`); nothing
+# here converts between them — a source aggregates on its own side, and RAICA never interpolates.
+RESOLUTIONS = ("annual", "quarterly", "monthly", "weekly", "daily")
+
+
+def to_decimal_year(value) -> float:
+    """A date as the DECIMAL YEAR the chart machinery plots: 2025-07-02 -> 2025.5; a number passes through.
+
+    `DatasetSeries` requires temporal x values to be finite NUMBERS; every point keeps its position, and the
+    renderer labels a sub-year axis with calendar dates (SI-091). One copy, used by `plot_data` and by the
+    dataset adapters, so a date means the same position on every chart.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m", "%Y"):
+        try:
+            d = _date(*(time.strptime(text, fmt)[:3]))
+        except (ValueError, TypeError):
+            continue
+        start = _date(d.year, 1, 1).toordinal()
+        length = _date(d.year + 1, 1, 1).toordinal() - start
+        return d.year + (d.toordinal() - start) / length
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError(
+            f"temporal x value {value!r} is neither a number nor a recognised date "
+            f"(YYYY-MM-DD, MM/DD/YYYY, YYYY)") from None
+
+
+def decimal_year_to_date(value: float) -> _date:
+    """Inverse of `to_decimal_year`: 2025.5 -> 2025-07-02."""
+    year = int(math.floor(value))
+    start = _date(year, 1, 1).toordinal()
+    length = _date(year + 1, 1, 1).toordinal() - start
+    offset = int(round((value - year) * length))
+    return _date.fromordinal(start + min(max(offset, 0), length - 1))
 
 
 def _is_real_number(v: Any) -> bool:
@@ -66,6 +107,7 @@ class DatasetSeries:
     methodology: Optional[str] = None
     discontinuities: List[Dict[str, Any]] = field(default_factory=list)  # [{"at": XValue, "note": str}]
     source_tier: str = "unknown"                 # extraction fidelity (see _TIERS)
+    resolution: Optional[str] = None             # one of RESOLUTIONS when the source states it; None = as given
 
     def __post_init__(self):
         self.validate()
@@ -98,6 +140,8 @@ class DatasetSeries:
                 raise DatasetError(f"series[{i}] '{s.get('name')}' has non-numeric y values")
             if all(v is None for v in y):
                 raise DatasetError(f"series[{i}] '{s.get('name')}' is entirely empty")
+        if self.resolution is not None and self.resolution not in RESOLUTIONS:
+            raise DatasetError(f"resolution must be one of {RESOLUTIONS}, got {self.resolution!r}")
         if self.source_tier not in _TIERS:
             raise DatasetError(f"source_tier must be one of {_TIERS}, got {self.source_tier!r}")
         for d in self.discontinuities:
@@ -158,7 +202,15 @@ def _prune_locked() -> None:
 
 
 # ── LLM-facing digest (the only thing the model sees) ────────────────────────
-def _fmt_x(v: XValue) -> str:
+def _fmt_x(v: XValue, resolution: Optional[str] = None) -> str:
+    """An x value as a reader writes it. Sub-annual periods print as the period, never as a decimal year."""
+    if resolution in ("monthly", "quarterly", "weekly", "daily") and isinstance(v, (int, float)):
+        d = decimal_year_to_date(float(v))
+        if resolution == "monthly":
+            return f"{d.year}-{d.month:02d}"
+        if resolution == "quarterly":
+            return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+        return d.isoformat()
     if isinstance(v, float) and v.is_integer():
         return str(int(v))
     return str(v)
@@ -171,8 +223,39 @@ def _sample_points(series: DatasetSeries, s: Dict[str, Any], k: int = 4) -> List
     out = []
     for i in idxs:
         if y[i] is not None:
-            out.append(f"({_fmt_x(series.x[i])}, {y[i]:g})")
+            out.append(f"({_fmt_x(series.x[i], series.resolution)}, {y[i]:g})")
     return out
+
+
+# One line of every digest names WHAT a chart plots, independent of its period: two charts with the same key are
+# the same series drawn twice (2026-10-25: three Brent charts in one answer, differing only in window). Written
+# and read only here, so the format has one owner.
+SERIES_KEY_LABEL = "Series key:"
+
+
+def series_key(series: DatasetSeries) -> str:
+    """Source + resolution + the plotted series (name and unit), without the period."""
+    names = sorted(f"{s.get('name')} [{s.get('unit') or ''}]" for s in series.series)
+    return " | ".join([series.source or "", series.resolution or "annual", *names])
+
+
+def marker_series_keys(text: str, markers: List[str]) -> Dict[str, str]:
+    """For each chart marker in ``text`` that is followed by a digest, the digest's series key. A marker not
+    followed by a digest (plot_data, the stock analyzer, a program's chart) gets no key and is never merged."""
+    keys: Dict[str, str] = {}
+    for m in markers:
+        i = (text or "").find(m)
+        if i < 0:
+            continue
+        rest = text[i + len(m):]
+        nxt = rest.find("[[chart:")
+        seg = rest if nxt < 0 else rest[:nxt]
+        for line in seg.splitlines():
+            line = line.strip()
+            if line.startswith(SERIES_KEY_LABEL):
+                keys[m] = line[len(SERIES_KEY_LABEL):].strip()
+                break
+    return keys
 
 
 def format_digest(series: DatasetSeries, dataset_id: str) -> str:
@@ -185,6 +268,7 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
         "authoritative data source; NOT web-scraped prose and NOT model-generated):",
         f"  dataset_id: {dataset_id}",
         f"  Title: {series.title}",
+        f"  {SERIES_KEY_LABEL} {series_key(series)}",
         f"  Source: {series.source} — {series.url}"
         + (f" (retrieved {series.retrieved})" if series.retrieved else "")
         + f"  [extraction: {series.source_tier}]",
@@ -196,9 +280,11 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
         meta.append(f"geography: {series.geo}")
     if meta:
         lines.append("  " + " · ".join(meta))
-    xr = (f"{_fmt_x(min(series.x))} → {_fmt_x(max(series.x))}"
+    res = series.resolution
+    xr = (f"{_fmt_x(min(series.x), res)} → {_fmt_x(max(series.x), res)}"
           if series.x_type != "categorical" else f"{len(series.x)} categories")
-    lines.append(f"  X: {series.x_name} ({series.x_type}), {series.n_points()} points, {xr}")
+    lines.append(f"  X: {series.x_name} ({series.x_type}"
+                 + (f", {res}" if res else "") + f"), {series.n_points()} points, {xr}")
     # For a modest temporal series (annual socioeconomic data is ≤ ~66 points) give the LLM the FULL series,
     # not 4 samples — otherwise it writes a year-by-year narrative and INVENTS the values for years it wasn't
     # shown, recalling them from training (observed: a housing answer cited Case-Shiller "220 in 2020",
@@ -213,7 +299,7 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
         if s.get("unit") and "index" in str(s["unit"]).lower():
             _any_index = True
         if _full:
-            pts = [f"({_fmt_x(x)}, {y:g})" for x, y in zip(series.x, s["y"]) if y is not None]
+            pts = [f"({_fmt_x(x, res)}, {y:g})" for x, y in zip(series.x, s["y"]) if y is not None]
             lines.append(f"  Series '{s['name']}'{unit} — FULL series, {len(pts)} pts: " + ", ".join(pts))
         else:
             lines.append(f"  Series '{s['name']}'{unit}: sample of {series.n_points()} pts "
@@ -221,12 +307,13 @@ def format_digest(series: DatasetSeries, dataset_id: str) -> str:
     if series.methodology:
         lines.append(f"  Methodology: {series.methodology}")
     if series.discontinuities:
-        ds = "; ".join(f"{_fmt_x(d['at'])}"
+        ds = "; ".join(f"{_fmt_x(d['at'], res)}"
                        + (f" ({d['note']})" if d.get("note") else "") for d in series.discontinuities)
         lines.append(f"  Discontinuities (do NOT bridge — annotate/segment): {ds}")
     # Grounding: cite ONLY the values given, and never mistake an index for a price.
-    _g = ("  GROUNDING — cite ONLY the values above: give a number for a year ONLY if it is listed here; do "
-          "NOT state a value for any year not shown, and do NOT fill gaps from memory (that is fabrication).")
+    _period = "period" if res and res != "annual" else "year"
+    _g = (f"  GROUNDING — cite ONLY the values above: give a number for a {_period} ONLY if it is listed here; do "
+          f"NOT state a value for any {_period} not shown, and do NOT fill gaps from memory (that is fabrication).")
     if _any_index:
         _g += (" An INDEX series (unit contains 'index') measures RELATIVE change from a base period — it is "
                "NOT a dollar/price level: never treat it as a price, never derive a price-to-income or "

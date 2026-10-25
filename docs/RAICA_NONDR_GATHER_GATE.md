@@ -277,3 +277,38 @@ was not available* at synthesis.
 narrating a visual after the gate exhausts its rounds — that still rests on the relay directive
 alone, which is what failed here. The right home is a post-answer LLM-judged fabrication check
 beside the `nondr-citation` shadow audit. Not built.
+
+
+## 11. Every round's output is SEEN, and the selector hears the gate (v1.0.0.351)
+
+**The failure (model study, 2026-10-25).** *"plot the monthly changes in Brent oil prices in USD since the
+US/Israel made their first attack on Iran this year until now"* — 0 charts in 7 runs through the real NewX path.
+Three diagnosis runs logged what the gate and the selector were shown (`🔎 round-preview`) and what the selector
+returned. Five links of the chain, each checked:
+
+| link | finding |
+|---|---|
+| relative date | the GATE read "this year" as the previous year in 3/3 runs; the selector, reading the same output (which carries "Current Date and Time" in every tool header), resolved it correctly |
+| authoritative data | `search_datasets` fetched FRED's daily Brent series and averaged it to two yearly points — the dataset design limit B fixes (`docs/DESIGN_data_charts_time_resolution.md`) |
+| every output seen | the 24,000-char preview was filled IN ORDER: round 1's long search results used all of it, so a page fetched later was never shown (`shown 3 of 6`) |
+| the gate's verdict used | the gate named "no chart; use plot_data / run_python_analysis" every round; `_second_round_tool_calls` never received it and searched again every round, 3/3 |
+| rounds | all three runs stopped at `max_gather_rounds` |
+
+**The changes, all structural or policy language — nothing reads the request:**
+
+1. **Fair share** (`_describe_round_results`): short outputs keep their whole text; the remaining budget is split
+   evenly between the long ones, so every output is described. Each block still discloses its own truncation.
+   Within the budget, output is byte-identical to before.
+2. **The selector hears the gate**: `_second_round_tool_calls(..., gate_verdict=)` — from the loop, and from the
+   final second round after the gate stops at its ceiling. Passed as a finding to weigh, explicitly not an order
+   (the gate was the one that misread the date).
+3. **Today stated to the gate**, with the rule to resolve relative times against it.
+4. **Directive reconciled**: "never retype the rows" now applies to TABLES; figures found only in text cannot be
+   referenced and may be given as values, exactly as written, with the page named.
+
+**Measured after the change** (pro config, real NewX path): run 1 — the gate resolved the date to 28 Feb 2026,
+every output was described ("5 outputs … shown at 5,298 chars each"), the answer carried the correct monthly
+table; still NO chart. The table sat in the middle of an 8,626-char page, and every preview shows a long page as
+head + tail, so the gate saw "the 2026 monthly table is truncated" and asked for it again. **A preview cannot
+carry a long page's middle at any budget that keeps the prompt usable.** That is the residue — structured data
+by reference (B) is the reliable route for a series; whole-output references for prose are an open option.

@@ -262,9 +262,26 @@ deep_research:
             observation_start: '{from_year}-01-01'
             observation_end: '{to_year}-12-31'
           shape: fred_observations
+          # Sub-annual data (DESIGN_data_charts_time_resolution.md): FRED aggregates to the requested resolution on
+          # its own side and refuses one finer than the series publishes; RAICA never resamples. "annual" is the
+          # default and keeps the annual-mean path below.
+          frequencies:
+            quarterly: {param_value: q}
+            monthly: {param_value: m}
+            weekly: {param_value: w}
+            daily: {param_value: d}
+          frequency_params:
+            frequency: '{frequency_code}'
+            aggregation_method: avg
+          window_params:
+            observation_start: '{start_date}'
+            observation_end: '{end_date}'
+          frequency_methodology: FRED series at {frequency} resolution, period averages computed by FRED from
+            the published frequency.
           geo_label: United States
           min_year: 1947
-          coverage: "varies by series (mostly 1947\u2013present); aggregated to annual"
+          coverage: "varies by series (mostly 1947\u2013present); annual means by default, or quarterly / monthly\
+            \ / weekly / daily as FRED publishes the series"
           value_kinds:
           - value
           x:
@@ -280,7 +297,11 @@ deep_research:
           discovery:
             type: fred_search
             search_endpoint: https://api.stlouisfed.org/fred/series/search
+            series_endpoint: https://api.stlouisfed.org/fred/series
             limit: 12
+            miss_hint: FRED's search returns only series whose text contains EVERY word given, so a long description
+              often matches nothing. Retry with fewer, plainer words (the quantity and the place, e.g. "Brent crude
+              oil"), or give the exact FRED series id.
           note: "DISCOVERY ENABLED: the measures below are common shortcuts, but you\
             \ may also set `measure` to a plain DESCRIPTION of ANY U.S. economic /\
             \ financial / housing / labor / demographic series (e.g. \"Case-Shiller\

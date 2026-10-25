@@ -194,36 +194,10 @@ class PlotDataTool(BaseUserTool):
 
     @staticmethod
     def _to_decimal_year(value):
-        """Convert a date to the DECIMAL YEAR the chart machinery actually plots.
-
-        `DatasetSeries` requires temporal x values to be finite NUMBERS, and the generator draws
-        them on a plain numeric axis with no date formatting — because every existing caller is the
-        dataset catalog, which plots annual means and passes years like 2015. Handing it ISO strings
-        fails validation outright ("temporal x values must all be finite numbers").
-
-        Dates therefore become fractional years: 2025-07-02 -> 2025.5. Every daily point is still
-        plotted, so daily resolution is preserved; only the tick LABELS read 2025.0 / 2025.5 rather
-        than calendar dates. Doing it here keeps the shared renderer untouched, so no existing
-        catalog chart changes behaviour. Teaching the renderer real date ticks is a separate change
-        with its own regression risk.
-        """
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-        text = str(value).strip()
-        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m", "%Y"):
-            try:
-                d = date(*(__import__("time").strptime(text, fmt)[:3]))
-            except (ValueError, TypeError):
-                continue
-            start = date(d.year, 1, 1).toordinal()
-            length = date(d.year + 1, 1, 1).toordinal() - start
-            return d.year + (d.toordinal() - start) / length
-        try:
-            return float(text)
-        except ValueError:
-            raise ValueError(
-                f"temporal x value {value!r} is neither a number nor a recognised date "
-                f"(YYYY-MM-DD, MM/DD/YYYY, YYYY)") from None
+        """A date as the decimal year the chart machinery plots (2025-07-02 -> 2025.5). One copy, shared with
+        the dataset adapters: `utils.dataset_block.to_decimal_year`."""
+        from utils.dataset_block import to_decimal_year
+        return to_decimal_year(value)
 
     # ------------------------------------------------------------------ input handling
     @staticmethod
