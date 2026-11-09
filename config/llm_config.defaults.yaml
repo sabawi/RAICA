@@ -168,11 +168,14 @@ lookup_website:
   max_images_listed: 12
   # The most of a web page or PDF read (trafilatura.fetch_url's own limit, which public_fetch replaces, was 20 MB).
   max_page_bytes: 20000000
-# Every fetch of a URL a model chose (lookup_website, fetch_image) reaches only public internet addresses: resolved
-# addresses, the connected peer and every redirect hop are checked (utils/public_fetch.py). No off switch.
+# Every fetch of a URL a model or the web chose (lookup_website, fetch_image, search_web pages, news feeds, citation
+# liveness) reaches only public internet addresses: resolved addresses, the connected peer and every redirect hop are
+# checked (utils/public_fetch.py). No off switch. connect_retries: failed connections retried, as the shared pooled
+# session (http_helpers, max_retries=3) did for search and news before SI-116.
 public_fetch:
   max_redirects: 5
   timeout_seconds: 30
+  connect_retries: 3
 tool_calling:
   gather_gate:
     enabled: false

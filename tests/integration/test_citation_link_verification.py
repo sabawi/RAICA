@@ -5,7 +5,7 @@ Verifies the LENIENT contract: a candidate citation URL is dropped ONLY when ver
 404/410 or a redirect to the site homepage). Everything else — 200, 403, 401, 429, 5xx, timeouts,
 connection errors — is KEPT, so a valid article that merely bot-blocks us is never dropped.
 
-Only the network call (requests_compatible_get) is faked.
+Only the network call (utils.public_fetch.get, 1.0.0.355) is faked.
 
 Run: python -m pytest tests/integration/test_citation_link_verification.py -q
  or: python tests/integration/test_citation_link_verification.py
@@ -16,11 +16,11 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import fastapi_server_complete as F
 # The lenient live verifier moved to research/link_liveness (v1.0.0.134); F re-exports it under the same
-# _-names, but verify_url_live resolves `requests_compatible_get` in link_liveness's namespace — so the HTTP
+# _-names, but verify_url_live resolves `public_fetch.get` through link_liveness's namespace — so the HTTP
 # call must be monkeypatched THERE, not on F, for the fake responses to take effect.
 import research.link_liveness as LL
 
-_ORIG_GET = LL.requests_compatible_get
+_ORIG_GET = LL.public_fetch.get
 
 
 class _FakeResp:
@@ -29,13 +29,16 @@ class _FakeResp:
         self.url = final_url
         self.ok = 200 <= status < 400
 
+    def close(self):
+        pass
+
 
 def _set(fn):
-    LL.requests_compatible_get = fn
+    LL.public_fetch.get = fn
 
 
 def _restore():
-    LL.requests_compatible_get = _ORIG_GET
+    LL.public_fetch.get = _ORIG_GET
 
 
 def test_homepage_redirect_detection():

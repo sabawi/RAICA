@@ -11,7 +11,7 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-116 — Other fetchers of web-influenced URLs have no internal-address check  [P2 — OPEN, owner decision]
+### SI-116 — Other fetchers of web-influenced URLs have no internal-address check  [P2 — RESOLVED 1.0.0.355]
 - **Seen 2026-11-09 (1.0.0.354):** `utils/public_fetch.py` now guards `lookup_website` (4 fetch paths) and `fetch_image`.
   Measured before that change: `trafilatura.fetch_url` and `requests.get` read a loopback-only service and returned
   its text. Still unguarded: `search_web` and `get_news_summaries` (fetch result/feed pages a search engine or feed
@@ -21,6 +21,12 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
   then a public reply — the same exposure lookup_website had. link_liveness can only probe (no data returned).
 - **Evidence to gather:** whether a search result URL pointing at 127.0.0.1/169.254.169.254 is fetched and extracted
   (a unit test with a stubbed search provider). **Fix:** move each to `public_fetch.get` (design doc §7).
+- **Resolved 1.0.0.355 (owner: "go ahead with SI-116, guard the other fetchers too").** Reproduced on 1.0.0.354 with a
+  loopback service: search_web fetched an internal result page, the news feed reader an internal feed, and
+  link_liveness requested an internal citation and kept it. All three now go through `public_fetch`
+  (`tests/utilities/test_si116_fetchers_public_only.py`, each RED with its guard planted out); `lookup_website_old`
+  removed; connection retries kept (`public_fetch.connect_retries`). Real `/v1` request: news + search answered with
+  22 citations, no fetch failure. CHANGELOG_v1.0.0.355.md.
 
 ### SI-115 — Superimposed 3D charts from run_python_analysis are often unreadable  [P3 — OPEN; chart check built OFF 1.0.0.353]
 - **Seen:** NewX post 9088 and 9 real-path runs 2026-10-25. Policy now names stacked offsets or wireframes; final

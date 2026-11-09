@@ -23,7 +23,7 @@ SECRET = b"INTERNAL-ONLY-7731"
 
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch):
-    monkeypatch.setattr(pf, 'settings', lambda: {'max_redirects': 3, 'timeout_seconds': 5})
+    monkeypatch.setattr(pf, 'settings', lambda: {'max_redirects': 3, 'timeout_seconds': 5, 'connect_retries': 0})
 
 
 @pytest.fixture
@@ -102,6 +102,24 @@ def test_dns_rebinding_is_caught_at_the_connected_peer(server, monkeypatch):
         pf.get(f"http://127.0.0.1:{server['port']}/")
     assert 'non-public' in str(e.value)
     assert server['hits'] == 0, 'a request reached the internal service'
+
+
+def test_connection_retries_come_from_config_and_never_retry_a_refusal(server, monkeypatch):
+    """SI-116: search and news moved here from a session that retried failed connections 3 times; the retries are
+    kept (public_fetch.connect_retries), and a peer refusal is not a connection error, so it is not retried."""
+    monkeypatch.setattr(pf, 'settings', lambda: {'max_redirects': 3, 'timeout_seconds': 5, 'connect_retries': 3})
+    assert pf.session(3).get_adapter('https://example.org/').max_retries.total == 3
+    monkeypatch.setattr(pf, 'check_url', lambda url: None)
+    calls = {'n': 0}
+    real = pf._check_peer
+
+    def counting(sock, host):
+        calls['n'] += 1
+        return real(sock, host)
+    monkeypatch.setattr(pf, '_check_peer', counting)
+    with pytest.raises(Exception, match='non-public'):
+        pf.get(f"http://127.0.0.1:{server['port']}/")
+    assert calls['n'] == 1 and server['hits'] == 0
 
 
 def test_too_many_redirects(server, monkeypatch):

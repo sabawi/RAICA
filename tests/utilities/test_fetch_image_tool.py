@@ -53,7 +53,7 @@ def env(monkeypatch):
         return '/static/images/media/picture_test.png'
     monkeypatch.setattr(fit, 'publish_chart', fake_publish)
     monkeypatch.setattr(fit, 'load_settings', lambda: dict(CFG))
-    monkeypatch.setattr(pf, 'settings', lambda: {'max_redirects': 3, 'timeout_seconds': 5})
+    monkeypatch.setattr(pf, 'settings', lambda: {'max_redirects': 3, 'timeout_seconds': 5, 'connect_retries': 0})
     monkeypatch.setattr(pf, '_is_public', lambda ip: ip == '127.0.0.1')     # this loopback server only
     yield {'url': f"http://127.0.0.1:{srv.server_address[1]}/cover.png", 'body': body, 'published': published,
            'monkeypatch': monkeypatch}

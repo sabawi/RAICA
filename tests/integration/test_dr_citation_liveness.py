@@ -110,6 +110,9 @@ class _Resp:
         self.status_code = status
         self.url = url
 
+    def close(self):
+        pass
+
 
 def test_reverify_survives_transient_404(monkeypatch):
     # 404 on the first fetch, 200 on the second → a valid article that momentarily flapped → KEEP.
@@ -117,7 +120,7 @@ def test_reverify_survives_transient_404(monkeypatch):
     def fake_get(url, **k):
         calls["n"] += 1
         return _Resp(404 if calls["n"] == 1 else 200, url)
-    monkeypatch.setattr(ll, "requests_compatible_get", fake_get)
+    monkeypatch.setattr(ll.public_fetch, "get", fake_get)
     monkeypatch.setattr(ll.time, "sleep", lambda s: None)
     assert ll.verify_url_live("https://x.com/article", timeout=1) is True
     assert calls["n"] == 2  # re-verified once
@@ -125,7 +128,7 @@ def test_reverify_survives_transient_404(monkeypatch):
 
 def test_reverify_confirms_persistent_dead(monkeypatch):
     # dead on BOTH checks → genuinely gone → DROP.
-    monkeypatch.setattr(ll, "requests_compatible_get", lambda url, **k: _Resp(404, url))
+    monkeypatch.setattr(ll.public_fetch, "get", lambda url, **k: _Resp(404, url))
     monkeypatch.setattr(ll.time, "sleep", lambda s: None)
     assert ll.verify_url_live("https://x.com/article", timeout=1) is False
 
@@ -136,7 +139,7 @@ def test_live_url_costs_one_fetch(monkeypatch):
     def fake_get(url, **k):
         calls["n"] += 1
         return _Resp(200, url)
-    monkeypatch.setattr(ll, "requests_compatible_get", fake_get)
+    monkeypatch.setattr(ll.public_fetch, "get", fake_get)
     assert ll.verify_url_live("https://x.com/article", timeout=1) is True
     assert calls["n"] == 1
 

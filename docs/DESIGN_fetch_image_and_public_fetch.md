@@ -31,7 +31,9 @@ not rules in code (CLAUDE.md: the LLM decides, RAICA executes).
    did and why (what it tried first). Which route to take is the model's decision. Reconciled with the other layers
    the model receives (RAICA prompts, NewX Ask.yaml preamble, the citation guard) — §6.
 4. **`utils/public_fetch.py`: every fetch of a URL a model can choose goes only to public addresses.** Used by
-   `fetch_image` and by all four of `lookup_website`'s fetch paths (content-type probe, PDF, web page, data file).
+   `fetch_image` and by all four of `lookup_website`'s fetch paths (content-type probe, PDF, web page, data file);
+   since 1.0.0.355 (SI-116) also by `search_web`'s page extraction, `get_news_summaries`' feed reader and
+   `research/link_liveness` (§7).
 
 ## 3. Threat model (public_fetch)
 
@@ -53,7 +55,8 @@ Controls (each a named test that goes red with the control removed — §8). Pag
 | Huge or endless response (memory) | streamed, cut at the caller's byte cap, disclosed |
 | Decompression bomb / crafted image | pixel count read from the header and refused over `max_pixels` BEFORE decoding (Pillow's process-wide limit is left alone) + full decode + re-encode; non-images refused |
 
-Limits are in `config/llm_config.yaml` (`public_fetch`, `user_tools.fetch_image`) — no hardcoded values.
+Limits are in `config/llm_config.yaml` (`public_fetch`: `max_redirects`, `timeout_seconds`, `connect_retries`;
+`user_tools.fetch_image`) — no hardcoded values.
 
 ## 4. Data flow (fetch_image)
 
@@ -87,16 +90,22 @@ Checked: RAICA's primary/tool prompts (no rule about pictures), NewX Ask.yaml (S
 directives cover chart markers; a new PICTURES directive states the same policy as the tool descriptions), NewX's
 citation guard (a fetched picture comes with its source page URL, so the answer has a URL to cite).
 
-## 7. Known siblings (not changed here — owner decision)
+## 7. The other fetchers (SI-116, 1.0.0.355)
 
-Other fetchers of URLs the model or the web can influence still have no address check: `search_web` and
-`get_news_summaries` (they fetch result/feed pages), and `research/link_liveness.py` (HEAD/GET on every cited URL —
-a blind request, the response is not shown). `lookup_website_old` is unreferenced dead code. Each can move to
-`public_fetch` the same way.
+Moved to `public_fetch`: `search_web` page extraction (a refusal is a failed fetch: source dropped and counted),
+`get_news_summaries`' feed reader, and `research/link_liveness.py` (a cited non-public address is never requested and
+is dropped; a host that does not resolve — `HostUnresolved` — is kept, as any network failure is). The pooled session
+they used retried failed connections 3 times; `public_fetch.connect_retries` keeps that (a refusal is never retried).
+`lookup_website_old` (unreferenced) was removed.
+
+Checked and left alone, because the address is configured, not chosen by a model or a page: the data-chart adapters
+(`datasources/`), the academic paper clients, `sec_edgar_client`. `utils/enhanced_rss_processor.py` is imported only
+by tests.
 
 ## 8. Tests
 
-`tests/utilities/test_public_fetch.py`, `tests/utilities/test_fetch_image_tool.py`, `tests/utilities/test_lookup_website_images.py` —
+`tests/utilities/test_public_fetch.py`, `tests/utilities/test_fetch_image_tool.py`, `tests/utilities/test_lookup_website_images.py`,
+`tests/utilities/test_si116_fetchers_public_only.py` (search, news, link liveness; lenient DNS; AST guard) —
 loopback / 10.x / 169.254 / ::1 / IPv4-mapped / `localhost` refused; redirect to loopback refused; rebinding (check
 passes, connect lands on loopback) refused at the peer check; `file:` refused; byte cap; non-image refused; pixel
 bomb refused; a real image re-encoded and published (publisher stubbed — no NewX write in tests); disabled switch.

@@ -15,8 +15,11 @@ Run: python -m pytest tests/integration/test_citation_source_filtering.py -q
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import fastapi_server_complete as F
+import utils.public_fetch as _pf
 
 
 class _FakeResp:
@@ -30,8 +33,17 @@ class _FakeResp:
             raise Exception(f"HTTP {self.status_code}")
 
 
+_ORIG_GET = _pf.get
+
+
+@pytest.fixture(autouse=True)
+def _restore_fetch():
+    yield
+    _pf.get = _ORIG_GET
+
+
 def _patch_fetch(resp):
-    F.requests_compatible_get = lambda *a, **k: resp
+    _pf.get = lambda *a, **k: resp      # 1.0.0.355 (SI-116): the feed reader fetches through utils.public_fetch
 
 
 def test_validate_article_url_baseline():

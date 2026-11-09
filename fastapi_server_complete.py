@@ -1467,7 +1467,8 @@ class AsyncToolManager:
                 # Enhanced web content extraction with improved RSS/XML parsing
                 def get_text_from_url(url):
                     try:
-                        response = requests_compatible_get(url, timeout=15, headers={
+                        from utils.public_fetch import get as public_get   # SI-116: public addresses only
+                        response = public_get(url, timeout=15, headers={
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                         })
                         response.raise_for_status()
@@ -1871,7 +1872,10 @@ class AsyncToolManager:
                 # Simplified URL content extraction (to avoid Selenium dependency issues)
                 def get_text_from_url_simplified(url):
                     try:
-                        response = requests_compatible_get(url, timeout=10, allow_redirects=True, headers={
+                        # SI-116: a search engine chose this URL (a hostile page can rank for a query), so only
+                        # public addresses are fetched; a refusal is a failed fetch like any other (source dropped).
+                        from utils.public_fetch import get as public_get
+                        response = public_get(url, timeout=10, headers={
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                         })
                         # Layer 3 (citation accuracy), piggybacked on THIS fetch (no extra request): a hard
@@ -1923,7 +1927,8 @@ class AsyncToolManager:
                         # dead links, and the caller already skips on it — so the failure now
                         # removes the source instead of poisoning it.
                         _msg = str(e)
-                        _transient = any(s in _msg for s in
+                        from utils.public_fetch import HostUnresolved as _HostUnresolved
+                        _transient = isinstance(e, _HostUnresolved) or any(s in _msg for s in
                                          ('429', '500', '502', '503', '504', 'timed out',
                                           'Timeout', 'Connection reset', 'Max retries'))
                         logger.warning(
@@ -1951,166 +1956,6 @@ class AsyncToolManager:
             )
         except Exception as e:
             return f"Web search error: {str(e)}"
-    
-    async def lookup_website_old(self, args: str) -> str:
-        """
-        Retrieve and extract comprehensive text content from a specified website URL.
-        Uses the original working implementation from find_eps_estimate.py with both Selenium and BeautifulSoup
-        """
-        try:
-            # Remove TOOLS_AVAILABLE check - let function handle missing deps gracefully
-                
-            def sync_website_lookup():
-                # Handle parameter parsing like the original
-                if isinstance(args, str):
-                    try:
-                        data = json.loads(args) if args.startswith('{') else {'url': args}
-                    except Exception as e:
-                        logger.warning(f"JSON parse failed for website lookup args: {e}")
-                        data = {'url': args}
-                else:
-                    data = args if isinstance(args, dict) else {'url': str(args)}
-                
-                url = data.get('url', '').strip()
-                print(f"Website lookup URL: {url}", flush=True)
-                
-                if not url:
-                    return "Sorry, I couldn't find anything."
-                
-                today = datetime.now()
-                todayStr = today.strftime("%A, %B %d, %Y %I:%M:%S %p")
-                
-                # PDF detection functions (from original)
-                def is_pdf_url(url: str) -> bool:
-                    try:
-                        response = requests.head(url, allow_redirects=True, timeout=10)
-                        if 'application/pdf' in response.headers.get('Content-Type', '').lower():
-                            return True
-                        
-                        # Check with magic if available
-                        try:
-                            full_response = requests_compatible_get(url, timeout=10)
-                            mime = magic.Magic(mime=True)
-                            content_type = mime.from_buffer(full_response.content[:1024])
-                            return content_type == 'application/pdf'
-                        except Exception:
-                            return False
-                    except Exception as e:
-                        print(f"PDF detection error for {url}: {e}")
-                        return False
-                
-                def extract_pdf_text(url: str) -> str:
-                    try:
-                        response = requests_compatible_get(url, timeout=30)
-                        pdf_file = io.BytesIO(response.content)
-                        pdf_reader = PyPDF2.PdfReader(pdf_file)
-                        
-                        full_text = ""
-                        for page in pdf_reader.pages:
-                            full_text += page.extract_text() + "\n\n"
-                        
-                        return full_text.strip()
-                    except Exception as e:
-                        print(f"PDF text extraction error for {url}: {e}")
-                        return f"Error extracting PDF: {str(e)}"
-                
-                # Main website extraction function (from original)
-                def get_text_from_url(url: str) -> str:
-                    # Check if the URL is a PDF first
-                    if is_pdf_url(url):
-                        pdf_text = extract_pdf_text(url)
-                        return f"PDF URL: {url}\nContent:\n{pdf_text}"
-                    
-                    try:
-                        # Try Selenium crawler first (more comprehensive)
-                        max_url_count = 2
-                        max_depth = 1
-                        
-                        crawler = SeleniumCrawler(url, max_depth=max_depth, max_url_count=max_url_count-1, timeout_response=40)
-                        crawler.setCheckRobot(False)
-                        
-                        crawler.crawl(url)
-                        crawler.close()
-                        
-                        res = ''
-                        for result in crawler.results:
-                            if is_pdf_url(result['url']):
-                                pdf_text = extract_pdf_text(result['url'])
-                                res += f"PDF Title: {result['title']}, URL: {result['url']}\n"
-                                res += f"PDF Content: {pdf_text}\n"
-                            else:
-                                res += f"Title: {result['title']}, URL: {result['url']}\n"
-                                res += f"Content: {result['content']}\n"
-                            
-                            res += "-" * 80 + "\n"
-                        
-                        return res if res else "No content extracted via Selenium"
-                        
-                    except Exception as selenium_error:
-                        print(f"Selenium extraction failed, trying BeautifulSoup: {selenium_error}")
-                        
-                        # Fallback to BeautifulSoup (from original get_text_from_url2)
-                        try:
-                            response = requests.get(url, timeout=10, headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                            })
-                            response.raise_for_status()
-                            
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            
-                            # Remove unwanted tags
-                            for tag_name in ['footer', 'nav', 'script', 'style']:
-                                for tag in soup.find_all(tag_name):
-                                    tag.decompose()
-                            
-                            # Replace links with their text content
-                            for link in soup.find_all('a'):
-                                link.replace_with(link.get_text())
-                            
-                            # Extract paragraphs
-                            paragraphs = [p.get_text().strip() for p in soup.find_all('p')]
-                            paragraphs = [p for p in paragraphs if p]
-                            
-                            if not paragraphs:
-                                print("Warning: No paragraphs were found!")
-                            
-                            # Process tables
-                            def convert_html_table_to_text(table):
-                                rows = []
-                                for row in table.find_all('tr'):
-                                    cells = row.find_all(['th', 'td'])
-                                    row_text = ' | '.join(cell.get_text().strip() for cell in cells)
-                                    rows.append(row_text)
-                                return '\n'.join(rows)
-                            
-                            for table in soup.find_all('table'):
-                                table_text = convert_html_table_to_text(table)
-                                paragraphs.append(table_text)
-                            
-                            text = '\n\n'.join(paragraphs)
-                            return text
-                            
-                        except requests.exceptions.Timeout:
-                            return f'Error fetching text from URL: Time Out!'
-                        except requests.exceptions.RequestException as error:
-                            return f'Error fetching text from URL: {error}'
-                
-                # Perform the website lookup
-                try:
-                    web_results = get_text_from_url(url)
-                except Exception as e:
-                    web_results = f"Error: Exception returned '{e}'"
-                
-                res = f"\n\nAs of [Current Date and Time: {todayStr}] here are lookup results: \n{web_results}"
-                
-                print("Website lookup completed", flush=True)
-                return res
-            
-            return await asyncio.get_running_loop().run_in_executor(
-                thread_pool, sync_website_lookup
-            )
-        except Exception as e:
-            return f"Website lookup error: {str(e)}"
     
     def _is_pdf_url(self, url: str) -> bool:
         """Check if URL points to a PDF file."""
@@ -3459,8 +3304,9 @@ def _get_news_content_with_article_urls(news_url: str, source_num_start: int) ->
         import requests
         from bs4 import BeautifulSoup
         
-        # Fetch the content
-        response = requests_compatible_get(news_url, timeout=15, headers={
+        # Fetch the content (SI-116: public addresses only, redirects checked hop by hop)
+        from utils.public_fetch import get as public_get
+        response = public_get(news_url, timeout=15, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         response.raise_for_status()

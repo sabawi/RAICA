@@ -29,12 +29,16 @@ class PublicFetchRefused(Exception):
     """The URL (or a redirect, or the connected peer) is not on the public internet, or the scheme is not http(s)."""
 
 
+class HostUnresolved(PublicFetchRefused):
+    """The host name did not resolve: not known to be internal, just unreachable now (a lenient caller may keep it)."""
+
+
 def settings():
     from utils.config_loader import config_loader
     cfg = config_loader.load_config().get('public_fetch')
-    if not isinstance(cfg, dict) or 'max_redirects' not in cfg or 'timeout_seconds' not in cfg:
+    if not isinstance(cfg, dict) or any(k not in cfg for k in ('max_redirects', 'timeout_seconds', 'connect_retries')):
         raise RuntimeError("public_fetch is not configured (config/llm_config.yaml: public_fetch.max_redirects, "
-                           "public_fetch.timeout_seconds)")
+                           "public_fetch.timeout_seconds, public_fetch.connect_retries)")
     return cfg
 
 
@@ -56,7 +60,7 @@ def check_url(url):
     try:
         infos = socket.getaddrinfo(host, p.port or (443 if p.scheme == 'https' else 80), proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
-        raise PublicFetchRefused(f"refused: the host '{host}' could not be resolved ({e})") from e
+        raise HostUnresolved(f"refused: the host '{host}' could not be resolved ({e})") from e
     addrs = {i[4][0] for i in infos}
     private = sorted(a for a in addrs if not _is_public(a))
     if not addrs or private:
@@ -104,10 +108,10 @@ class _PublicAdapter(HTTPAdapter):
         self.poolmanager.pool_classes_by_scheme = {'http': _PublicHTTPPool, 'https': _PublicHTTPSPool}
 
 
-def session():
+def session(connect_retries=0):
     s = requests.Session()
     s.trust_env = False                      # no proxy variables: traffic cannot be routed around the checks
-    adapter = _PublicAdapter()
+    adapter = _PublicAdapter(max_retries=connect_retries)   # a refusal is not an OSError: never retried
     s.mount('http://', adapter)
     s.mount('https://', adapter)
     return s
@@ -118,7 +122,7 @@ def get(url, headers=None, timeout=None, stream=False, method='GET'):
     Returns the final `requests.Response` (the caller closes it when `stream=True`)."""
     cfg = settings()
     timeout = timeout if timeout is not None else cfg['timeout_seconds']
-    s = session()
+    s = session(int(cfg['connect_retries']))
     current = url
     for _ in range(int(cfg['max_redirects']) + 1):
         check_url(current)

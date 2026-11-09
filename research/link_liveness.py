@@ -3,8 +3,11 @@ Link liveness — LENIENT, empirical citation-URL verification (no keyword/domai
 
 Shared home for the live-link check so BOTH the non-DR gather path (fastapi_server_complete.py) and the
 Deep-Research output path (research/pipeline.py) use ONE definition — avoiding a circular import
-(`research/` must not import `fastapi_server_complete.py`). Depends only on `requests_compatible_get`
-(http_helpers) + stdlib.
+(`research/` must not import `fastapi_server_complete.py`). Depends only on `utils/public_fetch` + stdlib.
+
+SI-116 (1.0.0.355): every cited URL is web- or model-chosen, so the check goes through utils/public_fetch — a cited
+internal address (loopback, private, metadata service) is never requested, and it is DROPPED: no reader can open it.
+A host that does not resolve is kept, as any other network failure is.
 
 Policy (stated ONCE here, reused everywhere): drop a candidate citation URL ONLY when it is *verified dead*
 — a hard HTTP 404/410, or a redirect that lands on the site homepage (article path → bare root = removed/
@@ -20,7 +23,7 @@ from __future__ import annotations
 import time
 from urllib.parse import urlparse
 
-from http_helpers import requests_compatible_get
+from utils import public_fetch
 
 
 def is_homepage_redirect(orig_url: str, final_url: str) -> bool:
@@ -57,12 +60,13 @@ def verify_url_live(url: str, timeout: float = 6.0, reverify: bool = True) -> bo
             # genuinely-live citation is never stripped. A TRULY dead page still 404/410s regardless
             # of headers, so the hard-dead drop rule is unaffected. No domain list / special-casing —
             # this is a general "fetch like a browser" improvement (CLAUDE.md LLM-Policy Gate compliant).
-            resp = requests_compatible_get(url, timeout=timeout, allow_redirects=True, headers={
+            resp = public_fetch.get(url, timeout=timeout, stream=True, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                                '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
             })
+            resp.close()                 # status and final address are all this check needs; the body is not read
             status = getattr(resp, "status_code", 0)
             final_url = getattr(resp, "url", "") or url
             if status in (404, 410):
@@ -70,16 +74,23 @@ def verify_url_live(url: str, timeout: float = 6.0, reverify: bool = True) -> bo
             if is_homepage_redirect(url, final_url):
                 return False
             return True
+        except public_fetch.HostUnresolved:
+            return True                  # DNS failure → lenient KEEP, as before
+        except public_fetch.PublicFetchRefused:
+            raise                        # not a public address: never requested, never a citation
         except Exception:
             # Transient/blocked → lenient KEEP (never drop a possibly-valid article on a network hiccup).
             return True
 
-    if _one_check():
-        return True
-    if not reverify:
+    try:
+        if _one_check():
+            return True
+        if not reverify:
+            return False
+        time.sleep(0.7)          # let a transient CDN/rate-limit flap clear before confirming dead
+        return _one_check()      # dead only if the SECOND check also fails
+    except public_fetch.PublicFetchRefused:
         return False
-    time.sleep(0.7)          # let a transient CDN/rate-limit flap clear before confirming dead
-    return _one_check()      # dead only if the SECOND check also fails
 
 
 def filter_live_article_urls(urls, timeout: float = 6.0, max_workers: int = 8):
