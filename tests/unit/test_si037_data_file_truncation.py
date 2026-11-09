@@ -71,6 +71,10 @@ class TestDataFilesBypassProseTruncation:
             return "text/csv"
 
         orig_e, orig_p = target._extract_data_content, target._probe_content_type
+        # 1.0.0.354: lookup_website first checks the address is public (utils/public_fetch, its own tests); this test is
+        # about truncation of an already-fetched file, so that DNS-dependent check is held open here.
+        import utils.public_fetch as _pf
+        orig_c, _pf.check_url = _pf.check_url, lambda url: None
         try:
             target._extract_data_content, target._probe_content_type = fake_extract, fake_probe
             # Fresh loop: the global one may already be closed by an earlier test in the suite.
@@ -81,6 +85,7 @@ class TestDataFilesBypassProseTruncation:
                 loop.close()
         finally:
             target._extract_data_content, target._probe_content_type = orig_e, orig_p
+            _pf.check_url = orig_c
 
         assert "LASTROW,9.99" in out, "the final row was discarded — an extremum over this is wrong"
         assert "CONTENT TRUNCATED" not in out

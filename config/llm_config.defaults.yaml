@@ -163,6 +163,16 @@ performance:
 lookup_website:
   max_article_chars: 10000
   max_data_bytes: 2000000
+  # The page's own pictures listed after its text (preview picture first), so the model can choose one for
+  # fetch_image (docs/DESIGN_fetch_image_and_public_fetch.md §2.2).
+  max_images_listed: 12
+  # The most of a web page or PDF read (trafilatura.fetch_url's own limit, which public_fetch replaces, was 20 MB).
+  max_page_bytes: 20000000
+# Every fetch of a URL a model chose (lookup_website, fetch_image) reaches only public internet addresses: resolved
+# addresses, the connected peer and every redirect hop are checked (utils/public_fetch.py). No off switch.
+public_fetch:
+  max_redirects: 5
+  timeout_seconds: 30
 tool_calling:
   gather_gate:
     enabled: false
@@ -1015,6 +1025,15 @@ user_tools:
   # in a throwaway gVisor container. EVERY program is treated as hostile. utils/py_sandbox.py REFUSES to run unless
   # runtime is runsc and network is none, and it never mounts a host path or passes a host variable. Limits are
   # ceilings (the container is gone the moment the program ends), not reservations.
+  # Real pictures from the web: download (public addresses only), decode, re-encode, publish through NewX's chart
+  # upload, credit the source (docs/DESIGN_fetch_image_and_public_fetch.md). OFF until certified.
+  fetch_image:
+    enabled: false
+    max_bytes: 8000000
+    max_pixels: 40000000
+    max_side: 1600
+    timeout_seconds: 20
+    max_caption_chars: 160
   run_python_analysis:
     enabled: false
     image: raica-pysandbox:1

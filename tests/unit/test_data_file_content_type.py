@@ -111,11 +111,12 @@ def test_passthrough_labels_type_and_line_count():
         raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
         def close(self): pass
     import requests
-    orig, requests.get = requests.get, lambda *a, **k: _R()
+    import utils.public_fetch as _pf          # 1.0.0.354: the transport seam is public_fetch.get (public addresses only)
+    orig, _pf.get = _pf.get, lambda *a, **k: _R()
     try:
         out = s._extract_data_content("http://x/data.csv", "text/csv")
     finally:
-        requests.get = orig
+        _pf.get = orig
     assert out["success"] is True
     assert out["lines"] == 3 and out["truncated"] is False
     # PREMISE CHANGED — SI-041(c). This asserted the note read "[CSV file: 3 lines retrieved]".
@@ -140,11 +141,12 @@ def test_truncation_is_disclosed_not_silent():
         headers = {"Content-Type": "text/csv"}
         raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
         def close(self): pass
-    orig, requests.get = requests.get, lambda *a, **k: _R()
+    import utils.public_fetch as _pf          # 1.0.0.354: the transport seam is public_fetch.get (public addresses only)
+    orig, _pf.get = _pf.get, lambda *a, **k: _R()
     try:
         out = s._extract_data_content("http://x/data.csv", "text/csv")
     finally:
-        requests.get = orig
+        _pf.get = orig
     assert out["truncated"] is True
     assert "TRUNCATED" in out["content"] and "NOT the whole file" in out["content"]
 
@@ -189,11 +191,12 @@ def test_data_result_satisfies_the_same_contract_as_the_html_extractor():
         raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
         def close(self): pass
 
-    orig, requests.get = requests.get, lambda *a, **k: _R()
+    import utils.public_fetch as _pf          # 1.0.0.354: the transport seam is public_fetch.get (public addresses only)
+    orig, _pf.get = _pf.get, lambda *a, **k: _R()
     try:
         out = s._extract_data_content("http://x/d.csv", "text/csv")
     finally:
-        requests.get = orig
+        _pf.get = orig
 
     for key in ("success", "title", "author", "date", "content"):
         assert key in out, f"caller reads result[{key!r}] unconditionally — KeyError otherwise"
@@ -261,11 +264,12 @@ def test_the_note_states_DATA_ROWS_not_line_count():
         raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
         def close(self): pass
 
-    orig, requests.get = requests.get, lambda *a, **k: _R()
+    import utils.public_fetch as _pf          # 1.0.0.354: the transport seam is public_fetch.get (public addresses only)
+    orig, _pf.get = _pf.get, lambda *a, **k: _R()
     try:
         out = s._extract_data_content("http://x/d.csv", "text/csv")
     finally:
-        requests.get = orig
+        _pf.get = orig
 
     note = out["content"].splitlines()[0]
     assert "3 data rows" in note, note
@@ -286,9 +290,10 @@ def test_a_non_table_still_reports_lines():
         raw = types.SimpleNamespace(read=lambda *_a, **_k: payload)
         def close(self): pass
 
-    orig, requests.get = requests.get, lambda *a, **k: _R()
+    import utils.public_fetch as _pf          # 1.0.0.354: the transport seam is public_fetch.get (public addresses only)
+    orig, _pf.get = _pf.get, lambda *a, **k: _R()
     try:
         out = s._extract_data_content("http://x/d.json", "application/json")
     finally:
-        requests.get = orig
+        _pf.get = orig
     assert "lines" in out["content"].splitlines()[0]

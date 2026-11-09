@@ -2129,8 +2129,12 @@ class AsyncToolManager:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
-            response = requests_compatible_get(url, headers=headers, timeout=30)
+            from utils.public_fetch import get as public_get, read_capped
+            response = public_get(url, headers=headers, timeout=30, stream=True)
             response.raise_for_status()
+            pdf_bytes, cut = read_capped(response, self._lookup_website_page_bytes())
+            if cut:
+                return {"success": False, "error": f"{url} is larger than the page size limit; not read"}
 
             # Check if we actually got a PDF
             content_type = response.headers.get("content-type", "").lower()
@@ -2142,7 +2146,7 @@ class AsyncToolManager:
                 }
 
             # Create PDF reader from bytes
-            pdf_file = io.BytesIO(response.content)
+            pdf_file = io.BytesIO(pdf_bytes)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
 
             # Check if PDF is readable
@@ -2251,7 +2255,20 @@ class AsyncToolManager:
         """Extract content from a regular web page using trafilatura."""
         try:
             print(f"Extracting web content from {url}", flush=True)
-            downloaded = trafilatura.fetch_url(url)
+            # Fetched through utils/public_fetch (public addresses only, redirects checked hop by hop) and decoded the
+            # way trafilatura.fetch_url decodes, which this replaces.
+            from utils.public_fetch import get as public_get
+            from trafilatura.utils import decode_file
+            downloaded, final_url = None, url
+            from utils.public_fetch import read_capped
+            r = public_get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                           stream=True)
+            # Size cap trafilatura.fetch_url applied itself (MAX_FILE_SIZE); without it an endless page fills memory.
+            body, cut = read_capped(r, self._lookup_website_page_bytes())
+            if cut:
+                return {"success": False, "error": f"{url} is larger than the page size limit; not read"}
+            if r.status_code < 400 and body:
+                downloaded, final_url = decode_file(body), r.url or url
             if downloaded is None:
                 return {
                     "success": False,
@@ -2283,6 +2300,7 @@ class AsyncToolManager:
                 "author": author,
                 "date": date,
                 "content": extracted,
+                "images": self._page_images(downloaded, final_url, getattr(metadata, 'image', None) if metadata else None),
             }
 
         except Exception as e:
@@ -2360,6 +2378,40 @@ class AsyncToolManager:
     }
     _DATA_MAX_BYTES = 2_000_000          # refuse to stream a huge file into an LLM context
 
+    @staticmethod
+    def _lookup_website_page_bytes() -> int:
+        """lookup_website.max_page_bytes — the most of a web page or PDF read (config; fails fast when missing)."""
+        return int((config_loader.load_config().get('lookup_website') or {})['max_page_bytes'])
+
+    @staticmethod
+    def _page_images(html, base_url, declared=None) -> list:
+        """[{url, alt}] — the page's declared preview picture (og:image) first, then the pictures in its markup with
+        their alt text; absolute http(s) addresses only, no repeats, at most lookup_website.max_images_listed."""
+        from urllib.parse import urljoin
+        try:
+            limit = int((config_loader.load_config().get('lookup_website') or {})['max_images_listed'])
+        except (KeyError, TypeError, ValueError) as e:
+            # A configuration fault must not cost the page's TEXT: list no pictures and say so loudly.
+            logger.error(f"lookup_website.max_images_listed is not configured ({type(e).__name__}); no pictures listed")
+            return []
+        out, seen = [], set()
+
+        def add(src, alt):
+            src = urljoin(base_url, (src or '').strip())
+            if src.startswith(('http://', 'https://')) and src not in seen and len(out) < limit:
+                seen.add(src)
+                out.append({'url': src, 'alt': ' '.join((alt or '').split())[:160]})
+        if declared:
+            add(declared, 'the page\'s declared preview picture')
+        try:
+            import lxml.html
+            doc = lxml.html.fromstring(html.encode('utf-8') if isinstance(html, str) else html)  # str + XML decl = ValueError
+            for img in doc.iter('img'):
+                add(img.get('src') or img.get('data-src'), img.get('alt'))
+        except Exception as e:  # noqa: BLE001 — a page we cannot parse simply lists no pictures; say so in the log
+            logger.info(f"lookup_website: could not list the page's pictures ({type(e).__name__})")
+        return out
+
     def _probe_content_type(self, url: str, timeout: int = 30) -> str:
         """Ask the SERVER what it is. '' when unknown — callers then fall back to HTML.
 
@@ -2373,8 +2425,8 @@ class AsyncToolManager:
                 "Accept": "*/*"}
         for meth in ("head", "get"):
             try:
-                r = getattr(requests, meth)(url, timeout=timeout, allow_redirects=True,
-                                            headers=hdrs, stream=(meth == "get"))
+                from utils.public_fetch import get as public_get
+                r = public_get(url, headers=hdrs, timeout=timeout, stream=(meth == "get"), method=meth.upper())
                 if r.status_code < 400:
                     ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                     if meth == "get":
@@ -2400,7 +2452,8 @@ class AsyncToolManager:
                 "Accept": "*/*"}
         _max_bytes = self._lookup_website_limits()[1]
         try:
-            r = requests.get(url, timeout=timeout, headers=hdrs, stream=True)
+            from utils.public_fetch import get as public_get
+            r = public_get(url, timeout=timeout, headers=hdrs, stream=True)
             if r.status_code >= 400:
                 return {"success": False, "error": f"HTTP {r.status_code}"}
             raw = r.raw.read(_max_bytes + 1, decode_content=True) or b""
@@ -2463,6 +2516,14 @@ class AsyncToolManager:
                 
                 if not url:
                     return "Error: No URL provided for website lookup."
+
+                # Only the public internet (utils/public_fetch.py): the URL is model-chosen, so attacker-chosen.
+                from utils.public_fetch import check_url, PublicFetchRefused
+                try:
+                    check_url(url)
+                except PublicFetchRefused as e:
+                    logger.warning(f"lookup_website: {e} ({url[:120]})")
+                    return f"ERROR: {url} was not fetched — {e}."
                 
                 today = datetime.now()
                 todayStr = today.strftime("%A, %B %d, %Y %I:%M:%S %p")
@@ -2516,6 +2577,12 @@ class AsyncToolManager:
                 
                 # Combine metadata with content
                 full_content = f"{'\n'.join(metadata_parts)}\n\nContent:\n{content}"
+                # The page's own pictures, as data (DESIGN_fetch_image_and_public_fetch.md §2.2): the model decides
+                # whether one belongs in the answer; nothing here judges what a picture shows.
+                if result.get('images'):
+                    full_content += ("\n\nPictures on this page (address — the page's own description of it):\n"
+                                     + "\n".join(f"- {im['url']} — {im['alt'] or '(no description)'}"
+                                                  for im in result['images']))
                 
                 # Use enhanced source block formatting
                 formatted_result = _format_source_block(
