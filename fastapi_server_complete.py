@@ -2230,8 +2230,13 @@ class AsyncToolManager:
 
     @staticmethod
     def _page_images(html, base_url, declared=None) -> list:
-        """[{url, alt}] — the page's declared preview picture (og:image) first, then the pictures in its markup with
-        their alt text; absolute http(s) addresses only, no repeats, at most lookup_website.max_images_listed."""
+        """[{url, alt, size, versions}] — the page's declared preview picture (og:image) first, then the pictures in
+        its markup with their alt text; absolute http(s) addresses only, no repeats, at most
+        lookup_website.max_images_listed. `size` is what the PAGE declares (og:image:width/height, or the img's
+        width/height attributes), '' when it states none; `versions` are the other sizes the page itself offers for
+        that picture (its srcset), each with the page's descriptor ('500w', '2x'). Plain data: the model compares
+        them; nothing here decides what size is big enough (1.0.0.356 — Ask posted a 128-wide thumbnail it could
+        have known was one)."""
         from urllib.parse import urljoin
         try:
             limit = int((config_loader.load_config().get('lookup_website') or {})['max_images_listed'])
@@ -2241,20 +2246,53 @@ class AsyncToolManager:
             return []
         out, seen = [], set()
 
-        def add(src, alt):
+        def absolute(src):
             src = urljoin(base_url, (src or '').strip())
-            if src.startswith(('http://', 'https://')) and src not in seen and len(out) < limit:
+            return src if src.startswith(('http://', 'https://')) else ''
+
+        def pixels(v):        # '128' or '128px' only: '100%', 'auto' are not pixel sizes, and nothing else gets in
+            m = re.fullmatch(r'\s*(\d{1,5})\s*(?:px)?\s*', str(v or ''), re.I)
+            return m.group(1) if m else ''
+
+        def size_of(w, h):
+            w, h = pixels(w), pixels(h)
+            return f"{w}×{h}" if w and h else (f"{w} wide" if w else (f"{h} high" if h else ''))
+
+        def versions_of(srcset, src):
+            found = []
+            for part in (srcset or '').split(','):
+                bits = part.split()
+                url = absolute(bits[0]) if bits else ''
+                if url and url != src and url not in (v[0] for v in found):
+                    d = bits[1] if len(bits) > 1 else ''
+                    found.append((url, d if re.fullmatch(r'\d{1,5}(?:\.\d{1,3})?[wx]', d) else ''))
+            return found
+
+        def add(src, alt, size='', srcset=''):
+            src = absolute(src)
+            if src and src not in seen and len(out) < limit:
                 seen.add(src)
-                out.append({'url': src, 'alt': ' '.join((alt or '').split())[:160]})
-        if declared:
-            add(declared, 'the page\'s declared preview picture')
+                out.append({'url': src, 'alt': ' '.join((alt or '').split())[:160], 'size': size,
+                            'versions': versions_of(srcset, src)})
+        doc = None
         try:
             import lxml.html
             doc = lxml.html.fromstring(html.encode('utf-8') if isinstance(html, str) else html)  # str + XML decl = ValueError
-            for img in doc.iter('img'):
-                add(img.get('src') or img.get('data-src'), img.get('alt'))
         except Exception as e:  # noqa: BLE001 — a page we cannot parse simply lists no pictures; say so in the log
             logger.info(f"lookup_website: could not list the page's pictures ({type(e).__name__})")
+        if declared:
+            meta = {}
+            if doc is not None:
+                for m in doc.iter('meta'):
+                    key = (m.get('property') or m.get('name') or '').strip().lower()
+                    if key in ('og:image:width', 'og:image:height') and key not in meta:
+                        meta[key] = m.get('content')
+            add(declared, 'the page\'s declared preview picture',
+                size_of(meta.get('og:image:width'), meta.get('og:image:height')))
+        if doc is not None:
+            for img in doc.iter('img'):
+                add(img.get('src') or img.get('data-src'), img.get('alt'),
+                    size_of(img.get('width'), img.get('height')), img.get('srcset') or img.get('data-srcset'))
         return out
 
     def _probe_content_type(self, url: str, timeout: int = 30) -> str:
@@ -2425,9 +2463,9 @@ class AsyncToolManager:
                 # The page's own pictures, as data (DESIGN_fetch_image_and_public_fetch.md §2.2): the model decides
                 # whether one belongs in the answer; nothing here judges what a picture shows.
                 if result.get('images'):
-                    full_content += ("\n\nPictures on this page (address — the page's own description of it):\n"
-                                     + "\n".join(f"- {im['url']} — {im['alt'] or '(no description)'}"
-                                                  for im in result['images']))
+                    full_content += ("\n\nPictures on this page (address — the page's own description of it — the "
+                                     "size the page declares for it, in pixels; other sizes the page offers):\n"
+                                     + "\n".join(_describe_page_image(im) for im in result['images']))
                 
                 # Use enhanced source block formatting
                 formatted_result = _format_source_block(
@@ -2843,6 +2881,15 @@ def _normalize_pub_date(raw: str) -> str:
     except Exception:                                     # noqa: BLE001
         pass
     return raw
+
+
+def _describe_page_image(im: dict) -> str:
+    """One listed picture for the model: address, the page's description, the size the page declares (or that it
+    states none) and the other sizes the page offers for the same picture (lookup_website, 1.0.0.356)."""
+    line = f"- {im['url']} — {im.get('alt') or '(no description)'} — {im.get('size') or 'size not stated'}"
+    if im.get('versions'):
+        line += "; also offered: " + ", ".join(f"{u} ({d})" if d else u for u, d in im['versions'])
+    return line
 
 
 def _format_source_block(source_url: str, title: str, content: str, source_num: int, timestamp: str = None,

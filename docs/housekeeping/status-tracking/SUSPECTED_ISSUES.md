@@ -11,6 +11,14 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-117 — `tools/llm_config_tool.py`, the documented way to edit a site value, crashes on start  [P3 — CONFIRMED 2026-11-09]
+- **Seen:** `./venv/bin/python tools/llm_config_tool.py --help` → `NameError: name 'ENV_VAR_OPENAI' is not defined`
+  (line 63, in `__init__`). The name is used 6 times and defined nowhere; present since the initial commit.
+- **Why it matters:** `docs/LLM_CONFIGURATION_GUIDE.md` names this tool (with the NewX admin page) as how a site's
+  values are edited. A value the admin page does not cover (e.g. `tool_calling.gather_gate.max_gather_rounds`) then
+  has no working tool: the operator edits the mode-444 file by hand.
+- **Next:** decide whether to fix the tool or name a hand-edit procedure (backup, edit, mode 444, restart) in the guide.
+
 ### SI-116 — Other fetchers of web-influenced URLs have no internal-address check  [P2 — RESOLVED 1.0.0.355]
 - **Seen 2026-11-09 (1.0.0.354):** `utils/public_fetch.py` now guards `lookup_website` (4 fetch paths) and `fetch_image`.
   Measured before that change: `trafilatura.fetch_url` and `requests.get` read a loopback-only service and returned

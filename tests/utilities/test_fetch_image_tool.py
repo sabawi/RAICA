@@ -120,3 +120,17 @@ def test_a_publish_failure_is_a_reason(env):
     env['monkeypatch'].setattr(fit, 'publish_chart', lambda *a, **k: None)
     out = run(url=env['url'], source_page='https://p.example/')
     assert out['success'] is False and 'could not be published' in out['error']
+
+
+def test_the_model_is_told_the_size_it_got_and_the_size_the_site_shows(env):
+    """Production 2026-11-09: Ask posted a 128×195 Google Books thumbnail as a book cover. The model must learn the
+    size it got AND the size the site shows (from config, not a hardcoded number), so it can judge a thumbnail and
+    look for a larger copy; and the tool's description must say sources offer several sizes."""
+    env['body']['data'] = _png(20, 30)                                   # a thumbnail, smaller than max_side
+    env['monkeypatch'].setattr(fit, 'load_settings', lambda: dict(CFG, max_side=777))
+    out = run(url=env['url'], source_page='https://books.example/b', caption='Cover')
+    assert out['success'] is True, out
+    assert '20×30 pixels' in out['result']
+    assert 'up to 777 pixels' in out['result'], 'the display size must come from config'
+    assert 'larger copy' in out['result'] and 'only the marker of the picture you use' in out['result']
+    assert 'largest one offered' in fit.FetchImageTool().description

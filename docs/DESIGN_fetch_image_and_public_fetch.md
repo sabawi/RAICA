@@ -26,6 +26,12 @@ not rules in code (CLAUDE.md: the LLM decides, RAICA executes).
 2. **`lookup_website` shows the page's own pictures**: the page's declared preview image (`og:image`, via
    trafilatura metadata) and the images in it with their alt text, as absolute URLs, at most
    `lookup_website.max_images_listed`. Plain data; nothing in code decides what a "cover" or "photo" is.
+   Since 1.0.0.356 each listed picture also carries **the size the page declares** for it (`og:image:width/height`,
+   or the `<img>` width/height — pixel values only; "size not stated" otherwise) and **the other sizes the page
+   offers** for it (its `srcset`, with descriptors like `960w`/`2x` — malformed descriptors dropped). Reason: the
+   first production use posted Google Books' 128-wide thumbnail; the page said `width=128`, but Ask could not see
+   it, and a size reported only after fetching arrives in the last gather round, too late to act on. `fetch_image`
+   still reports the size it got and the size the site shows (`max_side`), for the cases with a round to spare.
 3. **Policy wording, not code**: the tool descriptions say what each route gives (a real picture from a source vs a
    drawing by a program) and require the answer to say where any picture came from — and, when it drew one, that it
    did and why (what it tried first). Which route to take is the model's decision. Reconciled with the other layers

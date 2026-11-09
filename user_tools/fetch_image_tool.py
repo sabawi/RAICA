@@ -85,8 +85,9 @@ class FetchImageTool(BaseUserTool):
             "object or artwork, a published figure — taken from a source that has it. Give the picture's own address "
             "(`url`) and the page you found it on (`source_page`). Find addresses with lookup_website, which lists "
             "the pictures on each page it reads with the page's own descriptions, starting with the page's preview "
-            "picture; choose the one that actually shows what the user asked for. You get a [[chart:…]] marker to "
-            "place in your answer as given, captioned with its source, plus the source addresses: say in the answer "
+            "picture; choose the one that actually shows what the user asked for. Sources often offer the same picture "
+            "in several sizes (a small thumbnail and larger versions): fetch the largest one offered. You get a "
+            "[[chart:…]] marker to place in your answer as given, captioned with its source, plus the source addresses: say in the answer "
             "where the picture comes from. If it fails you get the reason; then say you could not retrieve a real "
             "picture. A picture drawn by run_python_analysis is a DRAWING, never the real thing: if you draw one, say "
             "so in the answer, and say what you tried first."
@@ -133,7 +134,10 @@ class FetchImageTool(BaseUserTool):
         marker = _marker(published, f"{caption} — source: {host}")
         return {"success": True, "result": (
             f"{marker}\nA REAL picture, retrieved from {url} (found on {page}), {size[0]}×{size[1]} pixels, now "
-            f"stored on this site. Place the marker above in your answer as given and cite {page} as its source.")}
+            f"stored on this site (it shows pictures up to {int(cfg['max_side'])} pixels on the longest side). If "
+            f"that is too small to show the picture clearly, you may look for a larger copy of the same picture — "
+            f"on the same page or another source — and fetch it; then place only the marker of the picture you "
+            f"use. Place the marker in your answer as given and cite {page} as its source.")}
 
     @staticmethod
     def _download_and_encode(url, cfg):
