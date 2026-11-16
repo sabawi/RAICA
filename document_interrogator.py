@@ -222,6 +222,35 @@ from http_helpers import pooled_post
 # OCR ENGINE MANAGER - Multi-engine OCR with intelligent fallback
 # =============================================================================
 
+def easyocr_can_use_gpu(torch_module=None):
+    """True only when this PyTorch build can actually run kernels on the GPU it sees.
+
+    torch.cuda.is_available() is True for any NVIDIA GPU with a driver, including ones the installed build ships no
+    kernels for (e.g. a GTX 860M, compute 5.0, under a build for sm_70+). EasyOCR then fails with "no kernel image is
+    available for execution on the device" and the engine is lost entirely (v1.0.0.357). The answer is discovered
+    from the build itself, by CUDA's compatibility rules: a cubin built for sm_XY runs on the same major at minor >= Y;
+    PTX built for compute_XY is JIT-compiled for any device at or above XY. Never raises: any doubt means CPU."""
+    try:
+        torch = torch_module
+        if torch is None:
+            import torch
+        if not torch.cuda.is_available():
+            return False
+        major, minor = torch.cuda.get_device_capability(0)
+        for arch in torch.cuda.get_arch_list():
+            kind, _, num = arch.partition('_')
+            if not num.isdigit() or len(num) < 2:
+                continue
+            a_major, a_minor = int(num[:-1]), int(num[-1])
+            if kind == 'sm' and a_major == major and a_minor <= minor:
+                return True
+            if kind == 'compute' and (a_major, a_minor) <= (major, minor):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — a failed probe must cost the GPU, never the OCR engine
+        return False
+
+
 class OCREngineManager:
     """Intelligent OCR engine management with fallback system"""
     
@@ -235,10 +264,11 @@ class OCREngineManager:
         for engine_name, status in OCR_ENGINES:
             try:
                 if engine_name == 'easyocr' and status == 'available':
-                    reader = easyocr.Reader(['en'])
+                    use_gpu = easyocr_can_use_gpu()
+                    reader = easyocr.Reader(['en'], gpu=use_gpu)
                     if self.primary_engine is None:
                         self.primary_engine = ('easyocr', reader)
-                        logger.info("🚀 EasyOCR initialized as primary OCR engine")
+                        logger.info("🚀 EasyOCR initialized as primary OCR engine (%s)", 'GPU' if use_gpu else 'CPU')
                     else:
                         self.fallback_engines.append(('easyocr', reader))
                         

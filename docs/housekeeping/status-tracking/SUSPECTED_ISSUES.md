@@ -11,6 +11,16 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
+### SI-118 — Four unit tests fail on 1.0.0.356 and 1.0.0.357 alike  [P3 — OPEN, not triaged]
+- **Seen:** 2026-11-16 running `tests/unit` for v1.0.0.357 (1153 pass): `test_html_entities.py::test_html_entities_are_escaped`
+  (expects `"` in body text as `&quot;`; the generator leaves it as `"`, which is valid HTML text, so the test may be
+  stale — or the generator lost a stricter escape), `test_phase5_integration.py::test_apply_unit_fix_detects_modifications`
+  and `::test_apply_unit_fix_uses_tool_client`, and `test_title_escaping.py::test_title_escaping` ("Failed: async…" —
+  likely no async test plugin for that style). All four fail identically on a clean worktree of 1.0.0.356; none
+  touches OCR.
+- **Why it matters:** a red unit suite hides new failures; `tests/unit` is not run by any gate, so these went unseen.
+- **Next:** read each against `git log` of the code it tests; fix the test or the code; then consider gating `tests/unit`.
+
 ### SI-117 — `tools/llm_config_tool.py`, the documented way to edit a site value, crashes on start  [P3 — CONFIRMED 2026-11-09]
 - **Seen:** `./venv/bin/python tools/llm_config_tool.py --help` → `NameError: name 'ENV_VAR_OPENAI' is not defined`
   (line 63, in `__init__`). The name is used 6 times and defined nowhere; present since the initial commit.

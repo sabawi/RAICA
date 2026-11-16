@@ -50,6 +50,8 @@ cd flaskserver
 
 # Install dependencies (development set = server set + EasyOCR; a server uses requirements.txt only)
 pip install -r requirements-dev.txt
+# EasyOCR picks GPU or CPU by itself (v1.0.0.357): the GPU only when the installed PyTorch has kernels for it
+# (document_interrogator.easyocr_can_use_gpu). An older GPU, e.g. compute 5.0 under a sm_70+ build, runs it on CPU.
 
 # Configure LLM providers
 python tools/llm_config_tool.py
