@@ -113,16 +113,12 @@ th {
 </html>"""
 
     def _clean_html_content(self, html: str) -> str:
-        """Remove <pre><code> wrappers and invalid nesting while preserving HTML entities"""
-        import html as html_module
-        
-        soup = BeautifulSoup(html, 'html.parser')
+        """Fix invalid nesting (block elements inside <p>) while preserving HTML entities.
 
-        # Unwrap <pre> and <code>, preserve text or inner HTML
-        for pre in soup.find_all("pre"):
-            pre.unwrap()
-        for code in soup.find_all("code"):
-            code.unwrap()
+        <pre> and <code> are KEPT (SI-121): unwrapping them, as this did since the fork, collapsed every code sample's
+        line breaks and indentation into one run-on line, although config/pdf_styles.css styles pre/code for exactly
+        this content (white-space: pre-wrap)."""
+        soup = BeautifulSoup(html, 'html.parser')
 
         # Remove <p> wrapping block elements like <h1>-<h3>
         for tag in soup.find_all(['h1', 'h2', 'h3', 'ul', 'ol', 'table']):

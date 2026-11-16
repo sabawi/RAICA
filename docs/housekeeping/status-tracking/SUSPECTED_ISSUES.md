@@ -11,14 +11,20 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-121 — Code blocks lose their line breaks and indentation in documents  [P3 — CONFIRMED 2026-11-16]
+### SI-121 — Code blocks lose their line breaks and indentation in documents  [P3 — RESOLVED 1.0.0.360, 2026-11-16]
 - **Seen (fixing SI-120):** `html_generator._clean_html_content` unwraps every `<pre>` and `<code>`. Code that the
   markdown library renders inside `<div class="highlight"><pre>` therefore loses `<pre>`, and HTML collapses its
   newlines and indentation: a multi-line code sample shows as one run-on line in the .html and the PDF.
 - **Why it may be deliberate:** the unwrap predates this log ("Remove <pre><code> wrappers"); it probably stops a model
   answer wrapped in one big code fence from rendering as a code block. Needs the owner's call.
-- **Next:** keep `<pre>` inside `div.highlight` only (or add `white-space: pre` for `.highlight` in
-  config/pdf_styles.css), with a test that a 3-line code sample keeps its lines.
+- **Checked:** the unwrap came with the fork (b2beaa5, no reason recorded); `config/pdf_styles.css` already styles
+  `pre` (`white-space: pre-wrap`) and `pre code`. The "one big fence" theory is refuted: on 1.0.0.359 an answer
+  wrapped in a single fence also came out as raw `## Report - point one` text (collapsed), so the unwrap never
+  rendered it; now that text keeps its lines in a code box.
+- **Resolved (1.0.0.360, owner: "fix SI-121"):** `_clean_html_content` keeps `<pre>`/`<code>` (the block-in-`<p>`
+  nesting fix stays). Evidence: `tests/unit/test_markdown_code_blocks.py` +2 — the HTML `<pre>` keeps 3 lines with
+  indentation and inline `<code>` survives; `pdftotext` of the real PDF shows the three lines apart. Both FAIL on
+  1.0.0.359. tests/unit 1170 passed.
 
 ### SI-120 — Any document with a fenced code block loses all its markdown formatting  [P3 — RESOLVED 1.0.0.359, 2026-11-16]
 - **Seen (SI-119 tests):** `html_generator._convert_markdown_to_html` configures codehilite with

@@ -47,3 +47,37 @@ def test_markdown_library_failure_is_logged(monkeypatch, caplog):
     with caplog.at_level(logging.ERROR, logger='utils.html_generator'):
         html_generator._convert_markdown_to_html("| a |\n|---|\n| 1 |\n")
     assert any('fallback converter' in r.getMessage() for r in caplog.records), caplog.text
+
+
+CODE_DOC = ("## Example\n\nCall `add(1, 2)` like this:\n\n```python\ndef add(a, b):\n    total = a + b\n"
+            "    return total\n```\n")
+
+
+def test_code_block_keeps_its_lines_and_indentation():
+    """SI-121 (v1.0.0.360): _clean_html_content unwrapped every <pre>/<code>, so a code sample's newlines and
+    indentation collapsed into one run-on line in the .html and the PDF. The <pre> must survive with its lines, and
+    inline code must stay <code>."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(_body(html_generator.generate_html_report(content=CODE_DOC, title='T', force_template=True)),
+                         'html.parser')
+    pre = soup.find('pre')
+    assert pre is not None, soup
+    assert pre.get_text().splitlines()[:3] == ['def add(a, b):', '    total = a + b', '    return total'], pre
+    assert any(c.get_text() == 'add(1, 2)' for c in soup.find_all('code') if not c.find_parent('pre')), soup
+
+
+def test_code_block_lines_survive_into_the_pdf(tmp_path):
+    """What the reader receives: the PDF's own text keeps the three code lines apart (pdftotext; skipped if absent)."""
+    import shutil
+    import subprocess
+    import pytest
+    if not shutil.which('pdftotext'):
+        pytest.skip('pdftotext not installed')
+    from services.pdf_service import CentralizedPDFService
+    out = tmp_path / 'code.pdf'
+    assert CentralizedPDFService().create_pdf(content=CODE_DOC, output_path=str(out), title='T')['success']
+    text = subprocess.run(['pdftotext', '-layout', str(out), '-'], capture_output=True, text=True).stdout
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    i = next(n for n, ln in enumerate(lines) if 'def add(a, b):' in ln)
+    assert 'total = a + b' in lines[i + 1] and 'return total' in lines[i + 2], lines[i:i + 3]
+    assert 'total' not in lines[i], lines[i]          # not run together on one line
