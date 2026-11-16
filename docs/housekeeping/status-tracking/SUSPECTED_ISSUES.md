@@ -11,17 +11,30 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-120 — Any document with a fenced code block loses all its markdown formatting  [P3 — CONFIRMED 2026-11-16]
+### SI-121 — Code blocks lose their line breaks and indentation in documents  [P3 — CONFIRMED 2026-11-16]
+- **Seen (fixing SI-120):** `html_generator._clean_html_content` unwraps every `<pre>` and `<code>`. Code that the
+  markdown library renders inside `<div class="highlight"><pre>` therefore loses `<pre>`, and HTML collapses its
+  newlines and indentation: a multi-line code sample shows as one run-on line in the .html and the PDF.
+- **Why it may be deliberate:** the unwrap predates this log ("Remove <pre><code> wrappers"); it probably stops a model
+  answer wrapped in one big code fence from rendering as a code block. Needs the owner's call.
+- **Next:** keep `<pre>` inside `div.highlight` only (or add `white-space: pre` for `.highlight` in
+  config/pdf_styles.css), with a test that a 3-line code sample keeps its lines.
+
+### SI-120 — Any document with a fenced code block loses all its markdown formatting  [P3 — RESOLVED 1.0.0.359, 2026-11-16]
 - **Seen (SI-119 tests):** `html_generator._convert_markdown_to_html` configures codehilite with
   `pygments_style: 'github'`; Pygments 2.19.2 (local venv) has no such style, so a document containing a fenced code
   block raises "Could not find style module 'pygments.styles.github'" and the WHOLE document goes to the fallback
   converter: tables, images and lists render as plain text. A document without fenced code is unaffected.
 - **How bad:** formatting only (no data loss); research/report documents with code samples come out unformatted.
 - **Prod:** Pygments 2.19.2 too (checked 2026-11-16), so production documents are affected.
-- **Next:** pick a style Pygments ships (or none, since noclasses=False uses CSS
-  classes) and add a test with a table + fenced code.
+- **Resolved (1.0.0.359):** the `pygments_style` setting removed (codehilite's built-in default; with noclasses=False
+  the style only names CSS classes, which no document stylesheet defines). The library-failure fallback now also
+  logs `[HTML-GEN] ... fallback converter` at ERROR. Evidence: `tests/unit/test_markdown_code_blocks.py` (table +
+  list + inline chart + fenced code through generate_html_report; failure is logged), both FAIL on 1.0.0.358;
+  create_pdf with that document builds with no fallback; tests/unit 1168 passed.
 
-### SI-119 — Generated documents carry raw HTML from the content: PDFs embed local files, HTML files keep scripts  [P1 — FIXED 1.0.0.358, 2026-11-16]
+
+### SI-119 — Generated documents carry raw HTML from the content: PDFs embed local files, HTML files keep scripts  [P1 — RESOLVED 1.0.0.358, deployed + verified on prod 2026-11-16]
 - **Seen (triaging SI-118):** `html_generator.generate_html_report` passes raw HTML in the body through unchanged:
   the markdown branch keeps it (Python-Markdown default), and content with `<`/`>` but no markdown markers skips the
   escaping branch entirely. `<script>` and `<style>` blocks are stripped only when the content is a complete HTML document.

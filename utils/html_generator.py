@@ -312,7 +312,10 @@ th {
                 'codehilite': {
                     'guess_lang': True,         # Auto-detect code language
                     'css_class': 'highlight',   # CSS class for code blocks
-                    'pygments_style': 'github', # Use GitHub-style syntax highlighting
+                    # No pygments_style (SI-120): 'github' is not a Pygments 2.19 style, and naming a missing one
+                    # sent every document with a fenced code block to the fallback converter (tables, lists,
+                    # images lost). With noclasses=False the style only names CSS classes, which no document
+                    # stylesheet defines, so codehilite's built-in default costs nothing.
                     'noclasses': False,         # Use CSS classes (not inline styles)
                 }
             }
@@ -342,6 +345,8 @@ th {
         except Exception as e:
             # On any error, fallback to custom converter
             print(f"⚠️ Error in markdown library: {e}, using fallback custom converter")
+            logger.error("[HTML-GEN] markdown library failed (%s: %s); document rendered by the fallback converter "
+                         "(tables/lists/images lose formatting)", type(e).__name__, e)
             return self._custom_markdown_converter(markdown_text)
 
     def generate_html_report(
