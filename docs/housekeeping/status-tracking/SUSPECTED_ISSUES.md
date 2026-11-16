@@ -11,15 +11,63 @@ Priority: **P1** act now · **P2** investigate soon · **P3** watch / low-impact
 
 ## Open
 
-### SI-118 — Four unit tests fail on 1.0.0.356 and 1.0.0.357 alike  [P3 — OPEN, not triaged]
-- **Seen:** 2026-11-16 running `tests/unit` for v1.0.0.357 (1153 pass): `test_html_entities.py::test_html_entities_are_escaped`
-  (expects `"` in body text as `&quot;`; the generator leaves it as `"`, which is valid HTML text, so the test may be
-  stale — or the generator lost a stricter escape), `test_phase5_integration.py::test_apply_unit_fix_detects_modifications`
-  and `::test_apply_unit_fix_uses_tool_client`, and `test_title_escaping.py::test_title_escaping` ("Failed: async…" —
-  likely no async test plugin for that style). All four fail identically on a clean worktree of 1.0.0.356; none
-  touches OCR.
-- **Why it matters:** a red unit suite hides new failures; `tests/unit` is not run by any gate, so these went unseen.
-- **Next:** read each against `git log` of the code it tests; fix the test or the code; then consider gating `tests/unit`.
+### SI-120 — Any document with a fenced code block loses all its markdown formatting  [P3 — CONFIRMED 2026-11-16]
+- **Seen (SI-119 tests):** `html_generator._convert_markdown_to_html` configures codehilite with
+  `pygments_style: 'github'`; Pygments 2.19.2 (local venv) has no such style, so a document containing a fenced code
+  block raises "Could not find style module 'pygments.styles.github'" and the WHOLE document goes to the fallback
+  converter: tables, images and lists render as plain text. A document without fenced code is unaffected.
+- **How bad:** formatting only (no data loss); research/report documents with code samples come out unformatted.
+- **Prod:** Pygments 2.19.2 too (checked 2026-11-16), so production documents are affected.
+- **Next:** pick a style Pygments ships (or none, since noclasses=False uses CSS
+  classes) and add a test with a table + fenced code.
+
+### SI-119 — Generated documents carry raw HTML from the content: PDFs embed local files, HTML files keep scripts  [P1 — FIXED 1.0.0.358, 2026-11-16]
+- **Seen (triaging SI-118):** `html_generator.generate_html_report` passes raw HTML in the body through unchanged:
+  the markdown branch keeps it (Python-Markdown default), and content with `<`/`>` but no markdown markers skips the
+  escaping branch entirely. `<script>` and `<style>` blocks are stripped only when the content is a complete HTML document.
+- **Measured (local, this checkout, `services/pdf_service.CentralizedPDFService.create_pdf`, the single PDF entry
+  point):** content containing `<a rel="attachment" href="file://<scratch>/canary.txt">` produced a PDF with one
+  `/EmbeddedFile` holding the canary text. WeasyPrint 66.0 is called with no `url_fetcher`, so `file://` and any
+  network address a document names (`<img src>`, `<link>`) are fetched by the server. The same content rendered to
+  `.html` keeps `<script>…</script>` and `<img onerror=…>` live in the body.
+- **How bad if real on prod (NOT tested there, deliberately):** RAICA runs as `ubuntu` with `.env` (API keys) readable.
+  A NewX member whose bot can deliver can ask for a PDF emailed to their own address; if the model copies the tag,
+  the server's file goes out as an attachment. Prompt injection from a web page (SI-116 class) is a second route.
+  `.html` attachments run scripts from a local file (no site cookies); lower impact.
+- **Fix options:** (1) a WeasyPrint `url_fetcher` that allows `data:` and public http(s) only (reuse
+  `utils/public_fetch` checks), refusing `file://` and internal addresses; (2) sanitize the body with an allow-list
+  (bleach is installed) before both formats: no script/style/iframe/object, no `on*` attributes, no `javascript:`
+  URLs, no `rel=attachment`; (3) replace SI-118's stale escaping tests with tests of these invariants.
+
+- **Fixed (1.0.0.358):** `utils/document_safety.py` — WeasyPrint `url_fetcher` (data: + public http(s) via
+  public_fetch, capped) on both WeasyPrint calls; body sanitized to the `document_safety` allow-list in
+  `generate_html_report` (and the unreferenced `_create_pdf_with_weasyprint`); `custom_css` with `<` dropped; the
+  template catch-all writes an escaped fallback. Evidence: `tests/unit/test_document_safety.py` 7 tests, 4 of them
+  FAIL on 1.0.0.357 (file embed, active content, raw fallback, CSS breakout); a fetcher spy with a positive control
+  (data: image ALLOWED) showed absolute-path `<img>` and CSS `url()` make no request. Unit suite 1166 passed.
+- **Left as is (scope):** complete HTML documents passed without `force_template` are still returned unchanged
+  (background agents' email bodies only; `pdf_service` always forces the template).
+
+### SI-118 — Four unit tests fail on 1.0.0.356 and 1.0.0.357 alike  [P3 — RESOLVED 1.0.0.358, 2026-11-16]
+- **Seen:** 2026-11-16 running `tests/unit` for v1.0.0.357. All four fail identically on 1.0.0.356; none touches OCR.
+- **Triage (read against the code and `git log`):**
+  - `test_phase5_integration.py` x2 — **stale tests, plus one real weakness.** Both came in the bulk commit a6ae91c
+    (2026-02-13) together with `debug_controller._apply_unit_fix`, and never matched it: the prompt wording they
+    assert ("Fix the bug in unit 'U1'") is in no committed version. Real findings: `test_code` is a parameter
+    the prompt never uses (the fixing model is not shown the test it must pass), and the git fallback counts
+    *every* dirty file as "modified" (no before snapshot), so a pre-dirty tree reads as a successful fix.
+    Reach: the coding agent only (TUI/orchestrator), not the RAICA API server.
+  - `test_html_entities.py` — **stale** (written for the old escape-everything `_format_content_for_template`,
+    replaced by `utils/html_generator` + Python-Markdown) **but guarding a real defect:** raw HTML now passes
+    through. See SI-119.
+  - `test_title_escaping.py` — **not a test:** script-style, imports `sandboxed_executor` from another project
+    (`~/Development/flaskserver`), asserts nothing, bare `async def` (pytest cannot run it). Titles ARE escaped
+    today (`<title>&lt;script&gt;…`); the body is not (SI-119).
+- **Resolved (1.0.0.358, owner: "fix the two weak spots"):** `_apply_unit_fix` puts the unit's test in the
+  instruction when there is one, and detects modified files by a before/after snapshot (newly dirty, or content hash
+  changed) united with what the tools reported writing. `test_html_entities.py` expectations corrected;
+  `test_title_escaping.py` removed (replaced by `test_document_safety.py`); phase5 +3 tests (pre-dirty file not
+  counted, edit to a dirty file detected, no empty test section). `tests/unit`: 1166 passed, 0 failed.
 
 ### SI-117 — `tools/llm_config_tool.py`, the documented way to edit a site value, crashes on start  [P3 — CONFIRMED 2026-11-09]
 - **Seen:** `./venv/bin/python tools/llm_config_tool.py --help` → `NameError: name 'ENV_VAR_OPENAI' is not defined`

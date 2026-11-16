@@ -91,7 +91,8 @@ class CentralizedPDFService:
             html_document = html_generator.generate_html_report(
                 content=content, title=title, header_title=title,
                 include_disclaimer=False, force_template=True)
-            weasyprint.HTML(string=html_document).write_pdf(output_path)
+            from utils.document_safety import url_fetcher   # SI-119: data: + public http(s) only, never file://
+            weasyprint.HTML(string=html_document, url_fetcher=url_fetcher).write_pdf(output_path)
             size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
             if size <= 0:
                 return {"success": False, "error": "PDF written but empty/missing",
@@ -327,6 +328,8 @@ class CentralizedPDFService:
             # Convert markdown to HTML
             md = markdown.Markdown(extensions=['tables', 'fenced_code', 'toc'])
             html_body = md.convert(markdown_content)
+            from utils.document_safety import sanitize_body   # SI-119 (unreferenced path; guarded anyway)
+            html_body = sanitize_body(html_body)
             
             # Get CSS content
             css_content = ""
@@ -364,7 +367,8 @@ class CentralizedPDFService:
 </html>"""
             
             # Generate PDF with WeasyPrint
-            html_doc = weasyprint.HTML(string=html_document)
+            from utils.document_safety import url_fetcher   # SI-119
+            html_doc = weasyprint.HTML(string=html_document, url_fetcher=url_fetcher)
             html_doc.write_pdf(output_path)
             
             return {

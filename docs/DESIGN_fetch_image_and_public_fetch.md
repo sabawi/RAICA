@@ -108,10 +108,23 @@ Checked and left alone, because the address is configured, not chosen by a model
 (`datasources/`), the academic paper clients, `sec_edgar_client`. `utils/enhanced_rss_processor.py` is imported only
 by tests.
 
+## 7b. The PDF renderer and document bodies (SI-119, 1.0.0.358)
+
+WeasyPrint fetched every resource a generated document named, with no `url_fetcher`: measured on 1.0.0.357,
+`<a rel="attachment" href="file:///…">` in a document's content embedded that server file in the PDF. Both WeasyPrint
+calls (`services/pdf_service.py`) now pass `utils/document_safety.url_fetcher`: `data:` URLs, and http(s) only through
+`public_fetch.get` (capped at `document_safety.fetch_max_bytes`); anything else is refused and skipped, and the PDF
+still builds. `utils/html_generator.generate_html_report` also cuts the model-written body to the
+`document_safety` allow-list before either format is written (no script/style/iframe/svg/form…, no `on*` attributes,
+links http/https/mailto, pictures http/https or `data:image/`, inline CSS limited to bleach's safe properties), drops
+caller `custom_css` that contains `<`, and its catch-all now writes an ESCAPED fallback instead of the raw body.
+Not covered (unchanged, recorded in SI-119): complete HTML documents passed WITHOUT `force_template` are returned
+as-is; only the background agents do that, for email bodies, and never for a PDF.
+
 ## 8. Tests
 
 `tests/utilities/test_public_fetch.py`, `tests/utilities/test_fetch_image_tool.py`, `tests/utilities/test_lookup_website_images.py`,
-`tests/utilities/test_si116_fetchers_public_only.py` (search, news, link liveness; lenient DNS; AST guard) —
+`tests/unit/test_document_safety.py` (SI-119: PDF file embed, active content, fail-closed fallback), `tests/utilities/test_si116_fetchers_public_only.py` (search, news, link liveness; lenient DNS; AST guard) —
 loopback / 10.x / 169.254 / ::1 / IPv4-mapped / `localhost` refused; redirect to loopback refused; rebinding (check
 passes, connect lands on loopback) refused at the peer check; `file:` refused; byte cap; non-image refused; pixel
 bomb refused; a real image re-encoded and published (publisher stubbed — no NewX write in tests); disabled switch.

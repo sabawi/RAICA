@@ -1710,6 +1710,17 @@ JSON ONLY, NO EXPLANATION:"""
             'error': f'Failed after {MAX_UNIT_ATTEMPTS} attempts'
         }
 
+    def _content_hashes(self, rel_paths) -> Dict[str, Optional[str]]:
+        """{relative path: sha256 of its bytes, or None when absent/unreadable} under the project dir (SI-118)."""
+        import hashlib
+        out = {}
+        for rel in rel_paths:
+            try:
+                out[rel] = hashlib.sha256((Path(self.project_dir) / rel).read_bytes()).hexdigest()
+            except (OSError, ValueError, TypeError):
+                out[rel] = None
+        return out
+
     async def _apply_unit_fix(
         self,
         unit: DebugUnit,
@@ -1754,6 +1765,12 @@ DISCRETE FIX PROCESS:
 ⚠️ A fix is NOT applied until the tool returns success.
 ⚠️ Do NOT explain. CALL THE TOOLS NOW.
 """
+        if test_code and test_code.strip():
+            # SI-118: the caller generated this test for the unit; the fix is judged by it, so the model sees it.
+            instruction += f"""
+THE TEST THIS FIX MUST PASS (do not edit the test; change the code so it passes):
+{test_code}
+"""
         # [NEW] Phase 5: Use ContextManager to ensure we respect token limits
         # We create a local instance to build the context string for this specific turn
         temp_cm = self.ContextManager()
@@ -1781,6 +1798,15 @@ DISCRETE FIX PROCESS:
         # Compile token-safe context string
         context = temp_cm.compile_context()
         
+        # SI-118: snapshot BEFORE the tools run. Without it every already-dirty file counted as "modified", so a
+        # dirty tree read as a successful fix; edit_file/replace_line results do not match the write_file pattern.
+        try:
+            dirty_before = set(self.git_tracker.get_dirty_files())
+        except Exception as e:                       # git_state_tracker catches only CalledProcessError
+            logger.warning(f"Phase 5: could not list dirty files before the fix: {e}")
+            dirty_before = set()
+        hashes_before = self._content_hashes(set(file_contents) | dirty_before)
+
         try:
             # Execute tools with retry/continuation
             execution_result = await self.tool_client.execute_and_continue(
@@ -1805,8 +1831,13 @@ DISCRETE FIX PROCESS:
                             files_written.append(fname)
                             self.output(f"  ✓ Wrote: {fname}")
 
-            # Also check git for any newly dirty files (backup detection)
-            files_after_modification = set(self.git_tracker.get_dirty_files())
+            # Also detect by state: files that became dirty, or whose content changed (covers edits to files that
+            # were already dirty, and tools whose result text is not the write_file pattern).
+            dirty_after = set(self.git_tracker.get_dirty_files())
+            candidates = set(hashes_before) | dirty_after
+            hashes_after = self._content_hashes(candidates)
+            files_after_modification = (dirty_after - dirty_before) | {
+                f for f in candidates if f in hashes_before and hashes_after.get(f) != hashes_before[f]}
 
             if not execution_result.success:
                 logger.warning(f"Tool execution had errors: {execution_result.errors}")
@@ -1818,8 +1849,8 @@ DISCRETE FIX PROCESS:
                         'description': f"Tool execution failed: {execution_result.errors}"
                     }
 
-            # Use files_written as primary indicator (more reliable)
-            modified_files = files_written if files_written else list(files_after_modification)
+            # Union: what the tools reported writing, plus what actually changed on disk.
+            modified_files = list(dict.fromkeys(list(files_written) + sorted(files_after_modification)))
             
             # Final safety filter - ensure no forbidden paths slip through
             FORBIDDEN = ["venv/", ".venv/", "__pycache__/", ".git/", "node_modules/", ".raica/"]

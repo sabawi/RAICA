@@ -3,11 +3,14 @@ Shared HTML Generation Utility
 Provides unified HTML report generation for all tools
 """
 
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from bs4 import BeautifulSoup  # Requires: pip install beautifulsoup4
+
+logger = logging.getLogger(__name__)
 
 # Import content sanitizer for escape sequence handling
 try:
@@ -434,6 +437,12 @@ th {
             # Clean content (only for HTML content)
             content = self._clean_html_content(content)
 
+            # SI-119: the body is model-written; cut it to the configured allow-list before it reaches EITHER format
+            # (the PDF is weasyprinted from this exact HTML). Raises on a missing config -> the escaped fallback below.
+            from utils.document_safety import sanitize_body, safe_css
+            content = sanitize_body(content)
+            custom_css = safe_css(custom_css)
+
             # Prepare disclaimer
             disclaimer = ""
             if include_disclaimer:
@@ -464,14 +473,19 @@ th {
             return html_document
 
         except Exception as e:
+            # Fail CLOSED (SI-119): everything escaped, so a failure here (including the sanitizer's) can never emit
+            # the raw model-written body.
+            import html as _h
+            logger.error("[HTML-GEN] template processing failed, writing the escaped fallback: %s: %s",
+                         type(e).__name__, e)
             return f"""<!DOCTYPE html>
 <html>
-<head><title>{title}</title></head>
+<head><meta charset="UTF-8"><title>{_h.escape(str(title))}</title></head>
 <body>
-    <h1>{header_title}</h1>
-    <div>{content}</div>
+    <h1>{_h.escape(str(header_title))}</h1>
+    <pre style="white-space:pre-wrap">{_h.escape(str(content))}</pre>
     <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    <p><em>Error in template processing: {str(e)}</em></p>
+    <p><em>Error in template processing: {_h.escape(str(e))}</em></p>
 </body>
 </html>"""
 

@@ -176,6 +176,33 @@ public_fetch:
   max_redirects: 5
   timeout_seconds: 30
   connect_retries: 3
+# Generated documents (.html files and the PDFs weasyprinted from them, utils/document_safety.py, SI-119). A document's
+# body is model-written and can carry raw HTML. Two guards, no off switch:
+#  - the PDF renderer fetches only data: URLs and public http(s) addresses through public_fetch (never file:// or an
+#    internal address), at most fetch_max_bytes each; anything else is skipped and the PDF still builds;
+#  - the body is cleaned to the allow-list below before both formats: other tags are dropped (their text kept, except
+#    remove_with_content, dropped whole), other attributes dropped, links only with link_protocols, pictures only from
+#    image_protocols or an inline image (data:image/...), inline style limited to the CSS sanitizer's safe properties.
+document_safety:
+  fetch_max_bytes: 10000000
+  allowed_tags: [a, abbr, b, blockquote, br, caption, cite, code, col, colgroup, dd, del, details, dfn, div, dl, dt,
+                 em, figcaption, figure, h1, h2, h3, h4, h5, h6, hr, i, img, ins, kbd, li, mark, ol, p, pre, q, s,
+                 samp, small, span, strong, sub, summary, sup, table, tbody, td, tfoot, th, thead, time, tr, u, ul]
+  allowed_attributes:
+    '*': [class, id, title, style, align, lang, dir]
+    a: [href, target, name]
+    img: [src, alt, width, height]
+    td: [colspan, rowspan]
+    th: [colspan, rowspan, scope]
+    ol: [start, type, reversed]
+    col: [span]
+    colgroup: [span]
+    time: [datetime]
+    abbr: [title]
+  link_protocols: [http, https, mailto]
+  image_protocols: [http, https]
+  remove_with_content: [script, style, iframe, object, embed, noscript, template, textarea, svg, math, frameset,
+                        frame, applet, form, base, link, meta]
 tool_calling:
   gather_gate:
     enabled: false

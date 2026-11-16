@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Test HTML entity escaping in SandboxedExecutorTool
+HTML entity escaping in SandboxedExecutorTool: < > & in body text arrive escaped (SI-118: expectations corrected
+for the html_generator + Python-Markdown writer; active content is covered by test_document_safety.py).
+Run: ./venv/bin/python -m pytest tests/unit/test_html_entities.py -q
 """
 
 import unittest
@@ -70,17 +72,15 @@ This content contains HTML characters that should be escaped:
                       "Greater than symbol '>' should be escaped to &gt;")
         self.assertIn("&amp; symbol", html_content, 
                       "Ampersand symbol '&' should be escaped to &amp;")
-        self.assertIn("&quot;quoted text&quot;", html_content, 
-                      "Double quotes should be escaped to &quot;")
-        
-        # Single quotes might be &#39; or &apos; depending on implementation
-        has_single_escape = "&#39;quoted text&#39;" in html_content or "&apos;quoted text&apos;" in html_content
-        self.assertTrue(has_single_escape, 
-                       "Single quotes should be escaped to &#39; or &apos;")
+        # Quote marks in TEXT need no escaping (valid HTML); the old &quot; expectation dated from the replaced
+        # escape-everything writer (SI-118). They must still be present as text.
+        self.assertIn('"quoted text"', html_content)
+        self.assertIn("'quoted text'", html_content)
 
-        # Check for the combined example
-        self.assertIn("&lt;div class=&quot;test&quot; id='example'&gt;Content &amp; More&lt;/div>", html_content,
-                      "Combined tags and content should be properly escaped")
+        # Raw markup in the content is filtered (SI-119): allowed tags/attributes may stay, nothing active does.
+        body = html_content.split('<body', 1)[1].lower()
+        self.assertNotIn("<script", body)
+        self.assertIn("content &amp; more", body)
 
         # Cleanup
         if os.path.exists(file_path):
